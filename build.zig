@@ -8,7 +8,7 @@ const TestModulePaths = [_][]const u8{
 
 fn buildImports(b: *std.Build, names: []const []const u8, modules: []const *std.Build.Module) []const std.Build.Module.Import {
     std.debug.assert(names.len == modules.len);
-    var imports = b.allocator.alloc(std.Build.Module.Import, names.len) catch @panic("module names!!");
+    var imports = b.allocator.alloc(std.Build.Module.Import, names.len) catch @panic("modules!!");
     for (names, modules, 0..) |name, module, i| {
         imports[i] = .{ .name = name, .module = module };
     }
@@ -23,14 +23,17 @@ pub fn build(b: *std.Build) void {
         .utils = b.createModule(.{ .root_source_file = b.path("src/util/utils.zig") }),
         .input_parser = b.createModule(.{ .root_source_file = b.path("src/util/input_parser.zig") }),
         .geo_attr = b.createModule(.{ .root_source_file = b.path("src/io/geo_attributes.zig") }),
+        .err_handler = b.createModule(.{ .root_source_file = b.path("src/util/error_handler.zig") }),
+        .load_run = b.createModule(.{ .root_source_file = b.path("src/io/load_run.zig") }),
     };
 
     mods.input_parser.addImport("utils", mods.utils);
     mods.geo_attr.addImport("utils", mods.utils);
     mods.geo_attr.addImport("input_parser", mods.input_parser);
+    mods.load_run.addImport("geo_attr", mods.geo_attr);
 
-    const import_names = &[_][]const u8{ "utils", "input_parser", "geo_attr" };
-    const import_modules = &[_]*std.Build.Module{ mods.utils, mods.input_parser, mods.geo_attr };
+    const import_names = &[_][]const u8{ "utils", "input_parser", "err_handler", "geo_attr", "load_run" };
+    const import_modules = &[_]*std.Build.Module{ mods.utils, mods.input_parser, mods.err_handler, mods.geo_attr, mods.load_run };
     const common_imports = buildImports(b, import_names, import_modules);
 
     const exe = b.addExecutable(.{
