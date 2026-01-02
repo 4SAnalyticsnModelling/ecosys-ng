@@ -75,8 +75,31 @@ pub const SimInit = packed struct {
         for (tokens.items[0..fields.len], 0..) |tok, i| {
             fields[i].* = try parser.parseTokToInt(usize, tok, "simulation start year", file_name, self.err_log);
         }
+        try parser.boundsCheck(error.OutOfBounds, .{self.sim_from_prev_run > 1}, "whether the simulation starts from a previous run", file_name, self.err_log);
     }
 };
+test "SimInit.load parses simulation initialization params" {
+    var input = "2001,0\n";
+    var input_reader = std.Io.Reader.fixed(input);
+
+    var err_buf: [256]u8 = undefined;
+    var err_log = std.Io.Writer.fixed(&err_buf);
+
+    var sim_init_params = SimInit{
+        .reader = &input_reader,
+        .err_log = &err_log,
+    };
+
+    try sim_init_params.load("test-input");
+
+    try std.testing.expectEqual(@as(usize, 2001), sim_init_params.start_yr);
+    try std.testing.expectEqual(@as(usize, 0), sim_init_params.sim_from_prev_run);
+
+    input = "2001,2\n";
+    input_reader = std.Io.Reader.fixed(input);
+
+    try std.testing.expectError(error.OutOfBounds, sim_init_params.load("test-input"));
+}
 ///Geographical attributes
 pub const GeoAttr = packed struct {
     reader: *std.Io.Reader = undefined,
