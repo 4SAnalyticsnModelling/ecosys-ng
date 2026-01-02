@@ -1,8 +1,6 @@
 ///This module contains input parser helper methods to be used throughout other moduels
 const std = @import("std");
-const ecosys_ng = @import("ecosys-ng");
-const util = ecosys_ng.util;
-const utils = util.utils;
+const utils = @import("utils");
 const print = std.debug.print;
 const max_path_len = 1024;
 const max_io_buf = 10 * 1024;
@@ -63,7 +61,7 @@ pub fn parseTokToInt(comptime T: type, tok: []const u8, context: []const u8, fil
         return err;
     };
 }
-test "testing parseTokToInt" {
+test "parseTokToInt parses tokens to integers" {
     var buf: [255]u8 = undefined;
     var err_log = std.Io.Writer.fixed(&buf);
     var tok: []const u8 = "10";
@@ -85,7 +83,7 @@ pub fn parseTokToFloat(comptime T: type, tok: []const u8, context: []const u8, f
         return err;
     };
 }
-test "testing parseTokToFloat" {
+test "parseTokToFloat parses tokens to floating point numbers" {
     var buf: [255]u8 = undefined;
     var err_log = std.Io.Writer.fixed(&buf);
     var tok: []const u8 = "10";
@@ -138,7 +136,7 @@ pub const Tokens = struct {
         try boundsCheck(error.TokenCountMismatch, .{self.len != expected}, context, file_name, err_log);
     }
 };
-test "testing tokenizeLine" {
+test "tokenizeLine splits lines into tokens" {
     var buf: [255]u8 = undefined;
     var err_log = std.Io.Writer.fixed(&buf);
     var tokens = Tokens{};
@@ -168,7 +166,7 @@ pub fn readNextDataLine(reader: *std.Io.Reader) ![]const u8 {
         return line;
     }
 }
-test "testing readNextDataLine skips comments and blanks" {
+test "readNextDataLine skips comments and blanks" {
     const input =
         "# full line comment\n" ++
         "   # indented comment\r\n" ++

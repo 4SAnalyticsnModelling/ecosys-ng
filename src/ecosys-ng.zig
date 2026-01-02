@@ -1,11 +1,8 @@
 const std = @import("std");
-const ecosys_ng = @import("ecosys-ng");
-const util = ecosys_ng.util;
-const io = ecosys_ng.io;
-const utils = util.utils;
-const parser = util.input_parser;
-const err_handler = util.err_handler;
-const load_run = io.load_run;
+const utils = @import("utils");
+const parser = @import("input_parser");
+const err_handler = @import("util/error_handler.zig");
+const load_run = @import("io/load_run.zig");
 ///ecosys-ng main function
 pub fn main() !void {
     const start_time_us: i64 = std.time.microTimestamp();

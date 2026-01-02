@@ -1,8 +1,6 @@
 const std = @import("std");
-const ecosys_ng = @import("ecosys-ng");
-const util = ecosys_ng.util;
-const utils = util.utils;
-const parser = util.input_parser;
+const utils = @import("utils");
+const parser = @import("input_parser");
 const max_path_len = 1024;
 ///Lat-lon ranges and tile sepcifications
 pub const LatLonRangeAndTileSpecs = packed struct {
@@ -37,6 +35,31 @@ pub const LatLonRangeAndTileSpecs = packed struct {
         }
     }
 };
+test "LatLonRangeAndTileSpecs.load parses ranges and tile specs" {
+    // Two lines: 6 floats, then 2 ints (power-of-two).
+    const input = "10.5,12.25,-120.5,-118.25,0.5,0.25\n" ++
+        "8,4\n";
+    var input_reader = std.Io.Reader.fixed(input);
+
+    var err_buf: [256]u8 = undefined;
+    var err_log = std.Io.Writer.fixed(&err_buf);
+
+    var specs = LatLonRangeAndTileSpecs{
+        .reader = &input_reader,
+        .err_log = &err_log,
+    };
+
+    try specs.load("test-input");
+
+    try std.testing.expectEqual(@as(i32, 10_500_000), specs.lat_min_ud);
+    try std.testing.expectEqual(@as(i32, 12_250_000), specs.lat_max_ud);
+    try std.testing.expectEqual(@as(i32, -120_500_000), specs.lon_min_ud);
+    try std.testing.expectEqual(@as(i32, -118_250_000), specs.lon_max_ud);
+    try std.testing.expectEqual(@as(i32, 500_000), specs.dlat_ud);
+    try std.testing.expectEqual(@as(i32, 250_000), specs.dlon_ud);
+    try std.testing.expectEqual(@as(usize, 8), specs.ntx);
+    try std.testing.expectEqual(@as(usize, 4), specs.nty);
+}
 ///Simulation start year and initialization
 pub const SimInit = packed struct {
     reader: *std.Io.Reader = undefined,

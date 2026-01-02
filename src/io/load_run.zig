@@ -1,8 +1,5 @@
 const std = @import("std");
-const ecosys_ng = @import("ecosys-ng");
-const util = ecosys_ng.util;
-const io = ecosys_ng.io;
-const geo_attr = io.geo_attr;
+const geo_attr = @import("geo_attr");
 
 pub const LoadRun = struct {
     runfile: []const u8 = undefined,
