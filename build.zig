@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
     mods.geo_attr.addImport("utils", mods.utils);
     mods.geo_attr.addImport("input_parser", mods.input_parser);
     mods.load_run.addImport("geo_attr", mods.geo_attr);
+    mods.load_run.addImport("utils", mods.utils);
 
     const import_names = &[_][]const u8{ "utils", "input_parser", "err_handler", "geo_attr", "load_run" };
     const import_modules = &[_]*std.Build.Module{ mods.utils, mods.input_parser, mods.err_handler, mods.geo_attr, mods.load_run };

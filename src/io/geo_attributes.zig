@@ -104,6 +104,7 @@ test "SimInit.load parses simulation initialization params" {
 pub const GeoAttr = packed struct {
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
+    bin_writer: *std.Io.Writer = undefined,
     lat_ud: i32 = undefined, //latitude rounded to the nearest micro degree
     lon_ud: i32 = undefined, //longitude rounded to the nearest micro degree
     elevation: f32 = undefined, //elevation/altitude (m)
@@ -119,7 +120,7 @@ pub const GeoAttr = packed struct {
     local_ix: usize = 0, //local ix within a tile
     local_iy: usize = 0, //local iy within a tile
 
-    pub fn load(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, file_name: []const u8) !void {
+    pub fn loadAndWriteBin(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, file_name: []const u8) !void {
         var line = try parser.readNextDataLine(self.reader);
         var tokens = parser.Tokens{};
         try tokens.tokenizeLine(line, 1, "geographical attributes file path", file_name, self.err_log);
@@ -130,6 +131,9 @@ pub const GeoAttr = packed struct {
         try geo_reader.open(self.err_log, geo_attr_filename);
         defer geo_reader.close();
         geo_reader.reader();
+
+        try self.writeHeader();
+
         while (true) {
             line = try parser.readNextDataLine(geo_reader.buf_reader);
             if (std.mem.eql(u8, line, "EndOfStream")) break;
@@ -145,6 +149,9 @@ pub const GeoAttr = packed struct {
                 fields_elev_mat[i].* = try parser.parseTokToFloat(f32, tok, "elevation and MAT", geo_attr_filename, self.err_log);
             }
             try self.assignId(lat_lon_rng_n_tile_specs);
+
+            const morton: u64 = @intCast(utils.morton2D(self.ix, self.iy));
+            try self.writeRecord(morton);
         }
     }
     fn assignId(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs) !void {
@@ -156,5 +163,22 @@ pub const GeoAttr = packed struct {
         self.ny = @max(self.iy_old, self.iy);
         self.tile_ix = @divFloor(self.nx, lat_lon_rng_n_tile_specs.ntx);
         self.tile_iy = @divFloor(self.ny, lat_lon_rng_n_tile_specs.nty);
+    }
+    fn writeHeader(self: *GeoAttr) !void {
+        try self.bin_writer.writeAll("GEOATTR");
+        try self.writeIntLittle(u16, 1); // version
+        try self.writeIntLittle(u16, 1); // flags: little endian
+    }
+    fn writeIntLittle(self: *GeoAttr, comptime T: type, value: T) !void {
+        var buf: [@sizeOf(T)]u8 = undefined;
+        std.mem.writeInt(T, &buf, value, std.builtin.Endian.little);
+        try self.bin_writer.writeAll(&buf);
+    }
+    fn writeRecord(self: *GeoAttr, morton: u64) !void {
+        try self.writeIntLittle(u64, morton);
+        try self.writeIntLittle(i32, self.lat_ud);
+        try self.writeIntLittle(i32, self.lon_ud);
+        try self.writeIntLittle(u32, @as(u32, @bitCast(self.elevation)));
+        try self.writeIntLittle(u32, @as(u32, @bitCast(self.matc)));
     }
 };
