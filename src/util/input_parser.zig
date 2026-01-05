@@ -1,4 +1,4 @@
-///This module contains input parser helper methods to be used throughout other moduels
+///This module contains input parser helper methods to be used throughout other modules
 const std = @import("std");
 const utils = @import("utils");
 const print = std.debug.print;
@@ -22,7 +22,7 @@ pub const RunArg = struct {
         if (args.len < 2) {
             const err = error.MissingArguments;
             print(
-                "\x1b[1;31merror:\x1b[0m {s} occured during ecosys job submission. Correct format is: <path/to/ecosys/binary> <runfile>\n",
+                "\x1b[1;31merror:\x1b[0m {s} occurred during ecosys job submission. Correct format is: <path/to/ecosys/binary> <runfile>\n",
                 .{@errorName(err)},
             );
             return err;
@@ -34,7 +34,7 @@ pub const RunArg = struct {
         return self.runfile_name[0..args[1].len];
     }
 };
-///Logs an token count mismatch error to both err_log and stdout
+///Logs a token count mismatch error to both err_log and stdout
 fn logMismatch(comptime err: TokenBoundsErrors, err_log: *std.Io.Writer, context: []const u8, file_name: []const u8) TokenBoundsErrors!void {
     err_log.print("error: {s} while reading {s} in {s}\n", .{ @errorName(err), context, file_name }) catch {
         return error.PrintFailed;
@@ -46,7 +46,7 @@ fn logMismatch(comptime err: TokenBoundsErrors, err_log: *std.Io.Writer, context
 }
 ///This method checks min max bounds for grids, plants, scenes etc.
 pub fn boundsCheck(comptime err: TokenBoundsErrors, conds: anytype, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) TokenBoundsErrors!void {
-    inline for (conds) |ok| { // comptile unrolling, so don't use this method if there's a lot of conditions
+    inline for (conds) |ok| { // comptime unrolling, so don't use this method if there's a lot of conditions
         if (ok) {
             try logMismatch(err, err_log, context, file_name);
             return err;

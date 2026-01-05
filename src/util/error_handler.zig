@@ -5,7 +5,7 @@ pub const CompletionTime = struct {
     start_time_us: i64,
     runfile: []const u8,
     err_log: *std.Io.Writer,
-    ///This method initalize the CompletionTime struct
+    ///This method initialize the CompletionTime struct
     pub fn init(start_time_us: i64, runfile: []const u8, err_log: *std.Io.Writer) CompletionTime {
         return .{
             .start_time_us = start_time_us,

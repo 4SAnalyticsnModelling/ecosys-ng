@@ -2,7 +2,7 @@ const std = @import("std");
 const utils = @import("utils");
 const parser = @import("input_parser");
 const max_path_len = 1024;
-///Lat-lon ranges and tile sepcifications
+///Lat-lon ranges and tile specifications
 pub const LatLonRangeAndTileSpecs = packed struct {
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
@@ -165,13 +165,13 @@ pub const GeoAttr = packed struct {
         self.tile_iy = @divFloor(self.ny, lat_lon_rng_n_tile_specs.nty);
     }
     fn writeHeader(self: *GeoAttr) !void {
-        try self.bin_writer.writeAll("GEOATTR");
+        try self.bin_writer.writeAll("geo_attr");
         try self.writeIntLittle(u16, 1); // version
         try self.writeIntLittle(u16, 1); // flags: little endian
     }
     fn writeIntLittle(self: *GeoAttr, comptime T: type, value: T) !void {
         var buf: [@sizeOf(T)]u8 = undefined;
-        std.mem.writeInt(T, &buf, value, std.builtin.Endian.little);
+        std.mem.writeInt(T, &buf, value, .little);
         try self.bin_writer.writeAll(&buf);
     }
     fn writeRecord(self: *GeoAttr, morton: u64) !void {
@@ -182,3 +182,206 @@ pub const GeoAttr = packed struct {
         try self.writeIntLittle(u32, @as(u32, @bitCast(self.matc)));
     }
 };
+
+pub const GeoAttrBinData = struct {
+    arena: std.heap.ArenaAllocator = undefined,
+    err_log: *std.Io.Writer = undefined,
+    lat_ud: []i32 = undefined,
+    lon_ud: []i32 = undefined,
+    elev: []f32 = undefined,
+    matc: []f32 = undefined,
+
+    pub fn deinit(self: *GeoAttrBinData) void {
+        self.arena.deinit();
+    }
+
+    pub fn readBinToArraysWithArena(self: *GeoAttrBinData, geo_attr: *const GeoAttr, bin_path: []const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+
+        // const nx_i64 = @divFloor(@as(i64, specs.lon_max_ud) - @as(i64, specs.lon_min_ud), @as(i64, specs.dlon_ud)) + 1;
+        // const ny_i64 = @divFloor(@as(i64, specs.lat_max_ud) - @as(i64, specs.lat_min_ud), @as(i64, specs.dlat_ud)) + 1;
+        // if (nx_i64 <= 0 or ny_i64 <= 0) return error.OutOfBounds;
+        //
+        // self.nx = @as(usize, @intCast(nx_i64));
+        // self.ny = @as(usize, @intCast(ny_i64));
+        const n = geo_attr.nx * geo_attr.ny;
+
+        self.lat_ud = try allocator.alloc(i32, n);
+        self.lon_ud = try allocator.alloc(i32, n);
+        self.elev = try allocator.alloc(f32, n);
+        self.matc = try allocator.alloc(f32, n);
+
+        const lat_sentinel = std.math.minInt(i32);
+        const lon_sentinel = std.math.minInt(i32);
+        const elev_nan = std.math.nan(f32);
+        const mat_nan = std.math.nan(f32);
+        for (self.lat_ud, self.lon_ud, self.elev, self.matc) |*lat_p, *lon_p, *elev_p, *mat_p| {
+            lat_p.* = lat_sentinel;
+            lon_p.* = lon_sentinel;
+            elev_p.* = elev_nan;
+            mat_p.* = mat_nan;
+        }
+
+        var bin_reader: utils.FileReader = utils.FileReader{};
+        try bin_reader.open(self.err_log, bin_path);
+        defer bin_reader.close();
+        bin_reader.reader();
+        var buf_header: [12]u8 = undefined;
+        try bin_reader.buf_reader.readSliceAll(&buf_header);
+        std.debug.print("test bin header: {s}\n", .{buf_header[0..8]});
+
+        if (!std.mem.eql(u8, buf_header[0..8], "geo_attr")) return error.BadHeader;
+        const version = std.mem.readInt(u16, buf_header[8..10], .little);
+        const flags = std.mem.readInt(u16, buf_header[10..12], .little);
+        if (version != 1 or flags != 1) return error.BadHeader;
+        var rec_buf: [24]u8 = undefined;
+        while (true) {
+            try bin_reader.buf_reader.readSliceAll(&rec_buf);
+            std.debug.print("test bin lat_ud: {s}\n", .{rec_buf[0..4]});
+        }
+        //     if (nread == 0) break;
+        //     if (nread != buf.len) return error.TruncatedRecord;
+        //
+        //     const lat_ud_ = std.mem.readInt(i32, buf[8..12], .little);
+        //     const lon_ud_ = std.mem.readInt(i32, buf[12..16], .little);
+        //     const elev_bits = std.mem.readInt(u32, buf[16..20], .little);
+        //     const mat_bits = std.mem.readInt(u32, buf[20..24], .little);
+        //
+        //     const ix_i64 = @divFloor(@as(i64, lon_ud_) - @as(i64, specs.lon_min_ud), @as(i64, specs.dlon_ud));
+        //     const iy_i64 = @divFloor(@as(i64, lat_ud_) - @as(i64, specs.lat_min_ud), @as(i64, specs.dlat_ud));
+        //     if (ix_i64 < 0 or iy_i64 < 0) return error.OutOfBounds;
+        //
+        //     const ix = @as(usize, @intCast(ix_i64));
+        //     const iy = @as(usize, @intCast(iy_i64));
+        //     if (ix >= nx or iy >= ny) return error.OutOfBounds;
+        //
+        //     const flat_id = ix + iy * nx;
+        //     lat_ud[flat_id] = lat_ud;
+        //     lon_ud[flat_id] = lon_ud;
+        //     elev[flat_id] = @as(f32, @bitCast(elev_bits));
+        //     matc[flat_id] = @as(f32, @bitCast(mat_bits));
+        // }
+    }
+};
+
+// test "readBinToArraysWithArena loads lat/lon micro-degrees into row-major arrays" {
+//     var tmp = std.testing.tmpDir(.{});
+//     defer tmp.cleanup();
+//
+//     var orig_dir = try std.fs.cwd().openDir(".", .{});
+//     defer orig_dir.close();
+//     try tmp.dir.setAsCwd();
+//     defer orig_dir.setAsCwd() catch {};
+//
+//     const geo_contents =
+//         "1.0,2.0,100.5,5.0\n" ++
+//         "3.0,4.0,200.25,-1.5\n";
+//
+//     var geo_file = try tmp.dir.createFile("geo_attr.txt", .{});
+//     defer geo_file.close();
+//     try geo_file.writeAll(geo_contents);
+//
+//     const geo_path = "geo_attr.txt";
+//     const input = try std.fmt.allocPrint(std.testing.allocator, "{s}\n", .{geo_path});
+//     defer std.testing.allocator.free(input);
+//
+//     var input_reader = std.Io.Reader.fixed(input);
+//     var err_buf: [256]u8 = undefined;
+//     var err_log = std.Io.Writer.fixed(&err_buf);
+//
+//     var bin_writer = utils.FileWriter{ .err_log = &err_log, .is_err_log = false };
+//     try bin_writer.create("geo_attr.bin");
+//     defer bin_writer.close();
+//     bin_writer.writer();
+//
+//     var specs = LatLonRangeAndTileSpecs{
+//         .reader = &input_reader,
+//         .err_log = &err_log,
+//         .lat_min_ud = 0,
+//         .lat_max_ud = 3_000_000,
+//         .lon_min_ud = 0,
+//         .lon_max_ud = 4_000_000,
+//         .dlat_ud = 1_000_000,
+//         .dlon_ud = 1_000_000,
+//         .ntx = 2,
+//         .nty = 2,
+//     };
+//
+//     var geo = GeoAttr{
+//         .reader = &input_reader,
+//         .err_log = &err_log,
+//         .bin_writer = bin_writer.buf_writer,
+//     };
+//     try geo.loadAndWriteBin(&specs, "test-input");
+//
+//     var data = try readBinToArraysWithArena(&specs, "geo_attr.bin");
+//     defer data.deinit();
+//
+//     const flat_id0 = 2 + 1 * data.nx;
+//     try std.testing.expectEqual(@as(i32, 1_000_000), data.lat_ud[flat_id0]);
+//     try std.testing.expectEqual(@as(i32, 2_000_000), data.lon_ud[flat_id0]);
+//     try std.testing.expectApproxEqAbs(@as(f32, 100.5), data.elev[flat_id0], 1e-5);
+//     try std.testing.expectApproxEqAbs(@as(f32, 5.0), data.matc[flat_id0], 1e-5);
+// }
+// test "GeoAttr.loadAndWriteBin writes header and records" {
+//     var tmp = std.testing.tmpDir(.{});
+//     defer tmp.cleanup();
+//
+//     var orig_dir = try std.fs.cwd().openDir(".", .{});
+//     defer orig_dir.close();
+//     try tmp.dir.setAsCwd();
+//     defer orig_dir.setAsCwd() catch {};
+//
+//     const geo_contents =
+//         "1.0,2.0,100.5,5.0\n" ++
+//         "3.0,4.0,200.25,-1.5\n";
+//
+//     var geo_file = try tmp.dir.createFile("geo_attr.txt", .{});
+//     defer geo_file.close();
+//     try geo_file.writeAll(geo_contents);
+//
+//     const geo_path = "geo_attr.txt";
+//
+//     const input = try std.fmt.allocPrint(std.testing.allocator, "{s}\n", .{geo_path});
+//     defer std.testing.allocator.free(input);
+//
+//     var input_reader = std.Io.Reader.fixed(input);
+//
+//     var err_buf: [256]u8 = undefined;
+//     var err_log = std.Io.Writer.fixed(&err_buf);
+//
+//     var bin_buf: [128]u8 = undefined;
+//     var bin_writer = std.Io.Writer.fixed(&bin_buf);
+//
+//     var specs = LatLonRangeAndTileSpecs{
+//         .lat_min_ud = 0,
+//         .lon_min_ud = 0,
+//         .dlat_ud = 1_000_000,
+//         .dlon_ud = 1_000_000,
+//         .ntx = 2,
+//         .nty = 2,
+//     };
+//
+//     var geo = GeoAttr{
+//         .reader = &input_reader,
+//         .err_log = &err_log,
+//         .bin_writer = &bin_writer,
+//     };
+//
+//     try geo.loadAndWriteBin(&specs, "test-input");
+//
+//     const out = bin_writer.buffered();
+//     try std.testing.expectEqual(@as(usize, 59), out.len);
+//     try std.testing.expectEqualStrings("GEOATTR", out[0..7]);
+//     try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, out[7..9], .little));
+//     try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, out[9..11], .little));
+//
+//     const morton0 = std.mem.readInt(u64, out[11..19], .little);
+//     const lat0 = std.mem.readInt(i32, out[19..23], .little);
+//     const lon0 = std.mem.readInt(i32, out[23..27], .little);
+//     try std.testing.expectEqual(@as(u64, @intCast(utils.morton2D(2, 1))), morton0);
+//     try std.testing.expectEqual(@as(i32, 1_000_000), lat0);
+//     try std.testing.expectEqual(@as(i32, 2_000_000), lon0);
+// }

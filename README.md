@@ -28,6 +28,6 @@ This modernization focuses on improving **scalability, numerical robustness, and
 
 => `zig build` (ecosys-ng binary within `./zig-out/ecosys-ng-bin`)
 
-=> `zig build -p . --verbose --sumary all` (ecosys-ng binary within `./ecosys-ng-bin`)
+=> `zig build -p . --verbose --summary all` (ecosys-ng binary within `./ecosys-ng-bin`)
 
 => `zig build -p . test --verbose --summary all` (run ecosys-ng code tests during compilation; find ecosys-ng binary within `./ecosys-ng-bin`)
