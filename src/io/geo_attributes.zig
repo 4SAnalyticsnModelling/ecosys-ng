@@ -176,6 +176,8 @@ pub const GeoAttr = packed struct {
     }
     fn writeRecord(self: *GeoAttr, morton: u64) !void {
         try self.writeIntLittle(u64, morton);
+        try self.writeIntLittle(u32, @as(u32, @intCast(self.ix)));
+        try self.writeIntLittle(u32, @as(u32, @intCast(self.iy)));
         try self.writeIntLittle(i32, self.lat_ud);
         try self.writeIntLittle(i32, self.lon_ud);
         try self.writeIntLittle(u32, @as(u32, @bitCast(self.elevation)));
@@ -200,12 +202,6 @@ pub const GeoAttrBinData = struct {
         errdefer arena.deinit();
         const allocator = arena.allocator();
 
-        // const nx_i64 = @divFloor(@as(i64, specs.lon_max_ud) - @as(i64, specs.lon_min_ud), @as(i64, specs.dlon_ud)) + 1;
-        // const ny_i64 = @divFloor(@as(i64, specs.lat_max_ud) - @as(i64, specs.lat_min_ud), @as(i64, specs.dlat_ud)) + 1;
-        // if (nx_i64 <= 0 or ny_i64 <= 0) return error.OutOfBounds;
-        //
-        // self.nx = @as(usize, @intCast(nx_i64));
-        // self.ny = @as(usize, @intCast(ny_i64));
         const n = geo_attr.nx * geo_attr.ny;
 
         self.lat_ud = try allocator.alloc(i32, n);
@@ -236,33 +232,23 @@ pub const GeoAttrBinData = struct {
         const version = std.mem.readInt(u16, buf_header[8..10], .little);
         const flags = std.mem.readInt(u16, buf_header[10..12], .little);
         if (version != 1 or flags != 1) return error.BadHeader;
-        var rec_buf: [24]u8 = undefined;
+        var rec_buf: [32]u8 = undefined;
         while (true) {
             try bin_reader.buf_reader.readSliceAll(&rec_buf);
-            std.debug.print("test bin lat_ud: {s}\n", .{rec_buf[0..4]});
+            const mortonId = std.mem.readInt(u64, rec_buf[0..8], .little);
+            const ix = std.mem.readInt(i32, rec_buf[8..12], .little);
+            const iy = std.mem.readInt(i32, rec_buf[12..16], .little);
+            const lat_ud_ = std.mem.readInt(i32, rec_buf[16..20], .little);
+            const lon_ud_ = std.mem.readInt(i32, rec_buf[20..24], .little);
+            const elev_bits = std.mem.readInt(u32, rec_buf[24..28], .little);
+            const mat_bits = std.mem.readInt(u32, rec_buf[28..32], .little);
+            std.debug.print("test bin record -> morton Id: {d}, lat_ud[{d}, {d}]: {d}, lon_ud[{d}, {d}]: {d}, elev[{d}, {d}]: {d}, matc[{d}, {d}]: {d}\n", .{ mortonId, ix, iy, lat_ud_, ix, iy, lon_ud_, ix, iy, @as(f32, @bitCast(elev_bits)), ix, iy, @as(f32, @bitCast(mat_bits)) });
+            // const flat_id = geo_attr.ix + geo_attr.iy * geo_attr.nx;
+            // self.lat_ud[flat_id] = lat_ud_;
+            // self.lon_ud[flat_id] = lon_ud_;
+            // self.elev[flat_id] = @as(f32, @bitCast(elev_bits));
+            // self.matc[flat_id] = @as(f32, @bitCast(mat_bits));
         }
-        //     if (nread == 0) break;
-        //     if (nread != buf.len) return error.TruncatedRecord;
-        //
-        //     const lat_ud_ = std.mem.readInt(i32, buf[8..12], .little);
-        //     const lon_ud_ = std.mem.readInt(i32, buf[12..16], .little);
-        //     const elev_bits = std.mem.readInt(u32, buf[16..20], .little);
-        //     const mat_bits = std.mem.readInt(u32, buf[20..24], .little);
-        //
-        //     const ix_i64 = @divFloor(@as(i64, lon_ud_) - @as(i64, specs.lon_min_ud), @as(i64, specs.dlon_ud));
-        //     const iy_i64 = @divFloor(@as(i64, lat_ud_) - @as(i64, specs.lat_min_ud), @as(i64, specs.dlat_ud));
-        //     if (ix_i64 < 0 or iy_i64 < 0) return error.OutOfBounds;
-        //
-        //     const ix = @as(usize, @intCast(ix_i64));
-        //     const iy = @as(usize, @intCast(iy_i64));
-        //     if (ix >= nx or iy >= ny) return error.OutOfBounds;
-        //
-        //     const flat_id = ix + iy * nx;
-        //     lat_ud[flat_id] = lat_ud;
-        //     lon_ud[flat_id] = lon_ud;
-        //     elev[flat_id] = @as(f32, @bitCast(elev_bits));
-        //     matc[flat_id] = @as(f32, @bitCast(mat_bits));
-        // }
     }
 };
 
