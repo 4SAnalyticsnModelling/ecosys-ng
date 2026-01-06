@@ -7,14 +7,24 @@ pub const LoadRun = struct {
     runfile: []const u8 = undefined,
     buf_reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
+    geo_attr_bin_path: []const u8 = "tiles/geo_attr.bin",
 
     pub fn load(self: *LoadRun) !void {
-        var lat_lon_rng_n_tile_specs = geo_attr.LatLonRangeAndTileSpecs{ .reader = self.buf_reader, .err_log = self.err_log };
+        var lat_lon_rng_n_tile_specs = geo_attr.LatLonRangeAndTileSpecs{
+            .reader = self.buf_reader,
+            .err_log = self.err_log,
+        };
         try lat_lon_rng_n_tile_specs.load(self.runfile);
-        var sim_init = geo_attr.SimInit{ .reader = self.buf_reader, .err_log = self.err_log };
+        var sim_init = geo_attr.SimInit{
+            .reader = self.buf_reader,
+            .err_log = self.err_log,
+        };
         try sim_init.load(self.runfile);
-        var bin_writer = utils.FileWriter{ .err_log = self.err_log, .is_err_log = false };
-        try bin_writer.create("tiles/geo_attr.bin");
+        var bin_writer = utils.FileWriter{
+            .err_log = self.err_log,
+            .is_err_log = false,
+        };
+        try bin_writer.create(self.geo_attr_bin_path);
         defer bin_writer.close();
         bin_writer.writer();
         var geo_attributes = geo_attr.GeoAttr{
@@ -25,10 +35,12 @@ pub const LoadRun = struct {
         };
         try geo_attributes.loadAndWriteBin(&lat_lon_rng_n_tile_specs, self.runfile);
         try geo_attributes.bin_writer.flush();
-        var geo_attr_bin_data = geo_attr.GeoAttrBinData{ .allocator = self.allocator, .err_log = self.err_log };
-        try geo_attr_bin_data.readBinByTileAndFillArrays(&geo_attributes, &lat_lon_rng_n_tile_specs, "tiles/geo_attr.bin", LoadRun.handleGeoAttrTile);
-        defer geo_attr_bin_data.deinit();
-        var tile_reader = try geo_attr.GeoAttrBinData.TileReader.init(self.allocator, self.err_log, &lat_lon_rng_n_tile_specs, "tiles/geo_attr.bin");
+        var geo_attr_bin_data = geo_attr.GeoAttrBinData{
+            .allocator = self.allocator,
+            .err_log = self.err_log,
+        };
+        try geo_attr_bin_data.readBinByTileAndFillArrays(&geo_attributes, &lat_lon_rng_n_tile_specs, self.geo_attr_bin_path, LoadRun.handleGeoAttrTile);
+        var tile_reader = try geo_attr.GeoAttrBinData.TileReader.init(self.allocator, self.err_log, &lat_lon_rng_n_tile_specs, self.geo_attr_bin_path);
         defer tile_reader.deinit();
         while (true) {
             const batch_opt = try tile_reader.next();
@@ -39,8 +51,26 @@ pub const LoadRun = struct {
         std.debug.print("test tilespec print: lat_max_ud: {d}, simulation start year: {d}, lat: {d}, lon: {d}, elev: {d}, mat: {d}, ix: {d}, iy: {d}, nx: {d}, ny: {d}\n", .{ lat_lon_rng_n_tile_specs.lat_max_ud, sim_init.start_yr, geo_attributes.lat_ud, geo_attributes.lon_ud, geo_attributes.elevation, geo_attributes.matc, geo_attributes.ix, geo_attributes.iy, geo_attributes.nx, geo_attributes.ny });
     }
 
-    fn handleGeoAttrTile(tile_ix: usize, tile_iy: usize, records: []const geo_attr.GeoAttr.Record) !void {
+    fn handleGeoAttrTile(
+        tile_ix: usize,
+        tile_iy: usize,
+        tile_nx: usize,
+        tile_ny: usize,
+        halo_stride: usize,
+        tile_lat_ud: []const i32,
+        tile_lon_ud: []const i32,
+        tile_elev: []const f32,
+        tile_matc: []const f32,
+        records: []const geo_attr.GeoAttr.Record,
+    ) !void {
+        _ = tile_lat_ud;
+        _ = tile_lon_ud;
+        _ = tile_elev;
+        _ = tile_matc;
         _ = records;
-        std.debug.print("test tile ({d}, {d})\n", .{ tile_ix, tile_iy });
+        std.debug.print(
+            "test tile ({d}, {d}) tile_nx={d} tile_ny={d} stride={d}\n",
+            .{ tile_ix, tile_iy, tile_nx, tile_ny, halo_stride },
+        );
     }
 };

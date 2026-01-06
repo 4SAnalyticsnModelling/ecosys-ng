@@ -5,8 +5,8 @@
 # simulation start year, does this simulation start from a previous spin-up run? 0=no, 1=yes
 2001,0
 geo_attr # geospatial attributes
+boundary # boundary conditions
 site_files # site file paths
-boundary_files # boundary file paths
 soil_files # soil file paths
 option_files # option file paths
 till_files # tillage file paths

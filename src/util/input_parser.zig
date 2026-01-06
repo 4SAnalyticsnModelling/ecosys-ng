@@ -35,7 +35,7 @@ pub const RunArg = struct {
     }
 };
 ///Logs a token count mismatch error to both err_log and stdout
-fn logMismatch(comptime err: TokenBoundsErrors, err_log: *std.Io.Writer, context: []const u8, file_name: []const u8) TokenBoundsErrors!void {
+fn logMismatch(comptime err: anyerror, err_log: *std.Io.Writer, context: []const u8, file_name: []const u8) !void {
     err_log.print("error: {s} while reading {s} in {s}\n", .{ @errorName(err), context, file_name }) catch {
         return error.PrintFailed;
     };
@@ -45,7 +45,7 @@ fn logMismatch(comptime err: TokenBoundsErrors, err_log: *std.Io.Writer, context
     print("\x1b[1;31merror:\x1b[0m {s} while reading {s} in {s}\n", .{ @errorName(err), context, file_name });
 }
 ///This method checks min max bounds for grids, plants, scenes etc.
-pub fn boundsCheck(comptime err: TokenBoundsErrors, conds: anytype, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) TokenBoundsErrors!void {
+pub fn boundsCheck(comptime err: anyerror, conds: anytype, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !void {
     inline for (conds) |ok| { // comptime unrolling, so don't use this method if there's a lot of conditions
         if (ok) {
             try logMismatch(err, err_log, context, file_name);
@@ -54,7 +54,7 @@ pub fn boundsCheck(comptime err: TokenBoundsErrors, conds: anytype, context: []c
     }
 }
 ///This method logs parsing of strings => integer errors.
-pub fn parseTokToInt(comptime T: type, tok: []const u8, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) TokenBoundsErrors!T {
+pub fn parseTokToInt(comptime T: type, tok: []const u8, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !T {
     return std.fmt.parseInt(T, tok, 10) catch {
         const err = error.InvalidCharacter;
         try logMismatch(err, err_log, context, file_name);
@@ -76,7 +76,7 @@ test "parseTokToInt parses tokens to integers" {
     try std.testing.expectError(error.InvalidCharacter, parseTokToInt(usize, tok, "test string like number", "test file", &err_log));
 }
 ///This method logs parsing of strings => float errors.
-pub fn parseTokToFloat(comptime T: type, tok: []const u8, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) TokenBoundsErrors!T {
+pub fn parseTokToFloat(comptime T: type, tok: []const u8, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !T {
     return std.fmt.parseFloat(T, tok) catch {
         const err = error.InvalidCharacter;
         try logMismatch(err, err_log, context, file_name);
@@ -105,14 +105,6 @@ test "parseTokToFloat parses tokens to floating point numbers" {
     try std.testing.expectError(error.InvalidCharacter, parseTokToInt(usize, tok, "test string like number", "test file", &err_log));
     try std.testing.expect(std.mem.containsAtLeast(u8, err_log.buffered(), 1, "error: InvalidCharacter while reading test string like number in test file"));
 }
-const TokenBoundsErrors = error{
-    TooManyTokens,
-    TokenCountMismatch,
-    PrintFailed,
-    OutOfBounds,
-    InvalidCharacter,
-    FilePathTooLong,
-};
 ///This is a helper struct to tokenize items in a read line
 pub const Tokens = struct {
     items: [max_tok_num][]const u8 = undefined, //using []const u8 since it's a pointer to actual line, not a storage, short-lived but memory efficient
@@ -123,7 +115,7 @@ pub const Tokens = struct {
         self.items = undefined;
     }
     ///This method parses a line into a list of numbers/strings (called tokens hereafter) by eliminating spaces, tabs, or commas between tokens
-    pub fn tokenizeLine(self: *Tokens, line: []const u8, expected: usize, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) TokenBoundsErrors!void {
+    pub fn tokenizeLine(self: *Tokens, line: []const u8, expected: usize, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !void {
         self.reset();
         const hash_idx = std.mem.indexOfScalar(u8, line, '#');
         const data_before_hash = if (hash_idx) |i| line[0..i] else line;
