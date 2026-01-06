@@ -6,6 +6,9 @@ const load_run = @import("load_run");
 ///ecosys-ng main function
 pub fn main() !void {
     const start_time_us: i64 = std.time.microTimestamp();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     //Create directory tree for saving the outputs
     var out: utils.OutDir = utils.OutDir{};
     try out.mkOutDirs();
@@ -28,7 +31,12 @@ pub fn main() !void {
     var runtime = err_handler.CompletionTime.init(start_time_us, runfile, err_log.file_writer.buf_writer);
     //Generate run failure message, if the run fails before completion
     errdefer runtime.fail();
-    var load_runfile = load_run.LoadRun{ .runfile = runfile, .err_log = err_log.file_writer.buf_writer, .buf_reader = run.file_reader.buf_reader };
+    var load_runfile = load_run.LoadRun{
+        .allocator = allocator,
+        .runfile = runfile,
+        .err_log = err_log.file_writer.buf_writer,
+        .buf_reader = run.file_reader.buf_reader,
+    };
     try load_runfile.load();
     try runtime.success();
 }

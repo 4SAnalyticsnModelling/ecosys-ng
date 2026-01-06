@@ -1,7 +1,7 @@
 # min. latitude (⁰), max. latitude (⁰), min. longitude (⁰), max. longitude (⁰); lat lon data can be down to six decimal digits; negative values for southing and westing, latitude spacing (⁰), longitude spacing (⁰), the spacing are used to mesh the grids, original data may or may not follow the exact spacing
 49.665,49.735,-112.865,-112.795,0.01,0.01
 # tile size specifications for out-of-core computing: number of west-east grids, number of north-south grids in each tile (in power-of-two-grids, e.g., 2x4, 4x4, 2x8, 8x2, 4x8, 8x8, 16x16, 16x32, 32x32 etc. based on RAM budget)
-8,4
+4,4
 # simulation start year, does this simulation start from a previous spin-up run? 0=no, 1=yes
 2001,0
 geo_attr # geospatial attributes

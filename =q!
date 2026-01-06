@@ -3,7 +3,6 @@ const geo_attr = @import("geo_attr");
 const utils = @import("utils");
 
 pub const LoadRun = struct {
-    allocator: std.mem.Allocator = undefined,
     runfile: []const u8 = undefined,
     buf_reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
@@ -17,18 +16,13 @@ pub const LoadRun = struct {
         try bin_writer.create("tiles/geo_attr.bin");
         defer bin_writer.close();
         bin_writer.writer();
-        var geo_attributes = geo_attr.GeoAttr{
-            .allocator = self.allocator,
-            .reader = self.buf_reader,
-            .err_log = self.err_log,
-            .bin_writer = bin_writer.buf_writer,
-        };
+        var geo_attributes = geo_attr.GeoAttr{ .reader = self.buf_reader, .err_log = self.err_log, .bin_writer = bin_writer.buf_writer };
         try geo_attributes.loadAndWriteBin(&lat_lon_rng_n_tile_specs, self.runfile);
         try geo_attributes.bin_writer.flush();
-        var geo_attr_bin_data = geo_attr.GeoAttrBinData{ .allocator = self.allocator, .err_log = self.err_log };
+        var geo_attr_bin_data = geo_attr.GeoAttrBinData{ .err_log = self.err_log };
         try geo_attr_bin_data.readBinByTileAndFillArrays(&geo_attributes, &lat_lon_rng_n_tile_specs, "tiles/geo_attr.bin", LoadRun.handleGeoAttrTile);
         defer geo_attr_bin_data.deinit();
-        var tile_reader = try geo_attr.GeoAttrBinData.TileReader.init(self.allocator, self.err_log, &lat_lon_rng_n_tile_specs, "tiles/geo_attr.bin");
+        var tile_reader = try geo_attr.GeoAttrBinData.TileReader.init(self.err_log, &lat_lon_rng_n_tile_specs, "tiles/geo_attr.bin");
         defer tile_reader.deinit();
         while (true) {
             const batch_opt = try tile_reader.next();

@@ -3,7 +3,7 @@ const utils = @import("utils");
 const parser = @import("input_parser");
 const max_path_len = 1024;
 ///Lat-lon ranges and tile specifications
-pub const LatLonRangeAndTileSpecs = packed struct {
+pub const LatLonRangeAndTileSpecs = struct {
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     lat_min_ud: i32 = undefined, //minimum latitude of the domain rounded to the nearest micro degree
@@ -61,7 +61,7 @@ test "LatLonRangeAndTileSpecs.load parses ranges and tile specs" {
     try std.testing.expectEqual(@as(usize, 4), specs.nty);
 }
 ///Simulation start year and initialization
-pub const SimInit = packed struct {
+pub const SimInit = struct {
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     start_yr: usize = undefined, //simulation start year
@@ -101,7 +101,8 @@ test "SimInit.load parses simulation initialization params" {
     try std.testing.expectError(error.OutOfBounds, sim_init_params.load("test-input"));
 }
 ///Geographical attributes
-pub const GeoAttr = packed struct {
+pub const GeoAttr = struct {
+    allocator: std.mem.Allocator = undefined,
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     bin_writer: *std.Io.Writer = undefined,
@@ -119,6 +120,20 @@ pub const GeoAttr = packed struct {
     tile_iy: usize = 0, //tile id along Y coordinate
     local_ix: usize = 0, //local ix within a tile
     local_iy: usize = 0, //local iy within a tile
+    pub const Record = struct {
+        morton: u64,
+        ix: u32,
+        iy: u32,
+        lat_ud: i32,
+        lon_ud: i32,
+        elev: f32,
+        matc: f32,
+    };
+    const ParsedRecord = struct {
+        record: Record,
+        tile_ix: usize,
+        tile_iy: usize,
+    };
 
     pub fn loadAndWriteBin(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, file_name: []const u8) !void {
         var line = try parser.readNextDataLine(self.reader);
@@ -127,32 +142,124 @@ pub const GeoAttr = packed struct {
         var geo_buf: [max_path_len]u8 = undefined;
         @memcpy(geo_buf[0..tokens.items[0].len], tokens.items[0]);
         const geo_attr_filename: []const u8 = geo_buf[0..tokens.items[0].len];
-        var geo_reader: utils.FileReader = utils.FileReader{};
-        try geo_reader.open(self.err_log, geo_attr_filename);
-        defer geo_reader.close();
-        geo_reader.reader();
-
         try self.writeHeader();
 
-        while (true) {
-            line = try parser.readNextDataLine(geo_reader.buf_reader);
-            if (std.mem.eql(u8, line, "EndOfStream")) break;
-            try tokens.tokenizeLine(line, 4, "geographical attributes", geo_attr_filename, self.err_log);
-            const fields = [_]*i32{ &self.lat_ud, &self.lon_ud };
-            for (tokens.items[0..fields.len], 0..) |tok, i| {
-                const geo_loc_d = try parser.parseTokToFloat(f32, tok, "latitude and longitude", geo_attr_filename, self.err_log);
-                const geo_loc_ud: i32 = @intFromFloat(@round(geo_loc_d * 1e6));
-                fields[i].* = geo_loc_ud;
+        var max_ix: usize = 0;
+        var max_iy: usize = 0;
+        var saw_record = false;
+        {
+            var geo_reader: utils.FileReader = utils.FileReader{};
+            try geo_reader.open(self.err_log, geo_attr_filename);
+            defer geo_reader.close();
+            geo_reader.reader();
+            while (true) {
+                line = try parser.readNextDataLine(geo_reader.buf_reader);
+                if (std.mem.eql(u8, line, "EndOfStream")) break;
+                const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                saw_record = true;
+                max_ix = @max(max_ix, @as(usize, parsed.record.ix));
+                max_iy = @max(max_iy, @as(usize, parsed.record.iy));
             }
-            const fields_elev_mat = [_]*f32{ &self.elevation, &self.matc };
-            for (tokens.items[fields.len .. fields.len + fields_elev_mat.len], 0..) |tok, i| {
-                fields_elev_mat[i].* = try parser.parseTokToFloat(f32, tok, "elevation and MAT", geo_attr_filename, self.err_log);
-            }
-            try self.assignId(lat_lon_rng_n_tile_specs);
-
-            const morton: u64 = @intCast(utils.morton2D(self.ix, self.iy));
-            try self.writeRecord(morton);
         }
+
+        if (saw_record) {
+            self.nx = max_ix + 1;
+            self.ny = max_iy + 1;
+        } else {
+            self.nx = 0;
+            self.ny = 0;
+        }
+
+        const tiles_x: usize = if (saw_record) (@divFloor(max_ix, lat_lon_rng_n_tile_specs.ntx) + 1) else 0;
+        const tiles_y: usize = if (saw_record) (@divFloor(max_iy, lat_lon_rng_n_tile_specs.nty) + 1) else 0;
+        const tile_count = tiles_x * tiles_y;
+        var tile_counts = try self.allocator.alloc(usize, tile_count);
+        defer self.allocator.free(tile_counts);
+        @memset(tile_counts, 0);
+
+        {
+            var geo_reader: utils.FileReader = utils.FileReader{};
+            try geo_reader.open(self.err_log, geo_attr_filename);
+            defer geo_reader.close();
+            geo_reader.reader();
+            while (true) {
+                line = try parser.readNextDataLine(geo_reader.buf_reader);
+                if (std.mem.eql(u8, line, "EndOfStream")) break;
+                const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                const tile_id = parsed.tile_iy * tiles_x + parsed.tile_ix;
+                tile_counts[tile_id] += 1;
+            }
+        }
+
+        var tile_id: usize = 0;
+        while (tile_id < tile_count) : (tile_id += 1) {
+            const count = tile_counts[tile_id];
+            if (count == 0) continue;
+            const tile_ix = tile_id % tiles_x;
+            const tile_iy = tile_id / tiles_x;
+
+            var records = try self.allocator.alloc(Record, count);
+            defer self.allocator.free(records);
+            var filled: usize = 0;
+
+            {
+                var geo_reader: utils.FileReader = utils.FileReader{};
+                try geo_reader.open(self.err_log, geo_attr_filename);
+                defer geo_reader.close();
+                geo_reader.reader();
+                while (true) {
+                    line = try parser.readNextDataLine(geo_reader.buf_reader);
+                    if (std.mem.eql(u8, line, "EndOfStream")) break;
+                    const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                    if (parsed.tile_ix != tile_ix or parsed.tile_iy != tile_iy) continue;
+                    records[filled] = parsed.record;
+                    filled += 1;
+                }
+            }
+
+            if (filled != count) return error.RecordCountMismatch;
+            std.sort.block(Record, records[0..filled], {}, GeoAttr.lessThanMorton);
+            for (records[0..filled]) |record| {
+                try self.writeRecord(record);
+            }
+        }
+
+        return;
+    }
+    fn parseRecord(self: *GeoAttr, line: []const u8, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, geo_attr_filename: []const u8) !ParsedRecord {
+        var tokens = parser.Tokens{};
+        try tokens.tokenizeLine(line, 4, "geographical attributes", geo_attr_filename, self.err_log);
+        const fields = [_]*i32{ &self.lat_ud, &self.lon_ud };
+        for (tokens.items[0..fields.len], 0..) |tok, i| {
+            const geo_loc_d = try parser.parseTokToFloat(f32, tok, "latitude and longitude", geo_attr_filename, self.err_log);
+            const geo_loc_ud: i32 = @intFromFloat(@round(geo_loc_d * 1e6));
+            fields[i].* = geo_loc_ud;
+        }
+        const fields_elev_mat = [_]*f32{ &self.elevation, &self.matc };
+        for (tokens.items[fields.len .. fields.len + fields_elev_mat.len], 0..) |tok, i| {
+            fields_elev_mat[i].* = try parser.parseTokToFloat(f32, tok, "elevation and MAT", geo_attr_filename, self.err_log);
+        }
+
+        const ix = utils.toXY(self.lon_ud, lat_lon_rng_n_tile_specs.lon_min_ud, lat_lon_rng_n_tile_specs.dlon_ud);
+        const iy = utils.toXY(self.lat_ud, lat_lon_rng_n_tile_specs.lat_min_ud, lat_lon_rng_n_tile_specs.dlat_ud);
+        const tile_ix = @divFloor(ix, lat_lon_rng_n_tile_specs.ntx);
+        const tile_iy = @divFloor(iy, lat_lon_rng_n_tile_specs.nty);
+
+        const record = Record{
+            .morton = @intCast(utils.morton2D(ix, iy)),
+            .ix = @as(u32, @intCast(ix)),
+            .iy = @as(u32, @intCast(iy)),
+            .lat_ud = self.lat_ud,
+            .lon_ud = self.lon_ud,
+            .elev = self.elevation,
+            .matc = self.matc,
+        };
+
+        return ParsedRecord{
+            .record = record,
+            .tile_ix = tile_ix,
+            .tile_iy = tile_iy,
+        };
     }
     fn assignId(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs) !void {
         self.ix_old = self.ix;
@@ -174,19 +281,22 @@ pub const GeoAttr = packed struct {
         std.mem.writeInt(T, &buf, value, .little);
         try self.bin_writer.writeAll(&buf);
     }
-    fn writeRecord(self: *GeoAttr, morton: u64) !void {
-        try self.writeIntLittle(u64, morton);
-        try self.writeIntLittle(u32, @as(u32, @intCast(self.ix)));
-        try self.writeIntLittle(u32, @as(u32, @intCast(self.iy)));
-        try self.writeIntLittle(i32, self.lat_ud);
-        try self.writeIntLittle(i32, self.lon_ud);
-        try self.writeIntLittle(u32, @as(u32, @bitCast(self.elevation)));
-        try self.writeIntLittle(u32, @as(u32, @bitCast(self.matc)));
+    fn writeRecord(self: *GeoAttr, record: Record) !void {
+        try self.writeIntLittle(u64, record.morton);
+        try self.writeIntLittle(u32, record.ix);
+        try self.writeIntLittle(u32, record.iy);
+        try self.writeIntLittle(i32, record.lat_ud);
+        try self.writeIntLittle(i32, record.lon_ud);
+        try self.writeIntLittle(u32, @as(u32, @bitCast(record.elev)));
+        try self.writeIntLittle(u32, @as(u32, @bitCast(record.matc)));
+    }
+    fn lessThanMorton(_: void, a: Record, b: Record) bool {
+        return a.morton < b.morton;
     }
 };
 
 pub const GeoAttrBinData = struct {
-    arena: std.heap.ArenaAllocator = undefined,
+    allocator: std.mem.Allocator = undefined,
     err_log: *std.Io.Writer = undefined,
     lat_ud: []i32 = undefined,
     lon_ud: []i32 = undefined,
@@ -194,20 +304,16 @@ pub const GeoAttrBinData = struct {
     matc: []f32 = undefined,
 
     pub fn deinit(self: *GeoAttrBinData) void {
-        self.arena.deinit();
+        _ = self;
     }
 
     pub fn readBinToArraysWithArena(self: *GeoAttrBinData, geo_attr: *const GeoAttr, bin_path: []const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        errdefer arena.deinit();
-        const allocator = arena.allocator();
-
         const n = geo_attr.nx * geo_attr.ny;
 
-        self.lat_ud = try allocator.alloc(i32, n);
-        self.lon_ud = try allocator.alloc(i32, n);
-        self.elev = try allocator.alloc(f32, n);
-        self.matc = try allocator.alloc(f32, n);
+        self.lat_ud = try self.allocator.alloc(i32, n);
+        self.lon_ud = try self.allocator.alloc(i32, n);
+        self.elev = try self.allocator.alloc(f32, n);
+        self.matc = try self.allocator.alloc(f32, n);
 
         const lat_sentinel = std.math.minInt(i32);
         const lon_sentinel = std.math.minInt(i32);
@@ -234,20 +340,310 @@ pub const GeoAttrBinData = struct {
         if (version != 1 or flags != 1) return error.BadHeader;
         var rec_buf: [32]u8 = undefined;
         while (true) {
-            try bin_reader.buf_reader.readSliceAll(&rec_buf);
-            const mortonId = std.mem.readInt(u64, rec_buf[0..8], .little);
-            const ix = std.mem.readInt(i32, rec_buf[8..12], .little);
-            const iy = std.mem.readInt(i32, rec_buf[12..16], .little);
+            bin_reader.buf_reader.readSliceAll(&rec_buf) catch |err| {
+                if (err == error.EndOfStream) break;
+                return err;
+            };
+            const ix = std.mem.readInt(u32, rec_buf[8..12], .little);
+            const iy = std.mem.readInt(u32, rec_buf[12..16], .little);
             const lat_ud_ = std.mem.readInt(i32, rec_buf[16..20], .little);
             const lon_ud_ = std.mem.readInt(i32, rec_buf[20..24], .little);
             const elev_bits = std.mem.readInt(u32, rec_buf[24..28], .little);
             const mat_bits = std.mem.readInt(u32, rec_buf[28..32], .little);
-            std.debug.print("test bin record -> morton Id: {d}, lat_ud[{d}, {d}]: {d}, lon_ud[{d}, {d}]: {d}, elev[{d}, {d}]: {d}, matc[{d}, {d}]: {d}\n", .{ mortonId, ix, iy, lat_ud_, ix, iy, lon_ud_, ix, iy, @as(f32, @bitCast(elev_bits)), ix, iy, @as(f32, @bitCast(mat_bits)) });
-            // const flat_id = geo_attr.ix + geo_attr.iy * geo_attr.nx;
-            // self.lat_ud[flat_id] = lat_ud_;
-            // self.lon_ud[flat_id] = lon_ud_;
-            // self.elev[flat_id] = @as(f32, @bitCast(elev_bits));
-            // self.matc[flat_id] = @as(f32, @bitCast(mat_bits));
+            const flat_id: usize = @as(usize, ix) + @as(usize, iy) * geo_attr.nx;
+            if (flat_id >= n) return error.OutOfBounds;
+            self.lat_ud[flat_id] = lat_ud_;
+            self.lon_ud[flat_id] = lon_ud_;
+            self.elev[flat_id] = @as(f32, @bitCast(elev_bits));
+            self.matc[flat_id] = @as(f32, @bitCast(mat_bits));
+        }
+    }
+
+    pub const TileHandler = *const fn (tile_ix: usize, tile_iy: usize, records: []const GeoAttr.Record) anyerror!void;
+
+    pub const TileBatch = struct {
+        tile_ix: usize,
+        tile_iy: usize,
+        records: []const GeoAttr.Record,
+    };
+
+    pub const TileReader = struct {
+        allocator: std.mem.Allocator,
+        err_log: *std.Io.Writer,
+        lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
+        bin_reader: utils.FileReader,
+        records: std.ArrayList(GeoAttr.Record),
+        has_pending: bool = false,
+        pending_record: GeoAttr.Record = undefined,
+        pending_tile_ix: usize = 0,
+        pending_tile_iy: usize = 0,
+        eof: bool = false,
+
+        pub fn init(
+            allocator: std.mem.Allocator,
+            err_log: *std.Io.Writer,
+            lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
+            bin_path: []const u8,
+        ) !TileReader {
+            var bin_reader: utils.FileReader = utils.FileReader{};
+            try bin_reader.open(err_log, bin_path);
+            bin_reader.reader();
+            var buf_header: [12]u8 = undefined;
+            try bin_reader.buf_reader.readSliceAll(&buf_header);
+            if (!std.mem.eql(u8, buf_header[0..8], "geo_attr")) return error.BadHeader;
+            const version = std.mem.readInt(u16, buf_header[8..10], .little);
+            const flags = std.mem.readInt(u16, buf_header[10..12], .little);
+            if (version != 1 or flags != 1) return error.BadHeader;
+
+            return TileReader{
+                .allocator = allocator,
+                .err_log = err_log,
+                .lat_lon_rng_n_tile_specs = lat_lon_rng_n_tile_specs,
+                .bin_reader = bin_reader,
+                .records = try std.ArrayList(GeoAttr.Record).initCapacity(allocator, 0),
+            };
+        }
+
+        pub fn deinit(self: *TileReader) void {
+            self.records.deinit(self.allocator);
+            self.bin_reader.close();
+        }
+
+        fn readNextRecord(self: *TileReader) !?GeoAttr.Record {
+            var rec_buf: [32]u8 = undefined;
+            self.bin_reader.buf_reader.readSliceAll(&rec_buf) catch |err| {
+                if (err == error.EndOfStream) return null;
+                return err;
+            };
+
+            return GeoAttr.Record{
+                .morton = std.mem.readInt(u64, rec_buf[0..8], .little),
+                .ix = std.mem.readInt(u32, rec_buf[8..12], .little),
+                .iy = std.mem.readInt(u32, rec_buf[12..16], .little),
+                .lat_ud = std.mem.readInt(i32, rec_buf[16..20], .little),
+                .lon_ud = std.mem.readInt(i32, rec_buf[20..24], .little),
+                .elev = @as(f32, @bitCast(std.mem.readInt(u32, rec_buf[24..28], .little))),
+                .matc = @as(f32, @bitCast(std.mem.readInt(u32, rec_buf[28..32], .little))),
+            };
+        }
+
+        pub fn next(self: *TileReader) !?TileBatch {
+            if (self.eof and !self.has_pending) return null;
+
+            self.records.clearRetainingCapacity();
+
+            var current_tile_ix: usize = 0;
+            var current_tile_iy: usize = 0;
+            if (self.has_pending) {
+                current_tile_ix = self.pending_tile_ix;
+                current_tile_iy = self.pending_tile_iy;
+                try self.records.append(self.allocator, self.pending_record);
+                self.has_pending = false;
+            } else {
+                const rec_opt = try self.readNextRecord();
+                if (rec_opt == null) {
+                    self.eof = true;
+                    return null;
+                }
+                const rec = rec_opt.?;
+                current_tile_ix = @divFloor(@as(usize, rec.ix), self.lat_lon_rng_n_tile_specs.ntx);
+                current_tile_iy = @divFloor(@as(usize, rec.iy), self.lat_lon_rng_n_tile_specs.nty);
+                try self.records.append(self.allocator, rec);
+            }
+
+            while (true) {
+                const rec_opt = try self.readNextRecord();
+                if (rec_opt == null) {
+                    self.eof = true;
+                    break;
+                }
+                const rec = rec_opt.?;
+                const tile_ix = @divFloor(@as(usize, rec.ix), self.lat_lon_rng_n_tile_specs.ntx);
+                const tile_iy = @divFloor(@as(usize, rec.iy), self.lat_lon_rng_n_tile_specs.nty);
+                if (tile_ix != current_tile_ix or tile_iy != current_tile_iy) {
+                    self.has_pending = true;
+                    self.pending_record = rec;
+                    self.pending_tile_ix = tile_ix;
+                    self.pending_tile_iy = tile_iy;
+                    break;
+                }
+                try self.records.append(self.allocator, rec);
+            }
+
+            return TileBatch{
+                .tile_ix = current_tile_ix,
+                .tile_iy = current_tile_iy,
+                .records = self.records.items,
+            };
+        }
+    };
+
+    pub fn readBinByTile(
+        self: *GeoAttrBinData,
+        lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
+        bin_path: []const u8,
+        handler: TileHandler,
+    ) !void {
+        var bin_reader: utils.FileReader = utils.FileReader{};
+        try bin_reader.open(self.err_log, bin_path);
+        defer bin_reader.close();
+        bin_reader.reader();
+        var buf_header: [12]u8 = undefined;
+        try bin_reader.buf_reader.readSliceAll(&buf_header);
+
+        if (!std.mem.eql(u8, buf_header[0..8], "geo_attr")) return error.BadHeader;
+        const version = std.mem.readInt(u16, buf_header[8..10], .little);
+        const flags = std.mem.readInt(u16, buf_header[10..12], .little);
+        if (version != 1 or flags != 1) return error.BadHeader;
+
+        var records = try std.ArrayList(GeoAttr.Record).initCapacity(self.allocator, 0);
+        defer records.deinit(self.allocator);
+
+        var rec_buf: [32]u8 = undefined;
+        var has_tile = false;
+        var current_tile_ix: usize = 0;
+        var current_tile_iy: usize = 0;
+
+        while (true) {
+            bin_reader.buf_reader.readSliceAll(&rec_buf) catch |err| {
+                if (err == error.EndOfStream) break;
+                return err;
+            };
+
+            const morton = std.mem.readInt(u64, rec_buf[0..8], .little);
+            const ix_u32 = std.mem.readInt(u32, rec_buf[8..12], .little);
+            const iy_u32 = std.mem.readInt(u32, rec_buf[12..16], .little);
+            const lat_ud_ = std.mem.readInt(i32, rec_buf[16..20], .little);
+            const lon_ud_ = std.mem.readInt(i32, rec_buf[20..24], .little);
+            const elev_bits = std.mem.readInt(u32, rec_buf[24..28], .little);
+            const mat_bits = std.mem.readInt(u32, rec_buf[28..32], .little);
+
+            const ix = @as(usize, ix_u32);
+            const iy = @as(usize, iy_u32);
+            const tile_ix = @divFloor(ix, lat_lon_rng_n_tile_specs.ntx);
+            const tile_iy = @divFloor(iy, lat_lon_rng_n_tile_specs.nty);
+
+            if (!has_tile) {
+                has_tile = true;
+                current_tile_ix = tile_ix;
+                current_tile_iy = tile_iy;
+            } else if (tile_ix != current_tile_ix or tile_iy != current_tile_iy) {
+                try handler(current_tile_ix, current_tile_iy, records.items);
+                records.clearRetainingCapacity();
+                current_tile_ix = tile_ix;
+                current_tile_iy = tile_iy;
+            }
+
+            try records.append(self.allocator, GeoAttr.Record{
+                .morton = morton,
+                .ix = ix_u32,
+                .iy = iy_u32,
+                .lat_ud = lat_ud_,
+                .lon_ud = lon_ud_,
+                .elev = @as(f32, @bitCast(elev_bits)),
+                .matc = @as(f32, @bitCast(mat_bits)),
+            });
+        }
+
+        if (has_tile) {
+            try handler(current_tile_ix, current_tile_iy, records.items);
+        }
+    }
+
+    pub fn readBinByTileAndFillArrays(
+        self: *GeoAttrBinData,
+        geo_attr: *const GeoAttr,
+        lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
+        bin_path: []const u8,
+        handler: TileHandler,
+    ) !void {
+        const n = geo_attr.nx * geo_attr.ny;
+        self.lat_ud = try self.allocator.alloc(i32, n);
+        self.lon_ud = try self.allocator.alloc(i32, n);
+        self.elev = try self.allocator.alloc(f32, n);
+        self.matc = try self.allocator.alloc(f32, n);
+
+        const lat_sentinel = std.math.minInt(i32);
+        const lon_sentinel = std.math.minInt(i32);
+        const elev_nan = std.math.nan(f32);
+        const mat_nan = std.math.nan(f32);
+        for (self.lat_ud, self.lon_ud, self.elev, self.matc) |*lat_p, *lon_p, *elev_p, *mat_p| {
+            lat_p.* = lat_sentinel;
+            lon_p.* = lon_sentinel;
+            elev_p.* = elev_nan;
+            mat_p.* = mat_nan;
+        }
+
+        var bin_reader: utils.FileReader = utils.FileReader{};
+        try bin_reader.open(self.err_log, bin_path);
+        defer bin_reader.close();
+        bin_reader.reader();
+        var buf_header: [12]u8 = undefined;
+        try bin_reader.buf_reader.readSliceAll(&buf_header);
+
+        if (!std.mem.eql(u8, buf_header[0..8], "geo_attr")) return error.BadHeader;
+        const version = std.mem.readInt(u16, buf_header[8..10], .little);
+        const flags = std.mem.readInt(u16, buf_header[10..12], .little);
+        if (version != 1 or flags != 1) return error.BadHeader;
+
+        var records = try std.ArrayList(GeoAttr.Record).initCapacity(self.allocator, 0);
+        defer records.deinit(self.allocator);
+
+        var rec_buf: [32]u8 = undefined;
+        var has_tile = false;
+        var current_tile_ix: usize = 0;
+        var current_tile_iy: usize = 0;
+
+        while (true) {
+            bin_reader.buf_reader.readSliceAll(&rec_buf) catch |err| {
+                if (err == error.EndOfStream) break;
+                return err;
+            };
+
+            const morton = std.mem.readInt(u64, rec_buf[0..8], .little);
+            const ix_u32 = std.mem.readInt(u32, rec_buf[8..12], .little);
+            const iy_u32 = std.mem.readInt(u32, rec_buf[12..16], .little);
+            const lat_ud_ = std.mem.readInt(i32, rec_buf[16..20], .little);
+            const lon_ud_ = std.mem.readInt(i32, rec_buf[20..24], .little);
+            const elev_bits = std.mem.readInt(u32, rec_buf[24..28], .little);
+            const mat_bits = std.mem.readInt(u32, rec_buf[28..32], .little);
+
+            const ix = @as(usize, ix_u32);
+            const iy = @as(usize, iy_u32);
+            const tile_ix = @divFloor(ix, lat_lon_rng_n_tile_specs.ntx);
+            const tile_iy = @divFloor(iy, lat_lon_rng_n_tile_specs.nty);
+
+            const flat_id: usize = ix + iy * geo_attr.nx;
+            if (flat_id >= n) return error.OutOfBounds;
+            self.lat_ud[flat_id] = lat_ud_;
+            self.lon_ud[flat_id] = lon_ud_;
+            self.elev[flat_id] = @as(f32, @bitCast(elev_bits));
+            self.matc[flat_id] = @as(f32, @bitCast(mat_bits));
+
+            if (!has_tile) {
+                has_tile = true;
+                current_tile_ix = tile_ix;
+                current_tile_iy = tile_iy;
+            } else if (tile_ix != current_tile_ix or tile_iy != current_tile_iy) {
+                try handler(current_tile_ix, current_tile_iy, records.items);
+                records.clearRetainingCapacity();
+                current_tile_ix = tile_ix;
+                current_tile_iy = tile_iy;
+            }
+
+            try records.append(self.allocator, GeoAttr.Record{
+                .morton = morton,
+                .ix = ix_u32,
+                .iy = iy_u32,
+                .lat_ud = lat_ud_,
+                .lon_ud = lon_ud_,
+                .elev = @as(f32, @bitCast(elev_bits)),
+                .matc = @as(f32, @bitCast(mat_bits)),
+            });
+        }
+
+        if (has_tile) {
+            try handler(current_tile_ix, current_tile_iy, records.items);
         }
     }
 };
