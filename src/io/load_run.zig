@@ -46,7 +46,7 @@ pub const LoadRun = struct {
             const batch_opt = try tile_reader.next();
             if (batch_opt == null) break;
             const batch = batch_opt.?;
-            std.debug.print("tile ({d}, {d}) count={d}\n", .{ batch.tile_ix, batch.tile_iy, batch.records.len });
+            std.debug.print("tile ({d}, {d}) count={d}, elevation: {d}\n", .{ batch.tile_ix, batch.tile_iy, batch.records.len, geo_attr_bin_data.elev[2] });
         }
         std.debug.print("test tilespec print: lat_max_ud: {d}, simulation start year: {d}, lat: {d}, lon: {d}, elev: {d}, mat: {d}, ix: {d}, iy: {d}, nx: {d}, ny: {d}\n", .{ lat_lon_rng_n_tile_specs.lat_max_ud, sim_init.start_yr, geo_attributes.lat_ud, geo_attributes.lon_ud, geo_attributes.elevation, geo_attributes.matc, geo_attributes.ix, geo_attributes.iy, geo_attributes.nx, geo_attributes.ny });
     }
