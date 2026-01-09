@@ -171,7 +171,6 @@ pub const GeoAttr = struct {
         const tiles_y: usize = if (saw_record) (@divFloor(max_iy, lat_lon_rng_n_tile_specs.nty) + 1) else 0;
         const tile_count = tiles_x * tiles_y;
         var tile_counts = try self.allocator.alloc(usize, tile_count);
-        defer self.allocator.free(tile_counts);
         @memset(tile_counts, 0);
 
         {
@@ -196,7 +195,6 @@ pub const GeoAttr = struct {
             const tile_iy = tile_id / tiles_x;
 
             var records = try self.allocator.alloc(Record, count);
-            defer self.allocator.free(records);
             var filled: usize = 0;
 
             {
@@ -290,18 +288,7 @@ pub const GeoAttrBinData = struct {
     elev: []f32 = undefined,
     matc: []f32 = undefined,
 
-    pub const TileArrayHandler = *const fn (
-        tile_ix: usize,
-        tile_iy: usize,
-        tile_nx: usize,
-        tile_ny: usize,
-        halo_stride: usize,
-        tile_lat_ud: []const i32,
-        tile_lon_ud: []const i32,
-        tile_elev: []const f32,
-        tile_matc: []const f32,
-        records: []const GeoAttr.Record
-    ) anyerror!void;
+    pub const TileArrayHandler = *const fn (tile_ix: usize, tile_iy: usize, tile_nx: usize, tile_ny: usize, halo_stride: usize, tile_lat_ud: []const i32, tile_lon_ud: []const i32, tile_elev: []const f32, tile_matc: []const f32, records: []const GeoAttr.Record) anyerror!void;
 
     pub const TileBatch = struct {
         tile_ix: usize,
@@ -321,12 +308,7 @@ pub const GeoAttrBinData = struct {
         pending_tile_iy: usize = 0,
         eof: bool = false,
 
-        pub fn init(
-            allocator: std.mem.Allocator,
-            err_log: *std.Io.Writer,
-            lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
-            bin_path: []const u8
-        ) !TileReader {
+        pub fn init(allocator: std.mem.Allocator, err_log: *std.Io.Writer, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, bin_path: []const u8) !TileReader {
             var bin_reader: utils.FileReader = utils.FileReader{};
             try bin_reader.open(err_log, bin_path);
             bin_reader.reader();
@@ -460,21 +442,13 @@ pub const GeoAttrBinData = struct {
             };
             const row_size = tiles_x * row.tile_size;
             row.lat_ud = try allocator.alloc(i32, row_size);
-            errdefer allocator.free(row.lat_ud);
             row.lon_ud = try allocator.alloc(i32, row_size);
-            errdefer allocator.free(row.lon_ud);
             row.elev = try allocator.alloc(f32, row_size);
-            errdefer allocator.free(row.elev);
             row.matc = try allocator.alloc(f32, row_size);
-            errdefer allocator.free(row.matc);
             row.tile_nx = try allocator.alloc(usize, tiles_x);
-            errdefer allocator.free(row.tile_nx);
             row.tile_ny = try allocator.alloc(usize, tiles_x);
-            errdefer allocator.free(row.tile_ny);
             row.present = try allocator.alloc(bool, tiles_x);
-            errdefer allocator.free(row.present);
             row.tile_records = try allocator.alloc(TileRange, tiles_x);
-            errdefer allocator.free(row.tile_records);
             row.records = try std.ArrayList(GeoAttr.Record).initCapacity(allocator, 0);
             return row;
         }
@@ -500,16 +474,7 @@ pub const GeoAttrBinData = struct {
             return tile_ix * self.tile_size;
         }
 
-        fn clearTileArrays(
-            lat_buf: []i32,
-            lon_buf: []i32,
-            elev_buf: []f32,
-            mat_buf: []f32,
-            lat_sentinel: i32,
-            lon_sentinel: i32,
-            elev_nan: f32,
-            mat_nan: f32
-        ) void {
+        fn clearTileArrays(lat_buf: []i32, lon_buf: []i32, elev_buf: []f32, mat_buf: []f32, lat_sentinel: i32, lon_sentinel: i32, elev_nan: f32, mat_nan: f32) void {
             for (lat_buf, lon_buf, elev_buf, mat_buf) |*lat_p, *lon_p, *elev_p, *mat_p| {
                 lat_p.* = lat_sentinel;
                 lon_p.* = lon_sentinel;
@@ -518,16 +483,7 @@ pub const GeoAttrBinData = struct {
             }
         }
 
-        fn beginTile(
-            self: *RowBuffer,
-            tile_ix: usize,
-            tile_nx: usize,
-            tile_ny: usize,
-            lat_sentinel: i32,
-            lon_sentinel: i32,
-            elev_nan: f32,
-            mat_nan: f32
-        ) void {
+        fn beginTile(self: *RowBuffer, tile_ix: usize, tile_nx: usize, tile_ny: usize, lat_sentinel: i32, lon_sentinel: i32, elev_nan: f32, mat_nan: f32) void {
             self.present[tile_ix] = true;
             self.tile_nx[tile_ix] = tile_nx;
             self.tile_ny[tile_ix] = tile_ny;
@@ -537,16 +493,7 @@ pub const GeoAttrBinData = struct {
             };
             const base = self.tileBase(tile_ix);
             const tile_end = base + self.tile_size;
-            RowBuffer.clearTileArrays(
-                self.lat_ud[base..tile_end],
-                self.lon_ud[base..tile_end],
-                self.elev[base..tile_end],
-                self.matc[base..tile_end],
-                lat_sentinel,
-                lon_sentinel,
-                elev_nan,
-                mat_nan
-            );
+            RowBuffer.clearTileArrays(self.lat_ud[base..tile_end], self.lon_ud[base..tile_end], self.elev[base..tile_end], self.matc[base..tile_end], lat_sentinel, lon_sentinel, elev_nan, mat_nan);
         }
 
         fn endTile(self: *RowBuffer, tile_ix: usize) void {
@@ -555,13 +502,7 @@ pub const GeoAttrBinData = struct {
         }
     };
 
-    pub fn readBinByTileAndFillArrays(
-        self: *GeoAttrBinData,
-        geo_attr: *const GeoAttr,
-        lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs,
-        bin_path: []const u8,
-        handler: TileArrayHandler
-    ) !void {
+    pub fn readBinByTileAndFillArrays(self: *GeoAttrBinData, geo_attr: *const GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, bin_path: []const u8, handler: TileArrayHandler) !void {
         const tile_stride = lat_lon_rng_n_tile_specs.ntx;
         const tile_height = lat_lon_rng_n_tile_specs.nty;
         const tile_size = tile_stride * tile_height;
@@ -593,16 +534,7 @@ pub const GeoAttrBinData = struct {
         row_next.reset();
 
         const Helpers = struct {
-            fn clearHalo(
-                lat_buf: []i32,
-                lon_buf: []i32,
-                elev_buf: []f32,
-                mat_buf: []f32,
-                halo_lat_sentinel: i32,
-                halo_lon_sentinel: i32,
-                halo_elev_nan: f32,
-                halo_mat_nan: f32
-            ) void {
+            fn clearHalo(lat_buf: []i32, lon_buf: []i32, elev_buf: []f32, mat_buf: []f32, halo_lat_sentinel: i32, halo_lon_sentinel: i32, halo_elev_nan: f32, halo_mat_nan: f32) void {
                 for (lat_buf, lon_buf, elev_buf, mat_buf) |*lat_p, *lon_p, *elev_p, *mat_p| {
                     lat_p.* = halo_lat_sentinel;
                     lon_p.* = halo_lon_sentinel;
@@ -611,24 +543,7 @@ pub const GeoAttrBinData = struct {
                 }
             }
 
-            fn processRow(
-                handler_cb: TileArrayHandler,
-                tile_stride_local: usize,
-                halo_stride_local: usize,
-                tiles_x_count: usize,
-                halo_lat_sentinel: i32,
-                halo_lon_sentinel: i32,
-                halo_elev_nan: f32,
-                halo_mat_nan: f32,
-                row_prev_buf: ?*RowBuffer,
-                row_curr_buf: *RowBuffer,
-                row_next_buf: ?*RowBuffer,
-                row_curr_iy: usize,
-                halo_lat: []i32,
-                halo_lon: []i32,
-                halo_elev: []f32,
-                halo_mat: []f32
-            ) !void {
+            fn processRow(handler_cb: TileArrayHandler, tile_stride_local: usize, halo_stride_local: usize, tiles_x_count: usize, halo_lat_sentinel: i32, halo_lon_sentinel: i32, halo_elev_nan: f32, halo_mat_nan: f32, row_prev_buf: ?*RowBuffer, row_curr_buf: *RowBuffer, row_next_buf: ?*RowBuffer, row_curr_iy: usize, halo_lat: []i32, halo_lon: []i32, halo_elev: []f32, halo_mat: []f32) !void {
                 var tile_ix: usize = 0;
                 while (tile_ix < tiles_x_count) : (tile_ix += 1) {
                     if (!row_curr_buf.present[tile_ix]) continue;
@@ -724,18 +639,7 @@ pub const GeoAttrBinData = struct {
 
                     const range = row_curr_buf.tile_records[tile_ix];
                     const records_slice = row_curr_buf.records.items[range.start .. range.start + range.len];
-                    try handler_cb(
-                        tile_ix,
-                        row_curr_iy,
-                        tile_nx,
-                        tile_ny,
-                        halo_stride_local,
-                        halo_lat,
-                        halo_lon,
-                        halo_elev,
-                        halo_mat,
-                        records_slice
-                    );
+                    try handler_cb(tile_ix, row_curr_iy, tile_nx, tile_ny, halo_stride_local, halo_lat, halo_lon, halo_elev, halo_mat, records_slice);
                 }
             }
         };
@@ -804,24 +708,7 @@ pub const GeoAttrBinData = struct {
                         row_next_iy = null;
                         row_next.reset();
                     } else {
-                        try Helpers.processRow(
-                            handler,
-                            tile_stride,
-                            halo_stride,
-                            tiles_x,
-                            lat_sentinel,
-                            lon_sentinel,
-                            elev_nan,
-                            mat_nan,
-                            if (row_prev_iy != null) &row_prev else null,
-                            &row_curr,
-                            &row_next,
-                            row_curr_iy.?,
-                            self.lat_ud,
-                            self.lon_ud,
-                            self.elev,
-                            self.matc
-                        );
+                        try Helpers.processRow(handler, tile_stride, halo_stride, tiles_x, lat_sentinel, lon_sentinel, elev_nan, mat_nan, if (row_prev_iy != null) &row_prev else null, &row_curr, &row_next, row_curr_iy.?, self.lat_ud, self.lon_ud, self.elev, self.matc);
 
                         const tmp = row_prev;
                         row_prev = row_curr;
@@ -882,24 +769,7 @@ pub const GeoAttrBinData = struct {
                 row_next_iy = null;
                 row_next.reset();
             } else {
-                try Helpers.processRow(
-                    handler,
-                    tile_stride,
-                    halo_stride,
-                    tiles_x,
-                    lat_sentinel,
-                    lon_sentinel,
-                    elev_nan,
-                    mat_nan,
-                    if (row_prev_iy != null) &row_prev else null,
-                    &row_curr,
-                    &row_next,
-                    row_curr_iy.?,
-                    self.lat_ud,
-                    self.lon_ud,
-                    self.elev,
-                    self.matc
-                );
+                try Helpers.processRow(handler, tile_stride, halo_stride, tiles_x, lat_sentinel, lon_sentinel, elev_nan, mat_nan, if (row_prev_iy != null) &row_prev else null, &row_curr, &row_next, row_curr_iy.?, self.lat_ud, self.lon_ud, self.elev, self.matc);
 
                 const tmp = row_prev;
                 row_prev = row_curr;
@@ -913,24 +783,7 @@ pub const GeoAttrBinData = struct {
         }
 
         if (row_curr_iy) |iy| {
-            try Helpers.processRow(
-                handler,
-                tile_stride,
-                halo_stride,
-                tiles_x,
-                lat_sentinel,
-                lon_sentinel,
-                elev_nan,
-                mat_nan,
-                if (row_prev_iy != null) &row_prev else null,
-                &row_curr,
-                null,
-                iy,
-                self.lat_ud,
-                self.lon_ud,
-                self.elev,
-                self.matc
-            );
+            try Helpers.processRow(handler, tile_stride, halo_stride, tiles_x, lat_sentinel, lon_sentinel, elev_nan, mat_nan, if (row_prev_iy != null) &row_prev else null, &row_curr, null, iy, self.lat_ud, self.lon_ud, self.elev, self.matc);
         }
     }
 };

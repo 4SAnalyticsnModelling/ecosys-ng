@@ -15,9 +15,11 @@ irrig_files # irrigation mgmt file paths
 plant_files # plant functional type file paths
 plant_mgmt_files # plant mgmt file paths
 output_files # output file paths
-site_maps # file contains mapping of geo_attr to site files
+site_maps # file contains mapping of geo_attr to site and soil files
 # number of model scenarios and how many times each scenario repeats
-6,10
+1,2
+# number of model scenes in each scenario and how many times each scene repeats
+6,5
 # simulation start date, end date in DDMM format
 0101,3112
 input_maps_01 # all input file paths and ids
