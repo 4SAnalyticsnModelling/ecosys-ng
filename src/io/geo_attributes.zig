@@ -4,6 +4,7 @@ const parser = @import("input_parser");
 const max_path_len = 1024;
 ///Lat-lon ranges and tile specifications
 pub const LatLonRangeAndTileSpecs = struct {
+    file_name: []const u8,
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     lat_min_ud: i32 = undefined, //minimum latitude of the domain rounded to the nearest micro degree
@@ -15,25 +16,25 @@ pub const LatLonRangeAndTileSpecs = struct {
     ntx: usize = undefined, //number of west-east grids in a tile
     nty: usize = undefined, //number of north-south grids in a tile
 
-    pub fn load(self: *LatLonRangeAndTileSpecs, file_name: []const u8) !void {
+    pub fn load(self: *LatLonRangeAndTileSpecs) !void {
         var line = try parser.readNextDataLine(self.reader);
         var tokens = parser.Tokens{};
-        try tokens.tokenizeLine(line, 6, "domain lat-lon range, and lat-lon spacing", file_name, self.err_log);
+        try tokens.tokenizeLine(line, 6, "domain lat-lon range, and lat-lon spacing", self.file_name, self.err_log);
         const fields = [_]*i32{ &self.lat_min_ud, &self.lat_max_ud, &self.lon_min_ud, &self.lon_max_ud, &self.dlat_ud, &self.dlon_ud };
         for (tokens.items[0..fields.len], 0..) |tok, i| {
-            const geo_loc_d = try parser.parseTokToFloat(f32, tok, "domain lat-lon range", file_name, self.err_log);
+            const geo_loc_d = try parser.parseTokToFloat(f32, tok, "domain lat-lon range", self.file_name, self.err_log);
             const geo_loc_ud: i32 = @intFromFloat(@round(geo_loc_d * 1e6));
             fields[i].* = geo_loc_ud;
         }
         line = try parser.readNextDataLine(self.reader);
-        try tokens.tokenizeLine(line, 2, "tile specifications", file_name, self.err_log);
+        try tokens.tokenizeLine(line, 2, "tile specifications", self.file_name, self.err_log);
         const fields_tile = [_]*usize{ &self.ntx, &self.nty };
         for (tokens.items[0..fields_tile.len], 0..) |tok, i| {
-            fields_tile[i].* = try parser.parseTokToInt(usize, tok, "tile specifications", file_name, self.err_log);
+            fields_tile[i].* = try parser.parseTokToInt(usize, tok, "tile specifications", self.file_name, self.err_log);
             //check if tile specifications are valid: power-of-two
             try utils.requirePowerOfTwo(fields_tile[i].*);
         }
-        try parser.boundsCheck(error.TileSizeTooBig, .{self.ntx > 65536 or self.nty > 65536}, "tile specifications", file_name, self.err_log);
+        try parser.boundsCheck(error.TileSizeTooBig, .{self.ntx > 65536 or self.nty > 65536}, "tile specifications", self.file_name, self.err_log);
     }
 };
 test "LatLonRangeAndTileSpecs.load parses ranges and tile specs" {
@@ -46,11 +47,12 @@ test "LatLonRangeAndTileSpecs.load parses ranges and tile specs" {
     var err_log = std.Io.Writer.fixed(&err_buf);
 
     var specs = LatLonRangeAndTileSpecs{
+        .file_name = "test_input",
         .reader = &input_reader,
         .err_log = &err_log,
     };
 
-    try specs.load("test-input");
+    try specs.load();
 
     try std.testing.expectEqual(@as(i32, 10_500_000), specs.lat_min_ud);
     try std.testing.expectEqual(@as(i32, 12_250_000), specs.lat_max_ud);
@@ -63,20 +65,21 @@ test "LatLonRangeAndTileSpecs.load parses ranges and tile specs" {
 }
 ///Simulation start year and initialization
 pub const SimInit = struct {
+    file_name: []const u8,
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     start_yr: usize = undefined, //simulation start year
     sim_from_prev_run: usize = undefined, //does simulation start from a previous run? 0=no, 1=yes
 
-    pub fn load(self: *SimInit, file_name: []const u8) !void {
+    pub fn load(self: *SimInit) !void {
         const line = try parser.readNextDataLine(self.reader);
         var tokens = parser.Tokens{};
-        try tokens.tokenizeLine(line, 2, "simulation start year", file_name, self.err_log);
+        try tokens.tokenizeLine(line, 2, "simulation start year", self.file_name, self.err_log);
         const fields = [_]*usize{ &self.start_yr, &self.sim_from_prev_run };
         for (tokens.items[0..fields.len], 0..) |tok, i| {
-            fields[i].* = try parser.parseTokToInt(usize, tok, "simulation start year", file_name, self.err_log);
+            fields[i].* = try parser.parseTokToInt(usize, tok, "simulation start year", self.file_name, self.err_log);
         }
-        try parser.boundsCheck(error.OutOfBounds, .{self.sim_from_prev_run > 1}, "whether the simulation starts from a previous run", file_name, self.err_log);
+        try parser.boundsCheck(error.OutOfBounds, .{self.sim_from_prev_run > 1}, "whether the simulation starts from a previous run", self.file_name, self.err_log);
     }
 };
 test "SimInit.load parses simulation initialization params" {
@@ -87,11 +90,12 @@ test "SimInit.load parses simulation initialization params" {
     var err_log = std.Io.Writer.fixed(&err_buf);
 
     var sim_init_params = SimInit{
+        .file_name = "test_input",
         .reader = &input_reader,
         .err_log = &err_log,
     };
 
-    try sim_init_params.load("test-input");
+    try sim_init_params.load();
 
     try std.testing.expectEqual(@as(usize, 2001), sim_init_params.start_yr);
     try std.testing.expectEqual(@as(usize, 0), sim_init_params.sim_from_prev_run);
@@ -99,30 +103,25 @@ test "SimInit.load parses simulation initialization params" {
     input = "2001,2\n";
     input_reader = std.Io.Reader.fixed(input);
 
-    try std.testing.expectError(error.OutOfBounds, sim_init_params.load("test-input"));
+    try std.testing.expectError(error.OutOfBounds, sim_init_params.load());
 }
 ///Geographical attributes
 pub const GeoAttr = struct {
+    file_name: []const u8,
     allocator: std.mem.Allocator = undefined,
     reader: *std.Io.Reader = undefined,
     err_log: *std.Io.Writer = undefined,
     bin_writer: *std.Io.Writer = undefined,
-    lat_ud: i32 = undefined, //latitude rounded to the nearest micro degree
-    lon_ud: i32 = undefined, //longitude rounded to the nearest micro degree
-    elevation: f32 = undefined, //elevation/altitude (m)
-    matc: f32 = undefined, //mean annual temperature (⁰C)
-    ix: usize = 0, //longitude snapped to X coordinate id
-    iy: usize = 0, //latitude snapped to Y coordinate id
     nx: usize = 0, //max domain ix
     ny: usize = 0, //max domain iy
     pub const Record = struct {
         morton: u32,
-        ix: u32,
-        iy: u32,
-        lat_ud: i32,
-        lon_ud: i32,
-        elev: f32,
-        matc: f32,
+        ix: u32, //longitude snapped to X coordinate id
+        iy: u32, //latitude snapped to Y coordinate id
+        lat_ud: i32, //latitude rounded to the nearest micro degree
+        lon_ud: i32, //longitude rounded to the nearest micro degree
+        elev: f32, //elevation/altitude (m)
+        matc: f32, //mean annual temperature (⁰C)
     };
     const ParsedRecord = struct {
         record: Record,
@@ -130,10 +129,10 @@ pub const GeoAttr = struct {
         tile_iy: usize,
     };
 
-    pub fn loadAndWriteBin(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, file_name: []const u8) !void {
+    pub fn loadAndWriteBin(self: *GeoAttr, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs) !void {
         var line = try parser.readNextDataLine(self.reader);
         var tokens = parser.Tokens{};
-        try tokens.tokenizeLine(line, 1, "geographical attributes file path", file_name, self.err_log);
+        try tokens.tokenizeLine(line, 1, "geographical attributes file path", self.file_name, self.err_log);
         var geo_buf: [max_path_len]u8 = undefined;
         @memcpy(geo_buf[0..tokens.items[0].len], tokens.items[0]);
         const geo_attr_filename: []const u8 = geo_buf[0..tokens.items[0].len];
@@ -167,9 +166,9 @@ pub const GeoAttr = struct {
 
         try parser.boundsCheck(error.TooManyGrids, .{self.nx > 65536 or self.ny > 65536}, "grid locations", geo_attr_filename, self.err_log);
 
-        const tiles_x: usize = if (saw_record) (@divFloor(max_ix, lat_lon_rng_n_tile_specs.ntx) + 1) else 0;
-        const tiles_y: usize = if (saw_record) (@divFloor(max_iy, lat_lon_rng_n_tile_specs.nty) + 1) else 0;
-        const tile_count = tiles_x * tiles_y;
+        const tile_nx: usize = if (saw_record) (@divFloor(max_ix, lat_lon_rng_n_tile_specs.ntx) + 1) else 0;
+        const tile_ny: usize = if (saw_record) (@divFloor(max_iy, lat_lon_rng_n_tile_specs.nty) + 1) else 0;
+        const tile_count = tile_nx * tile_ny;
         var tile_counts = try self.allocator.alloc(usize, tile_count);
         @memset(tile_counts, 0);
 
@@ -182,7 +181,7 @@ pub const GeoAttr = struct {
                 line = try parser.readNextDataLine(geo_reader.buf_reader);
                 if (std.mem.eql(u8, line, "EndOfStream")) break;
                 const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
-                const tile_id = parsed.tile_iy * tiles_x + parsed.tile_ix;
+                const tile_id = parsed.tile_iy * tile_nx + parsed.tile_ix;
                 tile_counts[tile_id] += 1;
             }
         }
@@ -191,8 +190,8 @@ pub const GeoAttr = struct {
         while (tile_id < tile_count) : (tile_id += 1) {
             const count = tile_counts[tile_id];
             if (count == 0) continue;
-            const tile_ix = tile_id % tiles_x;
-            const tile_iy = tile_id / tiles_x;
+            const tile_ix = tile_id % tile_nx;
+            const tile_iy = tile_id / tile_nx;
 
             var records = try self.allocator.alloc(Record, count);
             var filled: usize = 0;
@@ -224,19 +223,23 @@ pub const GeoAttr = struct {
     fn parseRecord(self: *GeoAttr, line: []const u8, lat_lon_rng_n_tile_specs: *const LatLonRangeAndTileSpecs, geo_attr_filename: []const u8) !ParsedRecord {
         var tokens = parser.Tokens{};
         try tokens.tokenizeLine(line, 4, "geographical attributes", geo_attr_filename, self.err_log);
-        const fields = [_]*i32{ &self.lat_ud, &self.lon_ud };
+        var lat_ud: i32 = 0;
+        var lon_ud: i32 = 0;
+        const fields = [_]*i32{ &lat_ud, &lon_ud };
         for (tokens.items[0..fields.len], 0..) |tok, i| {
             const geo_loc_d = try parser.parseTokToFloat(f32, tok, "latitude and longitude", geo_attr_filename, self.err_log);
             const geo_loc_ud: i32 = @intFromFloat(@round(geo_loc_d * 1e6));
             fields[i].* = geo_loc_ud;
         }
-        const fields_elev_mat = [_]*f32{ &self.elevation, &self.matc };
+        var elevation: f32 = 0;
+        var matc: f32 = 0;
+        const fields_elev_mat = [_]*f32{ &elevation, &matc };
         for (tokens.items[fields.len .. fields.len + fields_elev_mat.len], 0..) |tok, i| {
             fields_elev_mat[i].* = try parser.parseTokToFloat(f32, tok, "elevation and MAT", geo_attr_filename, self.err_log);
         }
 
-        const ix = utils.toXY(self.lon_ud, lat_lon_rng_n_tile_specs.lon_min_ud, lat_lon_rng_n_tile_specs.dlon_ud);
-        const iy = utils.toXY(self.lat_ud, lat_lon_rng_n_tile_specs.lat_min_ud, lat_lon_rng_n_tile_specs.dlat_ud);
+        const ix = utils.toXY(lon_ud, lat_lon_rng_n_tile_specs.lon_min_ud, lat_lon_rng_n_tile_specs.dlon_ud);
+        const iy = utils.toXY(lat_ud, lat_lon_rng_n_tile_specs.lat_min_ud, lat_lon_rng_n_tile_specs.dlat_ud);
         const tile_ix = @divFloor(ix, lat_lon_rng_n_tile_specs.ntx);
         const tile_iy = @divFloor(iy, lat_lon_rng_n_tile_specs.nty);
 
@@ -244,10 +247,10 @@ pub const GeoAttr = struct {
             .morton = @as(u32, @intCast(utils.morton2D(ix, iy))),
             .ix = @as(u32, @intCast(ix)),
             .iy = @as(u32, @intCast(iy)),
-            .lat_ud = self.lat_ud,
-            .lon_ud = self.lon_ud,
-            .elev = self.elevation,
-            .matc = self.matc,
+            .lat_ud = lat_ud,
+            .lon_ud = lon_ud,
+            .elev = elevation,
+            .matc = matc,
         };
 
         return ParsedRecord{
@@ -455,14 +458,6 @@ pub const GeoAttrBinData = struct {
 
         fn deinit(self: *RowBuffer) void {
             self.records.deinit(self.allocator);
-            self.allocator.free(self.tile_records);
-            self.allocator.free(self.present);
-            self.allocator.free(self.tile_ny);
-            self.allocator.free(self.tile_nx);
-            self.allocator.free(self.matc);
-            self.allocator.free(self.elev);
-            self.allocator.free(self.lon_ud);
-            self.allocator.free(self.lat_ud);
         }
 
         fn reset(self: *RowBuffer) void {
@@ -673,8 +668,8 @@ pub const GeoAttrBinData = struct {
             const morton = std.mem.readInt(u32, rec_buf[0..4], .little);
             const ix_u32 = std.mem.readInt(u32, rec_buf[4..8], .little);
             const iy_u32 = std.mem.readInt(u32, rec_buf[8..12], .little);
-            const lat_ud_ = std.mem.readInt(i32, rec_buf[12..16], .little);
-            const lon_ud_ = std.mem.readInt(i32, rec_buf[16..20], .little);
+            const lat_ud_raw = std.mem.readInt(i32, rec_buf[12..16], .little);
+            const lon_ud_raw = std.mem.readInt(i32, rec_buf[16..20], .little);
             const elev_bits = std.mem.readInt(u32, rec_buf[20..24], .little);
             const mat_bits = std.mem.readInt(u32, rec_buf[24..28], .little);
 
@@ -739,11 +734,11 @@ pub const GeoAttrBinData = struct {
             const local_ix = ix - tile_ix * tile_stride;
             const local_iy = iy - tile_iy * tile_height;
             const flat_id: usize = local_ix + local_iy * tile_stride;
-            if (flat_id >= tile_size) return error.OutOfBounds;
+            try parser.boundsCheck(error.OutOfBounds, .{flat_id >= tile_size}, "flattening tile size to flat ids", bin_path, self.err_log);
             const base = row_next.tileBase(tile_ix);
             const tile_idx = base + flat_id;
-            row_next.lat_ud[tile_idx] = lat_ud_;
-            row_next.lon_ud[tile_idx] = lon_ud_;
+            row_next.lat_ud[tile_idx] = lat_ud_raw;
+            row_next.lon_ud[tile_idx] = lon_ud_raw;
             row_next.elev[tile_idx] = @as(f32, @bitCast(elev_bits));
             row_next.matc[tile_idx] = @as(f32, @bitCast(mat_bits));
 
@@ -751,8 +746,8 @@ pub const GeoAttrBinData = struct {
                 .morton = morton,
                 .ix = ix_u32,
                 .iy = iy_u32,
-                .lat_ud = lat_ud_,
-                .lon_ud = lon_ud_,
+                .lat_ud = lat_ud_raw,
+                .lon_ud = lon_ud_raw,
                 .elev = @as(f32, @bitCast(elev_bits)),
                 .matc = @as(f32, @bitCast(mat_bits)),
             });
