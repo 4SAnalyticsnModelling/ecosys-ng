@@ -115,10 +115,14 @@ pub const Tokens = struct {
         self.items = undefined;
     }
     ///This method parses a line into a list of numbers/strings (called tokens hereafter) by eliminating spaces, tabs, or commas between tokens
-    pub fn tokenizeLine(self: *Tokens, line: []const u8, expected: usize, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !void {
+    pub fn tokenizeLine(self: *Tokens, line: ?[]const u8, expected: usize, context: []const u8, file_name: []const u8, err_log: *std.Io.Writer) !void {
+        if (line == null) {
+            try logMismatch(error.TokenCountMismatch, err_log, context, file_name);
+            return error.TokenCountMismatch;
+        }
         self.reset();
-        const hash_idx = std.mem.indexOfScalar(u8, line, '#');
-        const data_before_hash = if (hash_idx) |i| line[0..i] else line;
+        const hash_idx = std.mem.indexOfScalar(u8, line.?, '#');
+        const data_before_hash = if (hash_idx) |i| line.?[0..i] else line.?;
         var it = std.mem.tokenizeAny(u8, data_before_hash, " ,\t\r\n");
         while (it.next()) |tok| {
             try boundsCheck(error.TooManyTokens, .{self.len >= self.items.len}, context, file_name, err_log);
@@ -132,12 +136,12 @@ test "tokenizeLine splits lines into tokens" {
     var buf: [255]u8 = undefined;
     var err_log = std.Io.Writer.fixed(&buf);
     var tokens = Tokens{};
-    const fake_line1 = "0 0.1 1 10 200.0 5e-2 10e8";
+    const fake_line1: ?[]const u8 = "0 0.1 1 10 200.0 5e-2 10e8";
     try tokens.tokenizeLine(fake_line1, 7, "fake line #1", "test file", &err_log);
     try std.testing.expect(tokens.len == 7);
     try std.testing.expectEqualStrings(tokens.items[3], "10");
     try std.testing.expectEqualStrings(tokens.items[5], "5e-2");
-    const fake_line2 = "0 0.1 1 10 \r\n200.0 5e-2 10e8";
+    const fake_line2: ?[]const u8 = "0 0.1 1 10 \r\n200.0 5e-2 10e8";
     try tokens.tokenizeLine(fake_line2, 7, "fake line #2", "test file", &err_log);
     try std.testing.expect(tokens.len == 7);
     try std.testing.expectEqualStrings(tokens.items[3], "10");
@@ -147,10 +151,10 @@ test "tokenizeLine splits lines into tokens" {
     try std.testing.expect(std.mem.containsAtLeast(u8, err_log.buffered(), 1, "in test file"));
 }
 ///Skip line starts with # or blank line while reading only the data lines. Also break out if end of the file reaches
-pub fn readNextDataLine(reader: *std.Io.Reader) ![]const u8 {
+pub fn readNextDataLine(reader: *std.Io.Reader) !?[]const u8 {
     while (true) {
         const line = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => return "EndOfStream",
+            error.EndOfStream => return null,
             else => return err,
         };
         const trimmed = std.mem.trimLeft(u8, line, " ,\t\r\n");
@@ -167,7 +171,8 @@ test "readNextDataLine skips comments and blanks" {
         "1 2 3\n";
     var reader = std.Io.Reader.fixed(input);
     var line = try readNextDataLine(&reader);
-    try std.testing.expectEqualStrings("1 2 3\n", line);
+    try std.testing.expect(line != null);
+    try std.testing.expectEqualStrings("1 2 3\n", line.?);
     line = try readNextDataLine(&reader);
-    try std.testing.expectEqualStrings("EndOfStream", line);
+    try std.testing.expect(line == null);
 }

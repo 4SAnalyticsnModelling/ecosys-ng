@@ -148,8 +148,8 @@ pub const GeoAttr = struct {
             geo_reader.reader();
             while (true) {
                 line = try parser.readNextDataLine(geo_reader.buf_reader);
-                if (std.mem.eql(u8, line, "EndOfStream")) break;
-                const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                if (line == null) break;
+                const parsed = try self.parseRecord(line.?, lat_lon_rng_n_tile_specs, geo_attr_filename);
                 saw_record = true;
                 max_ix = @max(max_ix, @as(usize, parsed.record.ix));
                 max_iy = @max(max_iy, @as(usize, parsed.record.iy));
@@ -179,8 +179,8 @@ pub const GeoAttr = struct {
             geo_reader.reader();
             while (true) {
                 line = try parser.readNextDataLine(geo_reader.buf_reader);
-                if (std.mem.eql(u8, line, "EndOfStream")) break;
-                const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                if (line == null) break;
+                const parsed = try self.parseRecord(line.?, lat_lon_rng_n_tile_specs, geo_attr_filename);
                 const tile_id = parsed.tile_iy * tile_nx + parsed.tile_ix;
                 tile_counts[tile_id] += 1;
             }
@@ -203,8 +203,8 @@ pub const GeoAttr = struct {
                 geo_reader.reader();
                 while (true) {
                     line = try parser.readNextDataLine(geo_reader.buf_reader);
-                    if (std.mem.eql(u8, line, "EndOfStream")) break;
-                    const parsed = try self.parseRecord(line, lat_lon_rng_n_tile_specs, geo_attr_filename);
+                    if (line == null) break;
+                    const parsed = try self.parseRecord(line.?, lat_lon_rng_n_tile_specs, geo_attr_filename);
                     if (parsed.tile_ix != tile_ix or parsed.tile_iy != tile_iy) continue;
                     records[filled] = parsed.record;
                     filled += 1;
