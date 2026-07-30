@@ -1,2 +1,4 @@
 #id, soil file
-0,soil
+-1,skip # skip - use values from earlier read
+0,no # do not read (extremely unlikely - placeholder for consistency with other file designs)
+1,soil

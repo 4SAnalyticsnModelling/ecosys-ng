@@ -1,20 +1,13 @@
-# hourly C output file path
-hrly_c_out
-# hourly water output file path
-hrly_wtr_out
-# hourly N output file path; no = no output for N will be written
-no
-# hourly P output file path; no = no output for P will be written
-no
-# hourly heat output file path
-hrly_heat_out
-# daily C output file path
-daily_c_out
-# daily water output file path
-daily_wtr_out
-# daily N output file path
-daily_n_out
-# daily P output file path
-daily_p_out
-# daily heat output file path
-daily_heat_out
+#id, output file path
+-1,skip # skip output identifier file read - use values from earlier read
+0,no #for no output file to be written
+1,hrly_c_out # hourly C outputs
+2,hrly_wtr_out # hourly water outputs
+3,hrly_n_out # hourly N outputs
+4,hrly_p_out # hourly P outputs
+5,hrly_heat_out # hourly energy/heat outputs
+6,daily_c_out # daily C outputs
+7,daily_wtr_out # daily water outputs
+8,daily_n_out # daily N outputs
+9,daily_p_out # daily P outputs
+10,daily_heat_out # daily energy/heat outputs

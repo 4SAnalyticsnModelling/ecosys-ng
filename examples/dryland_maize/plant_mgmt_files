@@ -1,4 +1,5 @@
-#id, plant mgmt
+#id, plant_mgmt
+-1,skip #skip read - use values from earlier read
 0,no
 1,plant_mgmt1
 2,plant_mgmt2

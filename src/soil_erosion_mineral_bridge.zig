@@ -1,0 +1,132 @@
+const std = @import("std");
+const properties_module = @import("soil_solver_properties.zig");
+const constituents = @import("eroded_constituents.zig");
+
+pub const component_count: usize = 5;
+
+pub const State = struct {
+    initialized: bool,
+    workspace: constituents.PackedWorkspace,
+    staged_surface_soil_mass_Mg: []f64,
+
+    pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
+        var workspace = try constituents.PackedWorkspace.init(allocator, cell_count, component_count);
+        errdefer workspace.deinit();
+        const staged = try allocator.alloc(f64, cell_count);
+        @memset(staged, 0);
+        return .{ .initialized = false, .workspace = workspace, .staged_surface_soil_mass_Mg = staged };
+    }
+
+    pub fn deinit(self: *State) void {
+        self.workspace.allocator.free(self.staged_surface_soil_mass_Mg);
+        self.workspace.deinit();
+        self.* = undefined;
+    }
+};
+
+pub fn route(columns: usize, rows: usize, layer_capacity: usize, surface_soil_mass_Mg: []f64, properties: *properties_module.State, sediment: constituents.DirectionalSediment, state: *State) !void {
+    const cells = try std.math.mul(usize, columns, rows);
+    if (layer_capacity == 0 or properties.layer_count != try std.math.mul(usize, cells, layer_capacity) or surface_soil_mass_Mg.len != cells or state.workspace.cell_count != cells or properties.sand_mass_Mg.len != properties.layer_count or properties.silt_mass_Mg.len != properties.layer_count or properties.clay_mass_Mg.len != properties.layer_count or properties.cation_exchange_capacity_mol.len != properties.layer_count or properties.anion_exchange_capacity_mol.len != properties.layer_count) return error.MineralErosionDimensionMismatch;
+    if (!state.initialized) {
+        for (0..cells) |cell| {
+            const layer = cell * layer_capacity;
+            const mass = surface_soil_mass_Mg[cell];
+            const sand = properties.sand_mass_fraction[layer];
+            const clay = properties.clay_mass_fraction[layer];
+            const silt = @max(0, 1 - sand - clay);
+            inline for (.{ mass, sand, silt, clay, properties.cation_exchange_capacity_mol_per_Mg[layer], properties.anion_exchange_capacity_mol_per_Mg[layer] }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidMineralErosionState;
+            if (mass <= 0) return error.InvalidMineralErosionState;
+            const first = cell * component_count;
+            state.workspace.pools[first + 0] = properties.sand_mass_Mg[layer];
+            state.workspace.pools[first + 1] = properties.silt_mass_Mg[layer];
+            state.workspace.pools[first + 2] = properties.clay_mass_Mg[layer];
+            const authoritative_mass = state.workspace.pools[first + 0] + state.workspace.pools[first + 1] + state.workspace.pools[first + 2];
+            if (!std.math.isFinite(authoritative_mass) or authoritative_mass < 0 or authoritative_mass > mass * (1.0 + 1e-10)) return error.InvalidMineralErosionState;
+            state.workspace.pools[first + 3] = properties.cation_exchange_capacity_mol[layer];
+            state.workspace.pools[first + 4] = properties.anion_exchange_capacity_mol[layer];
+        }
+        state.initialized = true;
+    }
+    try constituents.calculatePackedFluxes(&state.workspace.flux, surface_soil_mass_Mg, state.workspace.pools, sediment);
+    try stageSurfaceSoilMass(columns, rows, surface_soil_mass_Mg, sediment, state.staged_surface_soil_mass_Mg);
+    try constituents.applyFluxes(columns, rows, state.workspace.flux, state.workspace.pools, state.workspace.exported);
+    @memcpy(surface_soil_mass_Mg, state.staged_surface_soil_mass_Mg);
+    try refreshSurfaceProperties(layer_capacity, surface_soil_mass_Mg, properties, state);
+}
+
+fn stageSurfaceSoilMass(columns: usize, rows: usize, mass_Mg: []const f64, sediment: constituents.DirectionalSediment, staged_Mg: []f64) !void {
+    const cells = try std.math.mul(usize, columns, rows);
+    if (cells == 0 or mass_Mg.len != cells or staged_Mg.len != cells or sediment.east_Mg.len != cells or sediment.west_Mg.len != cells or sediment.south_Mg.len != cells or sediment.north_Mg.len != cells) return error.MineralErosionDimensionMismatch;
+    @memcpy(staged_Mg, mass_Mg);
+    for (0..cells) |cell| {
+        const outgoing = sediment.east_Mg[cell] + sediment.west_Mg[cell] + sediment.south_Mg[cell] + sediment.north_Mg[cell];
+        inline for (.{ mass_Mg[cell], sediment.east_Mg[cell], sediment.west_Mg[cell], sediment.south_Mg[cell], sediment.north_Mg[cell], outgoing }) |value|
+            if (!std.math.isFinite(value) or value < 0) return error.InvalidMineralErosionState;
+        if (mass_Mg[cell] <= 0 or outgoing > mass_Mg[cell] + 64 * std.math.floatEps(f64) * @max(1, mass_Mg[cell])) return error.InvalidMineralErosionState;
+        staged_Mg[cell] -= outgoing;
+    }
+    for (0..rows) |row| for (0..columns) |column| {
+        const cell = row * columns + column;
+        if (column + 1 < columns) staged_Mg[cell + 1] += sediment.east_Mg[cell];
+        if (column > 0) staged_Mg[cell - 1] += sediment.west_Mg[cell];
+        if (row + 1 < rows) staged_Mg[cell + columns] += sediment.south_Mg[cell];
+        if (row > 0) staged_Mg[cell - columns] += sediment.north_Mg[cell];
+    };
+    for (staged_Mg) |value| if (!std.math.isFinite(value) or value <= 0) return error.InvalidMineralErosionCandidate;
+}
+
+/// Reconstructs the mutable topsoil property view from the authoritative
+/// extensive mineral ledger after routing or checkpoint restore.
+pub fn refreshSurfaceProperties(layer_capacity: usize, surface_soil_mass_Mg: []f64, properties: *properties_module.State, state: *const State) !void {
+    const cells = surface_soil_mass_Mg.len;
+    if (!state.initialized or layer_capacity == 0 or properties.layer_count != try std.math.mul(usize, cells, layer_capacity) or state.workspace.cell_count != cells or state.workspace.component_count != component_count or properties.sand_mass_Mg.len != properties.layer_count or properties.silt_mass_Mg.len != properties.layer_count or properties.clay_mass_Mg.len != properties.layer_count or properties.cation_exchange_capacity_mol.len != properties.layer_count or properties.anion_exchange_capacity_mol.len != properties.layer_count) return error.MineralErosionDimensionMismatch;
+    for (0..cells) |cell| {
+        const first = cell * component_count;
+        const mineral_mass = state.workspace.pools[first] + state.workspace.pools[first + 1] + state.workspace.pools[first + 2];
+        const soil_mass = surface_soil_mass_Mg[cell];
+        if (!std.math.isFinite(mineral_mass) or mineral_mass < 0 or !std.math.isFinite(soil_mass) or soil_mass <= 0 or mineral_mass > soil_mass * (1.0 + 1e-10)) return error.InvalidMineralErosionCandidate;
+        const layer = cell * layer_capacity;
+        properties.sand_mass_fraction[layer] = state.workspace.pools[first] / soil_mass;
+        properties.clay_mass_fraction[layer] = state.workspace.pools[first + 2] / soil_mass;
+        properties.sand_mass_Mg[layer] = state.workspace.pools[first];
+        properties.silt_mass_Mg[layer] = state.workspace.pools[first + 1];
+        properties.clay_mass_Mg[layer] = state.workspace.pools[first + 2];
+        properties.cation_exchange_capacity_mol_per_Mg[layer] = state.workspace.pools[first + 3] / soil_mass;
+        properties.anion_exchange_capacity_mol_per_Mg[layer] = state.workspace.pools[first + 4] / soil_mass;
+        properties.cation_exchange_capacity_mol[layer] = state.workspace.pools[first + 3];
+        properties.anion_exchange_capacity_mol[layer] = state.workspace.pools[first + 4];
+    }
+}
+
+test "mineral texture and exchange capacity follow sediment mass" {
+    var properties: properties_module.State = undefined;
+    properties.layer_count = 2;
+    var sand = [_]f64{ 0.6, 0.2 };
+    var clay = [_]f64{ 0.1, 0.3 };
+    var cec = [_]f64{ 10, 20 };
+    var aec = [_]f64{ 1, 2 };
+    properties.sand_mass_fraction = &sand;
+    properties.clay_mass_fraction = &clay;
+    var sand_mass = [_]f64{ 6, 2 };
+    var silt_mass = [_]f64{ 3, 5 };
+    var clay_mass = [_]f64{ 1, 3 };
+    properties.sand_mass_Mg = &sand_mass;
+    properties.silt_mass_Mg = &silt_mass;
+    properties.clay_mass_Mg = &clay_mass;
+    properties.cation_exchange_capacity_mol_per_Mg = &cec;
+    properties.anion_exchange_capacity_mol_per_Mg = &aec;
+    var cec_mol = [_]f64{ 100, 200 };
+    var aec_mol = [_]f64{ 10, 20 };
+    properties.cation_exchange_capacity_mol = &cec_mol;
+    properties.anion_exchange_capacity_mol = &aec_mol;
+    var mass = [_]f64{ 10, 10 };
+    var state = try State.init(std.testing.allocator, 2);
+    defer state.deinit();
+    try route(2, 1, 1, &mass, &properties, .{ .east_Mg = &.{ 1, 0 }, .west_Mg = &.{ 0, 0 }, .south_Mg = &.{ 0, 0 }, .north_Mg = &.{ 0, 0 } }, &state);
+    try std.testing.expectApproxEqAbs(@as(f64, 9), mass[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 11), mass[1], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6), sand[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.6) / 11, sand[1], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 10), cec[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 210.0 / 11.0), cec[1], 1e-14);
+}

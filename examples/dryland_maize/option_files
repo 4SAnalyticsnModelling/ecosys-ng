@@ -1,2 +1,3 @@
 # id, option file
-0,options1
+0,no # do not read option file (extremely unlikely - just a placeholder to be consistent with other input/output file lists)
+1,options1

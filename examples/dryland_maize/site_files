@@ -1,2 +1,4 @@
-# id, site_file
-0,site1
+# id, site file
+-1,skip # skip - use values from earlier read
+0,no # do not read (extremely unlikely - placeholder for consistency with other file designs)
+1,site1

@@ -1,85 +1,87 @@
 const std = @import("std");
 
-const TestModulePaths = [_][]const u8{
-    "src/util/utils.zig",
-    "src/util/input_parser.zig",
-    "src/io/geo_attributes.zig",
-};
-
-fn buildImports(b: *std.Build, names: []const []const u8, modules: []const *std.Build.Module) []const std.Build.Module.Import {
-    std.debug.assert(names.len == modules.len);
-    var imports = b.allocator.alloc(std.Build.Module.Import, names.len) catch @panic("modules!!");
-    for (names, modules, 0..) |name, module, i| {
-        imports[i] = .{ .name = name, .module = module };
-    }
-    return imports;
-}
-
 pub fn build(b: *std.Build) void {
-    const target = b.graph.host;
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mods = .{
-        .utils = b.createModule(.{ .root_source_file = b.path("src/util/utils.zig") }),
-        .input_parser = b.createModule(.{ .root_source_file = b.path("src/util/input_parser.zig") }),
-        .geo_attr = b.createModule(.{ .root_source_file = b.path("src/io/geo_attributes.zig") }),
-        .err_handler = b.createModule(.{ .root_source_file = b.path("src/util/error_handler.zig") }),
-        .load_run = b.createModule(.{ .root_source_file = b.path("src/io/load_run.zig") }),
-    };
-
-    mods.input_parser.addImport("utils", mods.utils);
-    mods.geo_attr.addImport("utils", mods.utils);
-    mods.geo_attr.addImport("input_parser", mods.input_parser);
-    mods.load_run.addImport("geo_attr", mods.geo_attr);
-    mods.load_run.addImport("utils", mods.utils);
-
-    const import_names = &[_][]const u8{ "utils", "input_parser", "err_handler", "geo_attr", "load_run" };
-    const import_modules = &[_]*std.Build.Module{ mods.utils, mods.input_parser, mods.err_handler, mods.geo_attr, mods.load_run };
-    const common_imports = buildImports(b, import_names, import_modules);
-
-    const exe = b.addExecutable(.{
-        .name = "ecosys-ng",
+    const module = b.addModule("ecosys_ng", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const executable = b.addExecutable(.{
+        .name = "ecosys_ng",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ecosys-ng.zig"),
+            .root_source_file = b.path("src/ecosys_ng.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = common_imports,
+            .imports = &.{.{ .name = "ecosys_ng", .module = module }},
         }),
     });
+    b.installArtifact(executable);
+    const gas_replay_executable = b.addExecutable(.{
+        .name = "ecosys_ng_replay_gas",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/replay_coupled_gas_failure.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ecosys_ng", .module = module }},
+        }),
+    });
+    b.installArtifact(gas_replay_executable);
+    const solute_replay_executable = b.addExecutable(.{
+        .name = "ecosys_ng_replay_solute",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/replay_solute_failure.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ecosys_ng", .module = module }},
+        }),
+    });
+    b.installArtifact(solute_replay_executable);
+    const check = b.step("check", "Compile ecosys-ng without installing it");
+    check.dependOn(&executable.step);
+    check.dependOn(&gas_replay_executable.step);
+    check.dependOn(&solute_replay_executable.step);
 
-    // exe.stack_size = 16 * 1024 * 1024; // increase stack size to 16 MB to accommodate large arrays
+    const run = b.addRunArtifact(executable);
+    run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run.addArgs(args);
+    b.step("run", "Run ecosys-ng").dependOn(&run.step);
 
-    //custom binary folder with `zig build -p .` command
-    const install_exe = b.addInstallArtifact(
-        exe,
-        .{
-            .dest_dir = .{
-                .override = .{ .custom = "ecosys-ng-bin" },
-            },
-        },
+    const replay_gas = b.addRunArtifact(gas_replay_executable);
+    replay_gas.step.dependOn(b.getInstallStep());
+    if (b.args) |args| replay_gas.addArgs(args);
+    b.step(
+        "replay-gas",
+        "Replay one coupled-gas failure snapshot",
+    ).dependOn(&replay_gas.step);
+    const replay_solute = b.addRunArtifact(solute_replay_executable);
+    replay_solute.step.dependOn(b.getInstallStep());
+    if (b.args) |args| replay_solute.addArgs(args);
+    b.step(
+        "replay-solute",
+        "Replay one SOLUTE failure snapshot",
+    ).dependOn(&replay_solute.step);
+
+    const tests = b.addTest(.{ .root_module = module });
+    const run_tests = b.addRunArtifact(tests);
+    b.step("test", "Run unit tests").dependOn(&run_tests.step);
+
+    const freezing_column_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/production_freezing_column_validation.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const run_freezing_column_tests =
+        b.addRunArtifact(freezing_column_tests);
+    run_freezing_column_tests.addArgs(
+        &.{ "--test-filter", "production dual-phase" },
     );
-
-    b.getInstallStep().dependOn(&install_exe.step);
-
-    const run_exe = b.addRunArtifact(exe);
-
-    const test_step = b.step("test", "Run ecosys-ng code test blocks");
-
-    inline for (TestModulePaths) |path| {
-        const test_blocks = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(path),
-                .target = target,
-                .optimize = optimize,
-                .imports = common_imports,
-            }),
-        });
-        const run_test_blocks = b.addRunArtifact(test_blocks);
-        test_step.dependOn(&run_test_blocks.step);
-    }
-
-    test_step.dependOn(b.getInstallStep()); //create binary along with testing
-
-    const run_step = b.step("run", "Run ecosys-ng application");
-    run_step.dependOn(&run_exe.step);
+    b.step(
+        "validate-freezing-column",
+        "Run the published 500-cell production freeze-thaw validation",
+    ).dependOn(&run_freezing_column_tests.step);
 }

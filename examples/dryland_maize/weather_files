@@ -1,0 +1,9 @@
+#id, weather file
+-1,skip # skip read - use values from earlier read
+0,no
+1,wthr01.csv
+2,wthr02.csv
+3,wthr03.csv
+4,wthr04.csv
+5,wthr05.csv
+6,wthr06.csv

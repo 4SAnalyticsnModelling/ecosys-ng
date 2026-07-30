@@ -1,0 +1,113 @@
+const std = @import("std");
+const gas = @import("gas_transport.zig");
+const grid_module = @import("grid.zig");
+const hydrology_module = @import("transport_hydrology.zig");
+const geometry_module = @import("soil_face_geometry.zig");
+
+pub const RuntimeParameters = struct {
+    reference_temperature_k: f64 = 298.15,
+    temperature_exponent: f64 = 6,
+    reference_diffusivity_m2_per_h: [gas.species_count]f64 = .{
+        4.25e-6, // CLSG, CO2
+        7.08e-6, // CQSG, CH4
+        8.57e-6, // OLSG, O2
+        7.34e-6, // ZLSG, N2
+        5.72e-6, // ZVSG, N2O
+        4.00e-6, // ZNSG, NH3
+        7.34e-6, // HLSG, H2
+    },
+    micropore_tortuosity_coefficient: f64 = 0.7,
+    macropore_tortuosity_coefficient: f64 = 2.8,
+    dispersivity_coefficient: f64 = 0.20,
+    dispersivity_distance_exponent: f64 = 1.07,
+};
+
+pub const State = struct {
+    allocator: std.mem.Allocator,
+    micropore_conductance_m3_per_step: []f64,
+    macropore_conductance_m3_per_step: []f64,
+
+    pub fn init(allocator: std.mem.Allocator, face_count: usize) !State {
+        const count = try std.math.mul(usize, face_count, gas.species_count);
+        const micropore = try allocator.alloc(f64, count);
+        errdefer allocator.free(micropore);
+        const macropore = try allocator.alloc(f64, count);
+        @memset(micropore, 0);
+        @memset(macropore, 0);
+        return .{ .allocator = allocator, .micropore_conductance_m3_per_step = micropore, .macropore_conductance_m3_per_step = macropore };
+    }
+
+    pub fn deinit(self: *State) void {
+        self.allocator.free(self.macropore_conductance_m3_per_step);
+        self.allocator.free(self.micropore_conductance_m3_per_step);
+        self.* = undefined;
+    }
+
+    /// HOUR1 `CLSGL/CQSGL/OLSGL/ZLSGL/ZVSGL/ZNSGL/HLSGL` combined
+    /// with the exact TRNSFR aqueous face geometry.
+    pub fn refresh(self: *State, model_grid: *const grid_module.GridState, faces: *const hydrology_module.SoilFaces, geometry: *const geometry_module.State, matrix_bulk_volume_m3: []const f64, step_h: f64, parameters: RuntimeParameters) !void {
+        try validate(model_grid, faces, geometry, matrix_bulk_volume_m3, step_h, parameters, self.micropore_conductance_m3_per_step.len);
+        for (faces.micropore_faces, 0..) |face, face_index| {
+            const source = face.first_cell;
+            const destination = face.second_cell;
+            const path_sum_m = geometry.source_path_length_m[face_index] + geometry.destination_path_length_m[face_index];
+            const mean_distance_m = 0.5 * path_sum_m;
+            const area_m2 = geometry.face_area_m2[face_index];
+            const source_macro_fraction = macroporeFraction(model_grid, source);
+            const destination_macro_fraction = macroporeFraction(model_grid, destination);
+            const source_matrix_theta = std.math.clamp(model_grid.matrix_liquid_water_m3[source] / matrix_bulk_volume_m3[source], 0, 1);
+            const destination_matrix_theta = std.math.clamp(model_grid.matrix_liquid_water_m3[destination] / matrix_bulk_volume_m3[destination], 0, 1);
+            const micro_tortuosity_per_m = (parameters.micropore_tortuosity_coefficient * source_matrix_theta * source_matrix_theta * (1 - source_macro_fraction) +
+                parameters.micropore_tortuosity_coefficient * destination_matrix_theta * destination_matrix_theta * (1 - destination_macro_fraction)) / path_sum_m;
+            const source_macro_theta = if (model_grid.macropore_pore_capacity_m3[source] > 0) std.math.clamp(model_grid.macropore_liquid_water_m3[source] / model_grid.macropore_pore_capacity_m3[source], 0, 1) else 0;
+            const destination_macro_theta = if (model_grid.macropore_pore_capacity_m3[destination] > 0) std.math.clamp(model_grid.macropore_liquid_water_m3[destination] / model_grid.macropore_pore_capacity_m3[destination], 0, 1) else 0;
+            const macro_tortuosity_per_m = (@min(1.0, parameters.macropore_tortuosity_coefficient * source_macro_theta * source_macro_theta * source_macro_theta) * source_macro_fraction +
+                @min(1.0, parameters.macropore_tortuosity_coefficient * destination_macro_theta * destination_macro_theta * destination_macro_theta) * destination_macro_fraction) / path_sum_m;
+            const water_velocity_m_per_step = @abs(faces.micropore_water_flux_m3_per_step[face_index]) / area_m2;
+            const dispersion_m2_per_step = parameters.dispersivity_coefficient * std.math.pow(f64, mean_distance_m, parameters.dispersivity_distance_exponent) * step_h * @min(step_h, water_velocity_m_per_step);
+            const temperature_factor = std.math.pow(f64, model_grid.soil_temperature_k[destination] / parameters.reference_temperature_k, parameters.temperature_exponent);
+            for (0..gas.species_count) |species| {
+                const index = face_index * gas.species_count + species;
+                const diffusivity_m2_per_step = parameters.reference_diffusivity_m2_per_h[species] * temperature_factor * step_h;
+                self.micropore_conductance_m3_per_step[index] = (diffusivity_m2_per_step * micro_tortuosity_per_m + dispersion_m2_per_step) * area_m2;
+                self.macropore_conductance_m3_per_step[index] = diffusivity_m2_per_step * macro_tortuosity_per_m * area_m2;
+            }
+        }
+    }
+};
+
+fn macroporeFraction(model_grid: *const grid_module.GridState, layer: usize) f64 {
+    const total = model_grid.matrix_pore_capacity_m3[layer] + model_grid.macropore_pore_capacity_m3[layer];
+    return if (total > 0) std.math.clamp(model_grid.macropore_pore_capacity_m3[layer] / total, 0, 1) else 0;
+}
+
+fn validate(model_grid: *const grid_module.GridState, faces: *const hydrology_module.SoilFaces, geometry: *const geometry_module.State, bulk: []const f64, step_h: f64, p: RuntimeParameters, output_len: usize) !void {
+    if (bulk.len != model_grid.layer_count or faces.micropore_faces.len != geometry.face_area_m2.len or output_len != faces.micropore_faces.len * gas.species_count) return error.SoilDissolvedGasFaceDimensionMismatch;
+    inline for (.{ step_h, p.reference_temperature_k, p.temperature_exponent, p.micropore_tortuosity_coefficient, p.macropore_tortuosity_coefficient, p.dispersivity_coefficient, p.dispersivity_distance_exponent }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSoilDissolvedGasTransportParameter;
+    for (p.reference_diffusivity_m2_per_h) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSoilDissolvedGasTransportParameter;
+    if (step_h == 0 or p.reference_temperature_k == 0) return error.InvalidSoilDissolvedGasTransportParameter;
+    for (bulk, model_grid.soil_temperature_k) |volume, temperature| if (!std.math.isFinite(volume) or volume <= 0 or !std.math.isFinite(temperature) or temperature <= 0) return error.InvalidSoilDissolvedGasLayerState;
+}
+
+test "HOUR1 dissolved gas diffusivity ordering is retained" {
+    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
+    defer model_grid.deinit();
+    @memset(model_grid.active_soil_layer_count, 1);
+    @memset(model_grid.matrix_liquid_water_m3, 0.5);
+    @memset(model_grid.matrix_pore_capacity_m3, 0.5);
+    @memset(model_grid.macropore_liquid_water_m3, 0.1);
+    @memset(model_grid.macropore_pore_capacity_m3, 0.1);
+    @memset(model_grid.soil_temperature_k, 298.15);
+    var hydrology = try hydrology_module.State.init(std.testing.allocator, 2, 1, 1, 1);
+    defer hydrology.deinit();
+    var faces = try hydrology_module.buildSoilFaces(std.testing.allocator, &hydrology, &model_grid);
+    defer faces.deinit();
+    var geometry = try geometry_module.State.initMapped(std.testing.allocator, &model_grid, &faces, &.{ 1, 1 }, &.{ 1, 1 }, &.{ 1, 1 });
+    defer geometry.deinit();
+    var state = try State.init(std.testing.allocator, faces.micropore_faces.len);
+    defer state.deinit();
+    try state.refresh(&model_grid, &faces, &geometry, &.{ 1, 1 }, 1, .{});
+    try std.testing.expect(state.micropore_conductance_m3_per_step[@intFromEnum(gas.Species.oxygen)] > state.micropore_conductance_m3_per_step[@intFromEnum(gas.Species.ammonia)]);
+    try std.testing.expect(state.macropore_conductance_m3_per_step[@intFromEnum(gas.Species.methane)] > state.macropore_conductance_m3_per_step[@intFromEnum(gas.Species.carbon_dioxide)]);
+}

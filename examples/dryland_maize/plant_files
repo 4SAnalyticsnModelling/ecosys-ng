@@ -1,3 +1,5 @@
 #id, plant file
-0,maize
-1,soybean
+-1,skip # skip read - use values from earlier read
+0,no
+1,maize
+2,soybean

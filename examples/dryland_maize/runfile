@@ -1,76 +1,36 @@
 # min. latitude (⁰), max. latitude (⁰), min. longitude (⁰), max. longitude (⁰); lat lon data can be down to six decimal digits; negative values for southing and westing, latitude spacing (⁰), longitude spacing (⁰), the spacing are used to mesh the grids, original data may or may not follow the exact spacing
 49.665,49.735,-112.865,-112.795,0.01,0.01
-# tile size specifications for out-of-core computing: number of west-east grids, number of north-south grids in each tile (in power-of-two-grids, e.g., 2x4, 4x4, 2x8, 8x2, 4x8, 8x8, 16x16, 16x32, 32x32 etc. based on RAM budget)
+# tile size specifications for out-of-core computing: number of west-east grids, number of north-south grids in each tile (in power-of-two-grids, e.g., 2x2, 2x4, 4x4, 2x8, 8x2, 4x8, 8x8, 16x16, 16x32, 32x32 etc. based on RAM budget)
 4,4
-# simulation start year, does this simulation start from a previous spin-up run? 0=no, 1=yes
-2001,0
-geo_attr # geospatial attributes
-boundary # boundary conditions
+# list of input/output file paths
 site_files # site file paths
 soil_files # soil file paths
 option_files # option file paths
+weather_files # weather file paths
 till_files # tillage file paths
 fert_files # fertilizer mgmt file paths
 irrig_files # irrigation mgmt file paths
 plant_files # plant functional type file paths
 plant_mgmt_files # plant mgmt file paths
 output_files # output file paths
-site_maps # file contains mapping of geo_attr to site and soil files
-# number of model scenarios and how many times each scenario repeats
-1,2
+#read grids
+site_grids #site conditions
+bound_grids # boundary grid conditions
+# simulation start year, total number of model scenarios
+2001,2
 # number of model scenes in each scenario and how many times each scene repeats
+6,1
+io_maps_01 # all input/output file paths and ids
+io_maps_02 # all input/output file paths and ids
+io_maps_03 # all input/output file paths and ids
+io_maps_04 # all input/output file paths and ids
+io_maps_05 # all input/output file paths and ids
+io_maps_06 # all input/output file paths and ids
+# number of model scenarios and how many times each scenario repeats
 6,5
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_01 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_02 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_03 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_04 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_05 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
-# simulation start date, end date in DDMM format
-0101,3112
-input_maps_06 # all input file paths and ids
-# write hourly outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,0,0,1
-# write daily outputs? 0=no, 1=yes
-# C, water, N, P, heat
-1,1,1,1,1
+io_maps_01_1 # all input/output file paths and ids
+io_maps_02 # all input/output file paths and ids
+io_maps_03 # all input/output file paths and ids
+io_maps_04 # all input/output file paths and ids
+io_maps_05 # all input/output file paths and ids
+io_maps_06 # all input/output file paths and ids

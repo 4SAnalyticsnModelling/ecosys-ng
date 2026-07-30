@@ -1,0 +1,6 @@
+zig-out/
+ecosys-ng-bin/
+examples/*/outputs/
+examples/*/tiles
+.DS_Store
+*/.DS_Store
