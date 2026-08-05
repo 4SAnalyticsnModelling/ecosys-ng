@@ -15,7 +15,7 @@ pub const Deviations = struct {
     nitrogen_g_per_m2: f64,
     phosphorus_g_per_m2: f64,
     water_m: f64,
-    heat_mj_per_m2: f64,
+    heat_megajoules_per_m2: f64,
     oxygen_g_per_m2: f64,
     ions_mol_per_m2: f64,
 };
@@ -25,7 +25,7 @@ pub const Tolerances = struct {
     nitrogen_g_per_m2: f64 = 1e-6,
     phosphorus_g_per_m2: f64 = 1e-6,
     water_m: f64 = 1e-6,
-    heat_mj_per_m2: f64 = 1e-6,
+    heat_megajoules_per_m2: f64 = 1e-6,
     oxygen_g_per_m2: f64 = 1e-6,
     ions_mol_per_m2: f64 = 1e-6,
 };
@@ -51,7 +51,7 @@ pub fn assess(
         deviations.nitrogen_g_per_m2,
         deviations.phosphorus_g_per_m2,
         deviations.water_m,
-        deviations.heat_mj_per_m2,
+        deviations.heat_megajoules_per_m2,
         deviations.oxygen_g_per_m2,
         deviations.ions_mol_per_m2,
     };
@@ -60,7 +60,7 @@ pub fn assess(
         tolerances.nitrogen_g_per_m2,
         tolerances.phosphorus_g_per_m2,
         tolerances.water_m,
-        tolerances.heat_mj_per_m2,
+        tolerances.heat_megajoules_per_m2,
         tolerances.oxygen_g_per_m2,
         tolerances.ions_mol_per_m2,
     };
@@ -98,7 +98,7 @@ fn zeros() Deviations {
         .nitrogen_g_per_m2 = 0,
         .phosphorus_g_per_m2 = 0,
         .water_m = 0,
-        .heat_mj_per_m2 = 0,
+        .heat_megajoules_per_m2 = 0,
         .oxygen_g_per_m2 = 0,
         .ions_mol_per_m2 = 0,
     };
@@ -134,10 +134,10 @@ test "simultaneous failures retain every domain and source priority" {
 test "unit-specific runtime tolerances do not alias domains" {
     var deviations = zeros();
     deviations.water_m = 0.5;
-    deviations.heat_mj_per_m2 = 0.5;
+    deviations.heat_megajoules_per_m2 = 0.5;
     const result = try assess(deviations, .{
         .water_m = 1,
-        .heat_mj_per_m2 = 0.1,
+        .heat_megajoules_per_m2 = 0.1,
     });
     try std.testing.expectEqual(Domain.heat, result.first_failure.?);
     try std.testing.expect(!result.failed[@intFromEnum(Domain.water)]);

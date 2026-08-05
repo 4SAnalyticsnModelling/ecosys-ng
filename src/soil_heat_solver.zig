@@ -27,8 +27,8 @@ pub const GeothermalBoundary = struct {
     mean_annual_temperature_k_by_cell: []const f64,
     minimum_source_depth_m: f64,
     source_depth_below_profile_m: f64,
-    conductivity_m_mj_per_h_k: f64,
-    geothermal_flux_mj_per_m2_h: f64,
+    conductivity_m_megajoules_per_h_k: f64,
+    geothermal_flux_megajoules_per_m2_h: f64,
 };
 
 pub const DirichletThermalBoundaries = struct {
@@ -52,8 +52,8 @@ pub const EnthalpyCoupling = struct {
     mualem_van_genuchten: []const retention.MualemVanGenuchtenParameters,
     gravitational_water_potential_mpa_per_m: f64,
     pure_water_melting_temperature_k: f64,
-    ice_water_equivalent_heat_capacity_mj_per_m3_k: f64,
-    latent_heat_of_fusion_mj_per_m3: f64,
+    ice_water_equivalent_heat_capacity_megajoules_per_m3_k: f64,
+    latent_heat_of_fusion_megajoules_per_m3: f64,
     solver_options: enthalpy.SolverOptions,
     macropore_liquid_water_m3: []const f64 = &.{},
     macropore_ice_water_equivalent_m3: []const f64 = &.{},
@@ -63,21 +63,21 @@ pub const EnthalpyCoupling = struct {
 };
 
 pub const Properties = struct {
-    heat_capacity_mj_per_k: []const f64,
-    minimum_heat_capacity_mj_per_k: []const f64,
+    heat_capacity_megajoules_per_k: []const f64,
+    minimum_heat_capacity_megajoules_per_k: []const f64,
     bulk_density_megagrams_per_m3: []const f64,
     liquid_water_fraction: []const f64,
     ice_fraction: []const f64,
     air_fraction: []const f64,
     fraction_of_pore_volume_air_filled: []const f64,
-    solid_conductivity_numerator_m_mj_per_h_k: []const f64,
+    solid_conductivity_numerator_m_megajoules_per_h_k: []const f64,
     solid_conductivity_denominator: []const f64,
     is_top_soil_layer: []const bool,
-    top_snow_heat_capacity_mj_per_k: []const f64,
-    maximum_negligible_snow_heat_capacity_mj_per_k: []const f64,
-    snow_storage_heat_flux_mj: []const f64,
-    cell_heat_source_mj: []const f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    top_snow_heat_capacity_megajoules_per_k: []const f64,
+    maximum_negligible_snow_heat_capacity_megajoules_per_k: []const f64,
+    snow_storage_heat_flux_megajoules: []const f64,
+    cell_heat_source_megajoules: []const f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
     turbulence: heat.TurbulenceParameters,
     /// Physical duration represented by one solve. Ordinary model execution
     /// uses one hour; published fine-step validation supplies 10/3600.
@@ -115,8 +115,8 @@ pub const Result = struct {
     newton_raphson_steps: u16,
     picard_steps: u16,
     maximum_scaled_residual: f64,
-    boundary_heat_input_mj: f64,
-    boundary_heat_output_mj: f64,
+    boundary_heat_input_megajoules: f64,
+    boundary_heat_output_megajoules: f64,
 };
 
 const PhaseBuffers = struct {
@@ -244,7 +244,7 @@ pub const Workspace = struct {
 
 /// Solves the nonlinear WATSUB temperature balance over arbitrary runtime
 /// faces. State and HFLWM-equivalent output remain unchanged on failure.
-pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, faces: []const Face, properties: Properties, water_fluxes: WaterHeatFluxes, heat_flux_mj: []f64, options: Options) !Result {
+pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, faces: []const Face, properties: Properties, water_fluxes: WaterHeatFluxes, heat_flux_megajoules: []f64, options: Options) !Result {
     var workspace = try Workspace.init(
         allocator,
         grid.layer_count,
@@ -258,7 +258,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, faces: 
         faces,
         properties,
         water_fluxes,
-        heat_flux_mj,
+        heat_flux_megajoules,
         options,
     );
 }
@@ -269,10 +269,10 @@ pub fn solveWithWorkspace(
     faces: []const Face,
     properties: Properties,
     water_fluxes: WaterHeatFluxes,
-    heat_flux_mj: []f64,
+    heat_flux_megajoules: []f64,
     options: Options,
 ) !Result {
-    try validateInputs(grid, faces, properties, water_fluxes, heat_flux_mj, options);
+    try validateInputs(grid, faces, properties, water_fluxes, heat_flux_megajoules, options);
     const count = grid.layer_count;
     const use_dense_newton = count <= options.dense_newton_max_components;
     const required_jacobian_count =
@@ -320,7 +320,7 @@ pub fn solveWithWorkspace(
         const norm = try scaledNorm(current, residual, options);
         final_norm = norm;
         if (norm <= 1) {
-            try residualAt(faces, properties, water_fluxes, base, current, target, residual, scratch, heat_flux_mj, phase_buffers);
+            try residualAt(faces, properties, water_fluxes, base, current, target, residual, scratch, heat_flux_megajoules, phase_buffers);
             @memcpy(grid.soil_temperature_k, current);
             if (properties.enthalpy_coupling != null)
                 try commitMatrixPhase(
@@ -333,7 +333,7 @@ pub fn solveWithWorkspace(
                 current,
                 phase_buffers,
             );
-            return .{ .iterations = iteration + 1, .newton_raphson_steps = newton_steps, .picard_steps = picard_steps, .maximum_scaled_residual = norm, .boundary_heat_input_mj = boundary_heat.input_mj, .boundary_heat_output_mj = boundary_heat.output_mj };
+            return .{ .iterations = iteration + 1, .newton_raphson_steps = newton_steps, .picard_steps = picard_steps, .maximum_scaled_residual = norm, .boundary_heat_input_megajoules = boundary_heat.input_megajoules, .boundary_heat_output_megajoules = boundary_heat.output_megajoules };
         }
         var accepted_newton = false;
         // The O(n) component/directional update is normally sufficient and is
@@ -456,7 +456,7 @@ pub fn solveWithWorkspace(
     try residualAt(faces, properties, water_fluxes, base, current, target, residual, scratch, trial_flux, phase_buffers);
     final_norm = try scaledNorm(current, residual, options);
     if (final_norm <= 1) {
-        try residualAt(faces, properties, water_fluxes, base, current, target, residual, scratch, heat_flux_mj, phase_buffers);
+        try residualAt(faces, properties, water_fluxes, base, current, target, residual, scratch, heat_flux_megajoules, phase_buffers);
         @memcpy(grid.soil_temperature_k, current);
         if (properties.enthalpy_coupling != null)
             try commitMatrixPhase(
@@ -469,16 +469,16 @@ pub fn solveWithWorkspace(
             current,
             phase_buffers,
         );
-        return .{ .iterations = options.max_iterations, .newton_raphson_steps = newton_steps, .picard_steps = picard_steps, .maximum_scaled_residual = final_norm, .boundary_heat_input_mj = boundary_heat.input_mj, .boundary_heat_output_mj = boundary_heat.output_mj };
+        return .{ .iterations = options.max_iterations, .newton_raphson_steps = newton_steps, .picard_steps = picard_steps, .maximum_scaled_residual = final_norm, .boundary_heat_input_megajoules = boundary_heat.input_megajoules, .boundary_heat_output_megajoules = boundary_heat.output_megajoules };
     }
     if (!builtin.is_test) std.log.err("soil heat Newton-Raphson/Picard did not converge: iterations={d} final_scaled_residual={e} newton_steps={d} picard_steps={d}", .{ options.max_iterations, final_norm, newton_steps, picard_steps });
     return error.SoilHeatSolverDidNotConverge;
 }
 
-const BoundaryHeat = struct { input_mj: f64, output_mj: f64 };
+const BoundaryHeat = struct { input_megajoules: f64, output_megajoules: f64 };
 
 /// Re-evaluates only explicit external thermal faces at the accepted
-/// temperature. `cell_heat_source_mj` is deliberately excluded because its
+/// temperature. `cell_heat_source_megajoules` is deliberately excluded because its
 /// mapped production owner combines true sources with surface-to-soil
 /// conduction; that conduction is internal to EXEC's landscape storage.
 /// Internal faces and water-carried heat likewise cancel within the domain.
@@ -487,7 +487,7 @@ fn acceptedBoundaryHeat(
     accepted_temperature_k: []const f64,
     phase_buffers: PhaseBuffers,
 ) !BoundaryHeat {
-    var result: BoundaryHeat = .{ .input_mj = 0, .output_mj = 0 };
+    var result: BoundaryHeat = .{ .input_megajoules = 0, .output_megajoules = 0 };
     if (properties.geothermal_boundary) |geothermal| {
         for (geothermal.topology.faces) |boundary_face| {
             if (!boundary_face.is_lower_boundary) continue;
@@ -501,18 +501,18 @@ fn acceptedBoundaryHeat(
             );
             const deep_temperature_k =
                 geothermal.mean_annual_temperature_k_by_cell[horizontal_cell] +
-                geothermal.geothermal_flux_mj_per_m2_h * source_depth_m /
-                    geothermal.conductivity_m_mj_per_h_k;
-            const outward_heat_mj = try water_boundary.geothermalHeatFluxMj(
+                geothermal.geothermal_flux_megajoules_per_m2_h * source_depth_m /
+                    geothermal.conductivity_m_megajoules_per_h_k;
+            const outward_heat_megajoules = try water_boundary.geothermalHeatFluxMj(
                 accepted_temperature_k[layer],
                 deep_temperature_k,
-                geothermal.conductivity_m_mj_per_h_k,
+                geothermal.conductivity_m_megajoules_per_h_k,
                 source_depth_m,
                 lower_depth_m,
                 geothermal.lower_face_area_m2[layer],
                 properties.time_step_hours,
             );
-            try accumulateSignedBoundaryHeat(&result, -outward_heat_mj);
+            try accumulateSignedBoundaryHeat(&result, -outward_heat_megajoules);
         }
     }
     if (properties.dirichlet_thermal_boundaries) |boundaries| {
@@ -524,7 +524,7 @@ fn acceptedBoundaryHeat(
         ) |cell, boundary_temperature_k, distance_m, face_area_m2| {
             const temperature_difference_k =
                 boundary_temperature_k - accepted_temperature_k[cell];
-            const conductivity_m_mj_per_h_k =
+            const conductivity_m_megajoules_per_h_k =
                 try heat.calculateCellConductivity(
                     cellConductivityInputs(
                         properties,
@@ -534,11 +534,11 @@ fn acceptedBoundaryHeat(
                     ),
                     properties.turbulence,
                 );
-            const inward_heat_mj =
-                conductivity_m_mj_per_h_k * face_area_m2 *
+            const inward_heat_megajoules =
+                conductivity_m_megajoules_per_h_k * face_area_m2 *
                 temperature_difference_k / distance_m *
                 properties.time_step_hours;
-            try accumulateSignedBoundaryHeat(&result, inward_heat_mj);
+            try accumulateSignedBoundaryHeat(&result, inward_heat_megajoules);
         }
     }
     return result;
@@ -546,16 +546,16 @@ fn acceptedBoundaryHeat(
 
 fn accumulateSignedBoundaryHeat(
     result: *BoundaryHeat,
-    signed_input_mj: f64,
+    signed_input_megajoules: f64,
 ) !void {
-    if (!std.math.isFinite(signed_input_mj))
+    if (!std.math.isFinite(signed_input_megajoules))
         return error.NonFiniteAcceptedBoundaryHeat;
-    if (signed_input_mj >= 0)
-        result.input_mj += signed_input_mj
+    if (signed_input_megajoules >= 0)
+        result.input_megajoules += signed_input_megajoules
     else
-        result.output_mj -= signed_input_mj;
-    if (!std.math.isFinite(result.input_mj) or
-        !std.math.isFinite(result.output_mj))
+        result.output_megajoules -= signed_input_megajoules;
+    if (!std.math.isFinite(result.input_megajoules) or
+        !std.math.isFinite(result.output_megajoules))
         return error.NonFiniteAcceptedBoundaryHeat;
 }
 
@@ -589,14 +589,14 @@ pub fn solveAndBindTransportFacesWithWorkspace(
     options: Options,
 ) !Result {
     const count = shared_faces.micropore_faces.len;
-    if (shared_faces.macropore_faces.len != count or shared_faces.micropore_water_flux_m3_per_step.len != count or shared_faces.macropore_water_flux_m3_per_step.len != count or shared_faces.vapor_flux_m3_per_step.len != count or shared_faces.heat_flux_mj_per_step.len != count or geometry.source_path_length_m.len != count or geometry.destination_path_length_m.len != count or geometry.face_area_m2.len != count) return error.SoilHeatFaceGeometryDimensionMismatch;
+    if (shared_faces.macropore_faces.len != count or shared_faces.micropore_water_flux_m3_per_step.len != count or shared_faces.macropore_water_flux_m3_per_step.len != count or shared_faces.vapor_flux_m3_per_step.len != count or shared_faces.heat_flux_megajoules_per_step.len != count or geometry.source_path_length_m.len != count or geometry.destination_path_length_m.len != count or geometry.face_area_m2.len != count) return error.SoilHeatFaceGeometryDimensionMismatch;
     if (workspace.face_count != count)
         return error.SoilHeatWorkspaceDimensionMismatch;
     const faces = workspace.face_buffer;
     for (faces, 0..) |*face, index| face.* = .{ .source_cell = shared_faces.micropore_faces[index].first_cell, .destination_cell = shared_faces.micropore_faces[index].second_cell, .source_path_length_m = geometry.source_path_length_m[index], .destination_path_length_m = geometry.destination_path_length_m[index], .face_area_m2 = geometry.face_area_m2[index] };
-    const result = try solveWithWorkspace(workspace, grid, faces, properties, .{ .liquid_water_m3 = shared_faces.micropore_water_flux_m3_per_step, .vapor_m3 = shared_faces.vapor_flux_m3_per_step, .macropore_water_m3 = shared_faces.macropore_water_flux_m3_per_step }, shared_faces.heat_flux_mj_per_step, options);
-    @memset(hydrology.heat_face_flux_mj_per_step, 0);
-    for (faces, shared_faces.direction_axis, shared_faces.heat_flux_mj_per_step) |face, axis, flux| hydrology.heat_face_flux_mj_per_step[face.source_cell * 3 + axis] = flux;
+    const result = try solveWithWorkspace(workspace, grid, faces, properties, .{ .liquid_water_m3 = shared_faces.micropore_water_flux_m3_per_step, .vapor_m3 = shared_faces.vapor_flux_m3_per_step, .macropore_water_m3 = shared_faces.macropore_water_flux_m3_per_step }, shared_faces.heat_flux_megajoules_per_step, options);
+    @memset(hydrology.heat_face_flux_megajoules_per_step, 0);
+    for (faces, shared_faces.direction_axis, shared_faces.heat_flux_megajoules_per_step) |face, axis, flux| hydrology.heat_face_flux_megajoules_per_step[face.source_cell * 3 + axis] = flux;
     try hydrology.validateFinite();
     return result;
 }
@@ -647,7 +647,7 @@ fn residualAt(
                 trial_phase.secondary_ice_water_equivalent_m3;
         }
     }
-    for (target, properties.cell_heat_source_mj, properties.heat_capacity_mj_per_k) |*temperature, source_mj, capacity| temperature.* += source_mj / capacity;
+    for (target, properties.cell_heat_source_megajoules, properties.heat_capacity_megajoules_per_k) |*temperature, source_megajoules, capacity| temperature.* += source_megajoules / capacity;
     @memset(output_flux, 0);
     for (faces, 0..) |face, face_index| {
         const source = face.source_cell;
@@ -679,10 +679,10 @@ fn residualAt(
             ),
             properties.turbulence,
         );
-        const flux = try heat.calculateFaceFlux(.{ .source_temperature_k = scratch[source], .destination_temperature_k = scratch[destination], .source_heat_capacity_mj_per_k = properties.heat_capacity_mj_per_k[source], .destination_heat_capacity_mj_per_k = properties.heat_capacity_mj_per_k[destination], .source_minimum_heat_capacity_mj_per_k = properties.minimum_heat_capacity_mj_per_k[source], .destination_minimum_heat_capacity_mj_per_k = properties.minimum_heat_capacity_mj_per_k[destination], .source_is_top_soil_layer = properties.is_top_soil_layer[source], .top_snow_heat_capacity_mj_per_k = properties.top_snow_heat_capacity_mj_per_k[source], .maximum_negligible_snow_heat_capacity_mj_per_k = properties.maximum_negligible_snow_heat_capacity_mj_per_k[source], .snow_storage_heat_flux_mj = properties.snow_storage_heat_flux_mj[source], .liquid_water_flux_m3 = water_fluxes.liquid_water_m3[face_index], .vapor_flux_m3 = water_fluxes.vapor_m3[face_index], .macropore_water_flux_m3 = water_fluxes.macropore_water_m3[face_index], .liquid_water_heat_capacity_mj_per_m3_k = properties.liquid_water_heat_capacity_mj_per_m3_k, .source_thermal_conductivity_m_mj_per_h_k = source_conductivity, .destination_thermal_conductivity_m_mj_per_h_k = destination_conductivity, .source_path_length_m = face.source_path_length_m, .destination_path_length_m = face.destination_path_length_m, .face_area_m2 = face.face_area_m2, .time_fraction = properties.time_step_hours });
-        output_flux[face_index] = flux.total_mj;
-        const source_delta = flux.total_mj / properties.heat_capacity_mj_per_k[source];
-        const destination_delta = flux.total_mj / properties.heat_capacity_mj_per_k[destination];
+        const flux = try heat.calculateFaceFlux(.{ .source_temperature_k = scratch[source], .destination_temperature_k = scratch[destination], .source_heat_capacity_megajoules_per_k = properties.heat_capacity_megajoules_per_k[source], .destination_heat_capacity_megajoules_per_k = properties.heat_capacity_megajoules_per_k[destination], .source_minimum_heat_capacity_megajoules_per_k = properties.minimum_heat_capacity_megajoules_per_k[source], .destination_minimum_heat_capacity_megajoules_per_k = properties.minimum_heat_capacity_megajoules_per_k[destination], .source_is_top_soil_layer = properties.is_top_soil_layer[source], .top_snow_heat_capacity_megajoules_per_k = properties.top_snow_heat_capacity_megajoules_per_k[source], .maximum_negligible_snow_heat_capacity_megajoules_per_k = properties.maximum_negligible_snow_heat_capacity_megajoules_per_k[source], .snow_storage_heat_flux_megajoules = properties.snow_storage_heat_flux_megajoules[source], .liquid_water_flux_m3 = water_fluxes.liquid_water_m3[face_index], .vapor_flux_m3 = water_fluxes.vapor_m3[face_index], .macropore_water_flux_m3 = water_fluxes.macropore_water_m3[face_index], .liquid_water_heat_capacity_megajoules_per_m3_k = properties.liquid_water_heat_capacity_megajoules_per_m3_k, .source_thermal_conductivity_m_megajoules_per_h_k = source_conductivity, .destination_thermal_conductivity_m_megajoules_per_h_k = destination_conductivity, .source_path_length_m = face.source_path_length_m, .destination_path_length_m = face.destination_path_length_m, .face_area_m2 = face.face_area_m2, .time_fraction = properties.time_step_hours });
+        output_flux[face_index] = flux.total_megajoules;
+        const source_delta = flux.total_megajoules / properties.heat_capacity_megajoules_per_k[source];
+        const destination_delta = flux.total_megajoules / properties.heat_capacity_megajoules_per_k[destination];
         scratch[source] -= source_delta;
         scratch[destination] += destination_delta;
         target[source] -= source_delta;
@@ -696,16 +696,16 @@ fn residualAt(
             const layer = boundary_face.layer_index;
             const lower_depth_m = geothermal.layer_bottom_depth_m[layer];
             const source_depth_m = @max(geothermal.minimum_source_depth_m, lower_depth_m + geothermal.source_depth_below_profile_m);
-            const deep_temperature_k = geothermal.mean_annual_temperature_k_by_cell[horizontal_cell] + geothermal.geothermal_flux_mj_per_m2_h * source_depth_m / geothermal.conductivity_m_mj_per_h_k;
-            const outward_heat_mj = try water_boundary.geothermalHeatFluxMj(scratch[layer], deep_temperature_k, geothermal.conductivity_m_mj_per_h_k, source_depth_m, lower_depth_m, geothermal.lower_face_area_m2[layer], properties.time_step_hours);
-            target[layer] -= outward_heat_mj / properties.heat_capacity_mj_per_k[layer];
+            const deep_temperature_k = geothermal.mean_annual_temperature_k_by_cell[horizontal_cell] + geothermal.geothermal_flux_megajoules_per_m2_h * source_depth_m / geothermal.conductivity_m_megajoules_per_h_k;
+            const outward_heat_megajoules = try water_boundary.geothermalHeatFluxMj(scratch[layer], deep_temperature_k, geothermal.conductivity_m_megajoules_per_h_k, source_depth_m, lower_depth_m, geothermal.lower_face_area_m2[layer], properties.time_step_hours);
+            target[layer] -= outward_heat_megajoules / properties.heat_capacity_megajoules_per_k[layer];
         }
     }
     if (properties.dirichlet_thermal_boundaries) |boundaries| {
         for (boundaries.cell_index, boundaries.temperature_k, boundaries.distance_from_cell_center_m, boundaries.face_area_m2) |cell, boundary_temperature_k, distance_m, face_area_m2| {
             const temperature_difference_k =
                 boundary_temperature_k - scratch[cell];
-            const conductivity_m_mj_per_h_k =
+            const conductivity_m_megajoules_per_h_k =
                 try heat.calculateCellConductivity(
                     cellConductivityInputs(
                         properties,
@@ -715,22 +715,22 @@ fn residualAt(
                     ),
                     properties.turbulence,
                 );
-            const inward_heat_mj =
-                conductivity_m_mj_per_h_k * face_area_m2 *
+            const inward_heat_megajoules =
+                conductivity_m_megajoules_per_h_k * face_area_m2 *
                 temperature_difference_k / distance_m *
                 properties.time_step_hours;
-            if (!std.math.isFinite(inward_heat_mj))
+            if (!std.math.isFinite(inward_heat_megajoules))
                 return error.NonFiniteDirichletSoilHeatFlux;
-            target[cell] += inward_heat_mj /
-                properties.heat_capacity_mj_per_k[cell];
+            target[cell] += inward_heat_megajoules /
+                properties.heat_capacity_megajoules_per_k[cell];
         }
     }
     if (properties.enthalpy_coupling) |coupling| {
         for (0..target.len) |cell| {
-            const non_phase_heat_mj =
+            const non_phase_heat_megajoules =
                 (target[cell] - base[cell]) *
-                properties.heat_capacity_mj_per_k[cell];
-            if (non_phase_heat_mj == 0) {
+                properties.heat_capacity_megajoules_per_k[cell];
+            if (non_phase_heat_megajoules == 0) {
                 target[cell] = base[cell];
                 phase_buffers.matrix_liquid_m3[cell] =
                     coupling.matrix_liquid_water_m3[cell];
@@ -786,7 +786,7 @@ fn residualAt(
             enthalpy_solver_options.initial_temperature_k = trial[cell];
             const solved = try enthalpy.temperatureFromEnthalpy(
                 parameters,
-                base_state.enthalpy_mj + non_phase_heat_mj,
+                base_state.enthalpy_megajoules + non_phase_heat_megajoules,
                 enthalpy_solver_options,
             );
             target[cell] = solved.state.temperature_k;
@@ -820,23 +820,23 @@ fn enthalpyParameters(
             )
         else
             coupling.porous_medium_volume_m3[cell];
-    const dry_solid_heat_capacity_mj_per_k =
-        properties.heat_capacity_mj_per_k[cell] -
-        properties.liquid_water_heat_capacity_mj_per_m3_k *
+    const dry_solid_heat_capacity_megajoules_per_k =
+        properties.heat_capacity_megajoules_per_k[cell] -
+        properties.liquid_water_heat_capacity_megajoules_per_m3_k *
             coupling.matrix_liquid_water_m3[cell] -
-        coupling.ice_water_equivalent_heat_capacity_mj_per_m3_k *
+        coupling.ice_water_equivalent_heat_capacity_megajoules_per_m3_k *
             coupling.matrix_ice_water_equivalent_m3[cell] -
         (if (coupling.macropore_mualem_van_genuchten.len != 0)
-            properties.liquid_water_heat_capacity_mj_per_m3_k *
+            properties.liquid_water_heat_capacity_megajoules_per_m3_k *
                 coupling.macropore_liquid_water_m3[cell] +
-                coupling.ice_water_equivalent_heat_capacity_mj_per_m3_k *
+                coupling.ice_water_equivalent_heat_capacity_megajoules_per_m3_k *
                     coupling.macropore_ice_water_equivalent_m3[cell]
         else
             0);
-    if (!std.math.isFinite(dry_solid_heat_capacity_mj_per_k) or
-        dry_solid_heat_capacity_mj_per_k <
+    if (!std.math.isFinite(dry_solid_heat_capacity_megajoules_per_k) or
+        dry_solid_heat_capacity_megajoules_per_k <
             -64.0 * std.math.floatEps(f64) *
-                @max(1.0, properties.heat_capacity_mj_per_k[cell]))
+                @max(1.0, properties.heat_capacity_megajoules_per_k[cell]))
         return error.InvalidCoupledSoilDryHeatCapacity;
     return .{
         .porous_medium_volume_m3 = matrix_volume_m3,
@@ -845,16 +845,47 @@ fn enthalpyParameters(
         .unfrozen_pressure_head_m = if (coupling.unfrozen_pressure_head_m.len != 0)
             coupling.unfrozen_pressure_head_m[cell]
         else
-            try coupling.mualem_van_genuchten[cell].pressureHeadAtWaterContent(
-                coupling.matrix_liquid_water_m3[cell] /
-                    matrix_volume_m3,
-            ),
+            blk: {
+                // Ice occupies pore space, reducing the effective saturated water content.
+                // Compute the effective pore volume available for liquid water.
+                const ice_content_m3_per_m3 =
+                    coupling.matrix_ice_water_equivalent_m3[cell] / matrix_volume_m3;
+                const effective_saturated_content_m3_per_m3 =
+                    matrix_retention.saturated_water_content_m3_per_m3 - ice_content_m3_per_m3;
+                const liquid_content_m3_per_m3 =
+                    coupling.matrix_liquid_water_m3[cell] / matrix_volume_m3;
+                
+                // When ice is present, use ice-aware retention parameters
+                if (ice_content_m3_per_m3 > 0) {
+                    const ice_aware_retention = retention.MualemVanGenuchtenParameters{
+                        .residual_water_content_m3_per_m3 =
+                            matrix_retention.residual_water_content_m3_per_m3,
+                        .saturated_water_content_m3_per_m3 =
+                            @max(
+                                matrix_retention.residual_water_content_m3_per_m3,
+                                effective_saturated_content_m3_per_m3,
+                            ),
+                        .alpha_per_m = matrix_retention.alpha_per_m,
+                        .n = matrix_retention.n,
+                        .pore_connectivity = matrix_retention.pore_connectivity,
+                        .saturated_hydraulic_conductivity_m_per_h =
+                            matrix_retention.saturated_hydraulic_conductivity_m_per_h,
+                    };
+                    break :blk try ice_aware_retention.pressureHeadAtWaterContent(
+                        liquid_content_m3_per_m3,
+                    );
+                } else {
+                    break :blk try coupling.mualem_van_genuchten[cell].pressureHeadAtWaterContent(
+                        liquid_content_m3_per_m3,
+                    );
+                }
+            },
         .gravitational_water_potential_mpa_per_m = coupling.gravitational_water_potential_mpa_per_m,
         .pure_water_melting_temperature_k = coupling.pure_water_melting_temperature_k,
-        .dry_solid_heat_capacity_mj_per_k = @max(0, dry_solid_heat_capacity_mj_per_k),
-        .liquid_water_heat_capacity_mj_per_m3_k = properties.liquid_water_heat_capacity_mj_per_m3_k,
-        .ice_water_equivalent_heat_capacity_mj_per_m3_k = coupling.ice_water_equivalent_heat_capacity_mj_per_m3_k,
-        .latent_heat_of_fusion_mj_per_m3 = coupling.latent_heat_of_fusion_mj_per_m3,
+        .dry_solid_heat_capacity_megajoules_per_k = @max(0, dry_solid_heat_capacity_megajoules_per_k),
+        .liquid_water_heat_capacity_megajoules_per_m3_k = properties.liquid_water_heat_capacity_megajoules_per_m3_k,
+        .ice_water_equivalent_heat_capacity_megajoules_per_m3_k = coupling.ice_water_equivalent_heat_capacity_megajoules_per_m3_k,
+        .latent_heat_of_fusion_megajoules_per_m3 = coupling.latent_heat_of_fusion_megajoules_per_m3,
         .mualem_van_genuchten = matrix_retention,
         .secondary_domain = if (coupling.macropore_mualem_van_genuchten.len != 0 and
             coupling.macropore_porous_medium_volume_m3[cell] > 0)
@@ -865,11 +896,40 @@ fn enthalpyParameters(
                 .unfrozen_pressure_head_m = if (coupling.macropore_unfrozen_pressure_head_m.len != 0)
                     coupling.macropore_unfrozen_pressure_head_m[cell]
                 else
-                    try coupling.macropore_mualem_van_genuchten[cell]
-                        .pressureHeadAtWaterContent(
-                        coupling.macropore_liquid_water_m3[cell] /
-                            coupling.macropore_porous_medium_volume_m3[cell],
-                    ),
+                    blk: {
+                        const macropore_retention = coupling.macropore_mualem_van_genuchten[cell];
+                        const macropore_volume_m3 = coupling.macropore_porous_medium_volume_m3[cell];
+                        const macropore_ice_content_m3_per_m3 =
+                            coupling.macropore_ice_water_equivalent_m3[cell] / macropore_volume_m3;
+                        const macropore_liquid_content_m3_per_m3 =
+                            coupling.macropore_liquid_water_m3[cell] / macropore_volume_m3;
+                        
+                        if (macropore_ice_content_m3_per_m3 > 0) {
+                            const macropore_effective_saturated_content_m3_per_m3 =
+                                macropore_retention.saturated_water_content_m3_per_m3 - macropore_ice_content_m3_per_m3;
+                            const ice_aware_macropore_retention = retention.MualemVanGenuchtenParameters{
+                                .residual_water_content_m3_per_m3 =
+                                    macropore_retention.residual_water_content_m3_per_m3,
+                                .saturated_water_content_m3_per_m3 =
+                                    @max(
+                                        macropore_retention.residual_water_content_m3_per_m3,
+                                        macropore_effective_saturated_content_m3_per_m3,
+                                    ),
+                                .alpha_per_m = macropore_retention.alpha_per_m,
+                                .n = macropore_retention.n,
+                                .pore_connectivity = macropore_retention.pore_connectivity,
+                                .saturated_hydraulic_conductivity_m_per_h =
+                                    macropore_retention.saturated_hydraulic_conductivity_m_per_h,
+                            };
+                            break :blk try ice_aware_macropore_retention.pressureHeadAtWaterContent(
+                                macropore_liquid_content_m3_per_m3,
+                            );
+                        } else {
+                            break :blk try macropore_retention.pressureHeadAtWaterContent(
+                                macropore_liquid_content_m3_per_m3,
+                            );
+                        }
+                    },
                 .mualem_van_genuchten = coupling.macropore_mualem_van_genuchten[cell],
             }
         else
@@ -997,7 +1057,7 @@ fn cellConductivityInputs(
         .ice_fraction = ice_fraction,
         .air_fraction = properties.air_fraction[cell],
         .fraction_of_pore_volume_air_filled = properties.fraction_of_pore_volume_air_filled[cell],
-        .solid_conductivity_numerator_m_mj_per_h_k = properties.solid_conductivity_numerator_m_mj_per_h_k[cell],
+        .solid_conductivity_numerator_m_megajoules_per_h_k = properties.solid_conductivity_numerator_m_megajoules_per_h_k[cell],
         .solid_conductivity_denominator = properties.solid_conductivity_denominator[cell],
         .temperature_difference_k = temperature_difference_k,
     };
@@ -1019,15 +1079,15 @@ fn scaledNorm(state: []const f64, residual: []const f64, options: Options) !f64 
     return maximum;
 }
 
-fn validateInputs(grid: *const grid_module.GridState, faces: []const Face, properties: Properties, water_fluxes: WaterHeatFluxes, heat_flux_mj: []const f64, options: Options) !void {
+fn validateInputs(grid: *const grid_module.GridState, faces: []const Face, properties: Properties, water_fluxes: WaterHeatFluxes, heat_flux_megajoules: []const f64, options: Options) !void {
     const cells = grid.layer_count;
     inline for (@typeInfo(Properties).@"struct".fields) |field| {
         if (field.type == []const f64 and @field(properties, field.name).len != cells) return error.SoilHeatSolverDimensionMismatch;
         if (field.type == []const bool and @field(properties, field.name).len != cells) return error.SoilHeatSolverDimensionMismatch;
     }
-    if (water_fluxes.liquid_water_m3.len != faces.len or water_fluxes.vapor_m3.len != faces.len or water_fluxes.macropore_water_m3.len != faces.len or heat_flux_mj.len != faces.len) return error.SoilHeatSolverDimensionMismatch;
+    if (water_fluxes.liquid_water_m3.len != faces.len or water_fluxes.vapor_m3.len != faces.len or water_fluxes.macropore_water_m3.len != faces.len or heat_flux_megajoules.len != faces.len) return error.SoilHeatSolverDimensionMismatch;
     if (properties.geothermal_boundary) |geothermal| {
-        if (geothermal.layer_bottom_depth_m.len != cells or geothermal.lower_face_area_m2.len != cells or geothermal.enabled_by_cell.len != geothermal.topology.water_table_mode.len or geothermal.mean_annual_temperature_k_by_cell.len != geothermal.topology.water_table_mode.len or !std.math.isFinite(geothermal.minimum_source_depth_m) or geothermal.minimum_source_depth_m <= 0 or !std.math.isFinite(geothermal.source_depth_below_profile_m) or geothermal.source_depth_below_profile_m <= 0 or !std.math.isFinite(geothermal.conductivity_m_mj_per_h_k) or geothermal.conductivity_m_mj_per_h_k <= 0 or !std.math.isFinite(geothermal.geothermal_flux_mj_per_m2_h)) return error.InvalidGeothermalBoundary;
+        if (geothermal.layer_bottom_depth_m.len != cells or geothermal.lower_face_area_m2.len != cells or geothermal.enabled_by_cell.len != geothermal.topology.water_table_mode.len or geothermal.mean_annual_temperature_k_by_cell.len != geothermal.topology.water_table_mode.len or !std.math.isFinite(geothermal.minimum_source_depth_m) or geothermal.minimum_source_depth_m <= 0 or !std.math.isFinite(geothermal.source_depth_below_profile_m) or geothermal.source_depth_below_profile_m <= 0 or !std.math.isFinite(geothermal.conductivity_m_megajoules_per_h_k) or geothermal.conductivity_m_megajoules_per_h_k <= 0 or !std.math.isFinite(geothermal.geothermal_flux_megajoules_per_m2_h)) return error.InvalidGeothermalBoundary;
         for (geothermal.mean_annual_temperature_k_by_cell) |temperature_k| if (!std.math.isFinite(temperature_k) or temperature_k <= 0) return error.InvalidGeothermalBoundary;
     }
     if (properties.dirichlet_thermal_boundaries) |boundaries| {
@@ -1082,19 +1142,19 @@ fn validateInputs(grid: *const grid_module.GridState, faces: []const Face, prope
         inline for (.{
             coupling.gravitational_water_potential_mpa_per_m,
             coupling.pure_water_melting_temperature_k,
-            coupling.ice_water_equivalent_heat_capacity_mj_per_m3_k,
-            coupling.latent_heat_of_fusion_mj_per_m3,
+            coupling.ice_water_equivalent_heat_capacity_megajoules_per_m3_k,
+            coupling.latent_heat_of_fusion_megajoules_per_m3,
         }) |value| if (!std.math.isFinite(value) or value <= 0)
             return error.InvalidSoilHeatEnthalpyCoupling;
         for (coupling.mualem_van_genuchten) |parameters|
             try parameters.validate();
     }
-    if (!std.math.isFinite(properties.liquid_water_heat_capacity_mj_per_m3_k) or properties.liquid_water_heat_capacity_mj_per_m3_k <= 0) return error.InvalidSoilHeatCapacity;
+    if (!std.math.isFinite(properties.liquid_water_heat_capacity_megajoules_per_m3_k) or properties.liquid_water_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidSoilHeatCapacity;
     if (!std.math.isFinite(properties.time_step_hours) or
         properties.time_step_hours <= 0 or properties.time_step_hours > 1)
         return error.InvalidSoilHeatTimeStep;
     if (options.max_iterations == 0 or !std.math.isFinite(options.absolute_tolerance_k) or options.absolute_tolerance_k <= 0 or !std.math.isFinite(options.relative_tolerance) or options.relative_tolerance <= 0 or !std.math.isFinite(options.picard_relaxation) or options.picard_relaxation <= 0 or options.picard_relaxation > 1 or !std.math.isFinite(options.directional_probe_fraction) or options.directional_probe_fraction <= 0 or !std.math.isFinite(options.minimum_newton_fraction) or options.minimum_newton_fraction <= 0 or !std.math.isFinite(options.maximum_newton_fraction) or options.maximum_newton_fraction < options.minimum_newton_fraction) return error.InvalidSoilHeatSolverOptions;
-    for (0..cells) |cell| if (!std.math.isFinite(properties.heat_capacity_mj_per_k[cell]) or properties.heat_capacity_mj_per_k[cell] <= 0) return error.InvalidSoilHeatCapacity;
+    for (0..cells) |cell| if (!std.math.isFinite(properties.heat_capacity_megajoules_per_k[cell]) or properties.heat_capacity_megajoules_per_k[cell] <= 0) return error.InvalidSoilHeatCapacity;
     for (faces) |face| if (face.source_cell >= cells or face.destination_cell >= cells or face.source_cell == face.destination_cell or !std.math.isFinite(face.source_path_length_m) or face.source_path_length_m <= 0 or !std.math.isFinite(face.destination_path_length_m) or face.destination_path_length_m <= 0 or !std.math.isFinite(face.face_area_m2) or face.face_area_m2 < 0) return error.InvalidSoilHeatFace;
 }
 
@@ -1109,11 +1169,11 @@ fn testProperties() Properties {
         const denominator = [_]f64{ 1, 1 };
         const top = [_]bool{ true, false };
     };
-    return .{ .heat_capacity_mj_per_k = &values.capacity, .minimum_heat_capacity_mj_per_k = &values.zero, .bulk_density_megagrams_per_m3 = &values.density, .liquid_water_fraction = &values.liquid, .ice_fraction = &values.zero, .air_fraction = &values.air, .fraction_of_pore_volume_air_filled = &values.air, .solid_conductivity_numerator_m_mj_per_h_k = &values.numerator, .solid_conductivity_denominator = &values.denominator, .is_top_soil_layer = &values.top, .top_snow_heat_capacity_mj_per_k = &values.zero, .maximum_negligible_snow_heat_capacity_mj_per_k = &values.zero, .snow_storage_heat_flux_mj = &values.zero, .cell_heat_source_mj = &values.zero, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .turbulence = .{ .water_fraction_threshold = 1, .air_fraction_threshold = 1, .water_rayleigh_coefficient = 0, .air_rayleigh_coefficient = 0, .water_nusselt_denominator = 1, .air_nusselt_denominator = 1 } };
+    return .{ .heat_capacity_megajoules_per_k = &values.capacity, .minimum_heat_capacity_megajoules_per_k = &values.zero, .bulk_density_megagrams_per_m3 = &values.density, .liquid_water_fraction = &values.liquid, .ice_fraction = &values.zero, .air_fraction = &values.air, .fraction_of_pore_volume_air_filled = &values.air, .solid_conductivity_numerator_m_megajoules_per_h_k = &values.numerator, .solid_conductivity_denominator = &values.denominator, .is_top_soil_layer = &values.top, .top_snow_heat_capacity_megajoules_per_k = &values.zero, .maximum_negligible_snow_heat_capacity_megajoules_per_k = &values.zero, .snow_storage_heat_flux_megajoules = &values.zero, .cell_heat_source_megajoules = &values.zero, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .turbulence = .{ .water_fraction_threshold = 1, .air_fraction_threshold = 1, .water_rayleigh_coefficient = 0, .air_rayleigh_coefficient = 0, .water_nusselt_denominator = 1, .air_nusselt_denominator = 1 } };
 }
 
 test "hybrid heat solve exits before NPH and conserves sensible heat" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.soil_temperature_k[0] = 300;
@@ -1129,7 +1189,7 @@ test "hybrid heat solve exits before NPH and conserves sensible heat" {
 }
 
 test "failed heat convergence is atomic" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.soil_temperature_k[0] = 300;
@@ -1144,8 +1204,8 @@ test "failed heat convergence is atomic" {
 test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
     const cfg = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -1175,7 +1235,7 @@ test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
     const numerator = [_]f64{0.01};
     const denominator = [_]f64{1};
     const top = [_]bool{true};
-    const cooling_mj = [_]f64{-100};
+    const cooling_megajoules = [_]f64{-100};
     const volume = [_]f64{1};
     const macropore_volume = [_]f64{0.1};
     const curve = [_]retention.MualemVanGenuchtenParameters{.{
@@ -1199,8 +1259,8 @@ test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
         .mualem_van_genuchten = &curve,
         .gravitational_water_potential_mpa_per_m = 0.00980665,
         .pure_water_melting_temperature_k = 273.15,
-        .ice_water_equivalent_heat_capacity_mj_per_m3_k = 1.93,
-        .latent_heat_of_fusion_mj_per_m3 = 333.7,
+        .ice_water_equivalent_heat_capacity_megajoules_per_m3_k = 1.93,
+        .latent_heat_of_fusion_megajoules_per_m3 = 333.7,
         .solver_options = .{ .max_iterations = 80 },
         .macropore_liquid_water_m3 = grid.macropore_liquid_water_m3,
         .macropore_ice_water_equivalent_m3 = grid.macropore_ice_water_m3,
@@ -1208,21 +1268,21 @@ test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
         .macropore_mualem_van_genuchten = &macropore_curve,
     };
     const properties: Properties = .{
-        .heat_capacity_mj_per_k = &capacity,
-        .minimum_heat_capacity_mj_per_k = &zero,
+        .heat_capacity_megajoules_per_k = &capacity,
+        .minimum_heat_capacity_megajoules_per_k = &zero,
         .bulk_density_megagrams_per_m3 = &density,
         .liquid_water_fraction = &liquid_fraction,
         .ice_fraction = &zero,
         .air_fraction = &air_fraction,
         .fraction_of_pore_volume_air_filled = &air_fraction,
-        .solid_conductivity_numerator_m_mj_per_h_k = &numerator,
+        .solid_conductivity_numerator_m_megajoules_per_h_k = &numerator,
         .solid_conductivity_denominator = &denominator,
         .is_top_soil_layer = &top,
-        .top_snow_heat_capacity_mj_per_k = &zero,
-        .maximum_negligible_snow_heat_capacity_mj_per_k = &zero,
-        .snow_storage_heat_flux_mj = &zero,
-        .cell_heat_source_mj = &cooling_mj,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .top_snow_heat_capacity_megajoules_per_k = &zero,
+        .maximum_negligible_snow_heat_capacity_megajoules_per_k = &zero,
+        .snow_storage_heat_flux_megajoules = &zero,
+        .cell_heat_source_megajoules = &cooling_megajoules,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
         .turbulence = .{
             .water_fraction_threshold = 1,
             .air_fraction_threshold = 1,
@@ -1262,8 +1322,8 @@ test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
     try std.testing.expect(grid.matrix_ice_water_m3[0] > 0);
     try std.testing.expect(grid.macropore_ice_water_m3[0] > 0);
     try std.testing.expectApproxEqAbs(
-        initial_state.enthalpy_mj + cooling_mj[0],
-        final_state.enthalpy_mj,
+        initial_state.enthalpy_megajoules + cooling_megajoules[0],
+        final_state.enthalpy_megajoules,
         1.0e-8,
     );
     try std.testing.expectApproxEqAbs(
@@ -1283,8 +1343,8 @@ test "coupled heat residual commits Dall'Amico phase and conserves enthalpy" {
 test "runtime Dirichlet thermal face uses cell distance and physical step" {
     const cfg = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -1311,21 +1371,21 @@ test "runtime Dirichlet thermal face uses cell distance and physical step" {
     const boundary_distance = [_]f64{0.5};
     const boundary_area = [_]f64{1};
     const properties: Properties = .{
-        .heat_capacity_mj_per_k = &capacity,
-        .minimum_heat_capacity_mj_per_k = &zero,
+        .heat_capacity_megajoules_per_k = &capacity,
+        .minimum_heat_capacity_megajoules_per_k = &zero,
         .bulk_density_megagrams_per_m3 = &density,
         .liquid_water_fraction = &liquid,
         .ice_fraction = &zero,
         .air_fraction = &air,
         .fraction_of_pore_volume_air_filled = &air,
-        .solid_conductivity_numerator_m_mj_per_h_k = &numerator,
+        .solid_conductivity_numerator_m_megajoules_per_h_k = &numerator,
         .solid_conductivity_denominator = &denominator,
         .is_top_soil_layer = &top,
-        .top_snow_heat_capacity_mj_per_k = &zero,
-        .maximum_negligible_snow_heat_capacity_mj_per_k = &zero,
-        .snow_storage_heat_flux_mj = &zero,
-        .cell_heat_source_mj = &zero,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .top_snow_heat_capacity_megajoules_per_k = &zero,
+        .maximum_negligible_snow_heat_capacity_megajoules_per_k = &zero,
+        .snow_storage_heat_flux_megajoules = &zero,
+        .cell_heat_source_megajoules = &zero,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
         .turbulence = .{
             .water_fraction_threshold = 1,
             .air_fraction_threshold = 1,
@@ -1392,12 +1452,12 @@ test "runtime Dirichlet thermal face uses cell distance and physical step" {
     );
     try std.testing.expectApproxEqAbs(
         capacity[0] * (expected_temperature_k - 280),
-        first_result.boundary_heat_input_mj,
+        first_result.boundary_heat_input_megajoules,
         1.0e-9,
     );
     try std.testing.expectEqual(
         @as(f64, 0),
-        first_result.boundary_heat_output_mj,
+        first_result.boundary_heat_output_megajoules,
     );
     const first_temperature_k = grid.soil_temperature_k[0];
     _ = try solveWithWorkspace(

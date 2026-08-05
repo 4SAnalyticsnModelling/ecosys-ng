@@ -5,9 +5,9 @@ pub const Inputs = struct {
     vertical_cell_width_m: []const f64,
     /// Pool-fastest `[cell][residue_pool]`, in g C m-2.
     residue_carbon_g_c_per_m2: []const f64,
-    residue_dry_bulk_density_Mg_per_m3: []const f64,
+    residue_dry_bulk_density_megagrams_per_m3: []const f64,
     residue_pool_count: usize,
-    carbon_mass_conversion_Mg_per_g_c: f64,
+    carbon_mass_conversion_megagrams_per_g_c: f64,
 };
 
 pub const State = struct {
@@ -21,7 +21,7 @@ pub const State = struct {
     total_volume_m3: []f64,
     matrix_volume_m3: []f64,
     reference_matrix_volume_m3: []f64,
-    dry_mass_Mg: []f64,
+    dry_mass_megagrams: []f64,
     thickness_m: []f64,
     initial_thickness_m: []f64,
     total_surface_area_m2: *f64,
@@ -31,7 +31,7 @@ const Candidate = struct {
     area_m2: f64,
     organic_carbon_g_c: f64,
     dry_litter_volume_m3: f64,
-    dry_mass_Mg: f64,
+    dry_mass_megagrams: f64,
     thickness_m: f64,
 };
 
@@ -46,18 +46,18 @@ fn candidate(inputs: Inputs, cell: usize) Candidate {
             inputs.residue_carbon_g_c_per_m2[index];
         dry_litter_volume_m3_per_m2 +=
             inputs.residue_carbon_g_c_per_m2[index] * 1.0e-6 /
-            inputs.residue_dry_bulk_density_Mg_per_m3[pool];
+            inputs.residue_dry_bulk_density_megagrams_per_m3[pool];
     }
     const organic_carbon_g_c = organic_carbon_g_c_per_m2 * area_m2;
     const dry_litter_volume_m3 =
         dry_litter_volume_m3_per_m2 * area_m2;
-    const dry_mass_Mg =
-        inputs.carbon_mass_conversion_Mg_per_g_c * organic_carbon_g_c;
+    const dry_mass_megagrams =
+        inputs.carbon_mass_conversion_megagrams_per_g_c * organic_carbon_g_c;
     return .{
         .area_m2 = area_m2,
         .organic_carbon_g_c = organic_carbon_g_c,
         .dry_litter_volume_m3 = dry_litter_volume_m3,
-        .dry_mass_Mg = dry_mass_Mg,
+        .dry_mass_megagrams = dry_mass_megagrams,
         .thickness_m = dry_litter_volume_m3 / area_m2,
     };
 }
@@ -68,7 +68,7 @@ pub fn initialize(state: State, inputs: Inputs) !void {
     if (cell_count == 0 or inputs.residue_pool_count == 0)
         return error.InvalidSurfaceLitterInitialDimensions;
     if (inputs.vertical_cell_width_m.len != cell_count or
-        inputs.residue_dry_bulk_density_Mg_per_m3.len !=
+        inputs.residue_dry_bulk_density_megagrams_per_m3.len !=
             inputs.residue_pool_count)
         return error.SurfaceLitterInitialDimensionMismatch;
     const carbon_count = std.math.mul(
@@ -82,10 +82,10 @@ pub fn initialize(state: State, inputs: Inputs) !void {
         if (field.type == []f64 and @field(state, field.name).len != cell_count)
             return error.SurfaceLitterInitialDimensionMismatch;
     }
-    if (!std.math.isFinite(inputs.carbon_mass_conversion_Mg_per_g_c) or
-        inputs.carbon_mass_conversion_Mg_per_g_c < 0)
+    if (!std.math.isFinite(inputs.carbon_mass_conversion_megagrams_per_g_c) or
+        inputs.carbon_mass_conversion_megagrams_per_g_c < 0)
         return error.InvalidSurfaceLitterInitialParameter;
-    for (inputs.residue_dry_bulk_density_Mg_per_m3) |density| {
+    for (inputs.residue_dry_bulk_density_megagrams_per_m3) |density| {
         if (!std.math.isFinite(density))
             return error.NonFiniteSurfaceLitterInitialInput;
         if (density <= 0) return error.InvalidSurfaceLitterInitialParameter;
@@ -130,7 +130,7 @@ pub fn initialize(state: State, inputs: Inputs) !void {
         state.total_volume_m3[cell] = values.dry_litter_volume_m3;
         state.matrix_volume_m3[cell] = values.dry_litter_volume_m3;
         state.reference_matrix_volume_m3[cell] = values.dry_litter_volume_m3;
-        state.dry_mass_Mg[cell] = values.dry_mass_Mg;
+        state.dry_mass_megagrams[cell] = values.dry_mass_megagrams;
         state.thickness_m[cell] = values.thickness_m;
         state.initial_thickness_m[cell] = values.thickness_m;
     }
@@ -150,7 +150,7 @@ test "STARTS surface litter geometry reproduces three-pool source branch" {
         .total_volume_m3 = fields[7..8],
         .matrix_volume_m3 = fields[8..9],
         .reference_matrix_volume_m3 = fields[9..10],
-        .dry_mass_Mg = fields[10..11],
+        .dry_mass_megagrams = fields[10..11],
         .thickness_m = fields[11..12],
         .initial_thickness_m = fields[12..13],
         .total_surface_area_m2 = &total_area,
@@ -159,9 +159,9 @@ test "STARTS surface litter geometry reproduces three-pool source branch" {
         .horizontal_cell_width_m = &.{10},
         .vertical_cell_width_m = &.{20},
         .residue_carbon_g_c_per_m2 = &.{ 10, 20, 30 },
-        .residue_dry_bulk_density_Mg_per_m3 = &.{ 0.1, 0.0125, 0.025 },
+        .residue_dry_bulk_density_megagrams_per_m3 = &.{ 0.1, 0.0125, 0.025 },
         .residue_pool_count = 3,
-        .carbon_mass_conversion_Mg_per_g_c = 1.82e-6,
+        .carbon_mass_conversion_megagrams_per_g_c = 1.82e-6,
     });
 
     const expected_carbon_g_c: f64 = (10 + 20 + 30) * 200;
@@ -196,7 +196,7 @@ test "runtime cell and residue-pool counts determine all extents" {
         .total_volume_m3 = fields[14..16],
         .matrix_volume_m3 = fields[16..18],
         .reference_matrix_volume_m3 = fields[18..20],
-        .dry_mass_Mg = fields[20..22],
+        .dry_mass_megagrams = fields[20..22],
         .thickness_m = fields[22..24],
         .initial_thickness_m = fields[24..26],
         .total_surface_area_m2 = &total_area,
@@ -205,9 +205,9 @@ test "runtime cell and residue-pool counts determine all extents" {
         .horizontal_cell_width_m = &.{ 10, 20 },
         .vertical_cell_width_m = &.{ 30, 40 },
         .residue_carbon_g_c_per_m2 = &.{ 1, 2, 3, 4, 5, 6, 7, 8 },
-        .residue_dry_bulk_density_Mg_per_m3 = &.{ 0.1, 0.2, 0.3, 0.4 },
+        .residue_dry_bulk_density_megagrams_per_m3 = &.{ 0.1, 0.2, 0.3, 0.4 },
         .residue_pool_count = 4,
-        .carbon_mass_conversion_Mg_per_g_c = 2e-6,
+        .carbon_mass_conversion_megagrams_per_g_c = 2e-6,
     });
     try std.testing.expectEqual(@as(f64, 1100), total_area);
     try std.testing.expectEqual(@as(f64, 26 * 800), state.organic_carbon_g_c[1]);

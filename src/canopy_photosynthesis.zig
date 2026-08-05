@@ -1,4 +1,17 @@
 const std = @import("std");
+const c4_mesophyll_bundle_exchange = @import("canopy_c4_mesophyll_bundle_exchange.zig");
+const branch_organ_growth_publication = @import("branch_organ_growth_publication.zig");
+const leaf_node_growth_publication = @import("leaf_node_growth_publication.zig");
+const shoot_recycling_fraction = @import("shoot_recycling_fraction.zig");
+const reserve_maintenance_respiration = @import("reserve_maintenance_respiration.zig");
+const shoot_total_senescence_setup = @import("shoot_total_senescence_setup.zig");
+const node_senescence_remobilization_request = @import("node_senescence_remobilization_request.zig");
+const c4_leaf_nonstructural_carbon_senescence = @import("c4_leaf_nonstructural_carbon_senescence.zig");
+const node_senescence_cascade_progress = @import("node_senescence_cascade_progress.zig");
+const perennial_stalk_senescence_setup = @import("perennial_stalk_senescence_setup.zig");
+const internode_senescence_publication = @import("internode_senescence_publication.zig");
+const residual_stalk_senescence_request = @import("residual_stalk_senescence_request.zig");
+const residual_stalk_senescence_publication = @import("residual_stalk_senescence_publication.zig");
 
 /// Compact heap-owned canopy topology. Prefix offsets permit different branch,
 /// node, layer/orientation sample counts for every runtime plant population.
@@ -148,7 +161,7 @@ pub const State = struct {
     plant_phenology_temperature_k: []f64,
     plant_canopy_osmotic_potential_mpa: []f64,
     plant_canopy_turgor_potential_mpa: []f64,
-    plant_stored_energy_mj: []f64,
+    plant_stored_energy_megajoules: []f64,
     plant_transpiration_m3_per_h: []f64,
     plant_hypocotyledon_height_m: []f64,
     plant_mobile_carbon_g: []f64,
@@ -177,7 +190,7 @@ pub const State = struct {
     plant_fire_methane_emission_g_c_per_h: []f64,
     plant_fire_oxygen_consumption_g_o_per_h: []f64,
     plant_fire_charcoal_production_g_c_per_h: []f64,
-    plant_fire_heat_release_mj_per_h: []f64,
+    plant_fire_heat_release_megajoules_per_h: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize, branch_count_by_plant: []const usize, node_count_by_branch: []const usize, sample_count_by_node: []const usize) !State {
         if (cell_count == 0 or species_count == 0) return error.InvalidCanopyPhotosynthesisDimensions;
@@ -614,11 +627,19 @@ pub fn advanceC4CarbonPools(state: *State, node: usize, mesophyll_fixation_g_c: 
     if (mesophyll_fixation_g_c < 0 or bundle_sheath_fixation_g_c < 0 or intercellular_co2_umol_per_l < 0 or timestep_h <= 0) return error.InvalidC4CarbonInput;
     const leaf_carbon = state.node_leaf_carbon_g[node];
     if (leaf_carbon <= 0) return error.C4NodeHasNoLeafCarbon;
-    var bundle_nonstructural = state.node_c3_nonstructural_carbon_g[node] - bundle_sheath_fixation_g_c;
-    var mesophyll_nonstructural = state.node_c4_mesophyll_nonstructural_carbon_g[node] + mesophyll_fixation_g_c;
-    const transfer = (mesophyll_nonstructural * parameters.bundle_sheath_water_g_per_g_c - bundle_nonstructural * parameters.mesophyll_water_g_per_g_c) / (parameters.bundle_sheath_water_g_per_g_c + parameters.mesophyll_water_g_per_g_c) * timestep_h;
-    mesophyll_nonstructural -= transfer;
-    bundle_nonstructural += transfer;
+    const exchange = try c4_mesophyll_bundle_exchange.exchange(.{
+        .bundle_sheath_nonstructural_carbon_g_c = state.node_c3_nonstructural_carbon_g[node],
+        .mesophyll_nonstructural_carbon_g_c = state.node_c4_mesophyll_nonstructural_carbon_g[node],
+        .bundle_sheath_fixation_g_c_per_timestep = bundle_sheath_fixation_g_c,
+        .mesophyll_fixation_g_c_per_timestep = mesophyll_fixation_g_c,
+        .leaf_carbon_g_c = leaf_carbon,
+        .bundle_sheath_water_g_h2o_per_g_c = parameters.bundle_sheath_water_g_per_g_c,
+        .mesophyll_water_g_h2o_per_g_c = parameters.mesophyll_water_g_per_g_c,
+        .timestep_h = timestep_h,
+    });
+    var bundle_nonstructural = exchange.bundle_sheath_nonstructural_carbon_g_c;
+    const mesophyll_nonstructural = exchange.mesophyll_nonstructural_carbon_g_c;
+    const transfer = exchange.mesophyll_to_bundle_sheath_carbon_g_c;
     const bundle_co2_concentration = @max(0.0, parameters.co2_concentration_umol_per_l_per_g_c_per_g_leaf_c * state.node_bundle_sheath_co2_carbon_g[node] / (leaf_carbon * parameters.bundle_sheath_water_g_per_g_c));
     const decarboxylation = parameters.decarboxylation_fraction_per_h * bundle_nonstructural / (1.0 + bundle_co2_concentration / parameters.co2_decarboxylation_inhibition_umol_per_l) * timestep_h;
     bundle_nonstructural -= decarboxylation;
@@ -680,17 +701,41 @@ pub fn calculateOrganGrowth(total_growth_carbon_consumption_g: f64, partition_fr
 /// Grain allocation remains a later reserve→grain transaction, as in GROSUB.
 pub fn applyBranchOrganGrowth(state: *State, branch: usize, growth: OrganGrowth) !void {
     try validateBranchOrganGrowthTransaction(state, branch, growth);
-    const mappings = organGrowthMappings();
-    inline for (mappings) |mapping| {
-        const index = @intFromEnum(mapping[0]);
-        const grain_index = @intFromEnum(Organ.grain);
-        const grain_carbon = if (mapping[0] == .reserve) growth.carbon_g[grain_index] else 0;
-        const grain_nitrogen = if (mapping[0] == .reserve) growth.nitrogen_g[grain_index] else 0;
-        const grain_phosphorus = if (mapping[0] == .reserve) growth.phosphorus_g[grain_index] else 0;
-        @field(state, mapping[1])[branch] += growth.carbon_g[index] + grain_carbon;
-        @field(state, mapping[2])[branch] += growth.nitrogen_g[index] + grain_nitrogen;
-        @field(state, mapping[3])[branch] += growth.phosphorus_g[index] + grain_phosphorus;
-    }
+    try branch_organ_growth_publication.publish(.{
+        .leaf_carbon_g_c = state.branch_leaf_carbon_g,
+        .sheath_carbon_g_c = state.branch_sheath_carbon_g,
+        .stalk_carbon_g_c = state.branch_stalk_carbon_g,
+        .reserve_carbon_g_c = state.branch_reserve_carbon_g,
+        .husk_carbon_g_c = state.branch_husk_carbon_g,
+        .ear_carbon_g_c = state.branch_ear_carbon_g,
+        .leaf_nitrogen_g_n = state.branch_leaf_nitrogen_g,
+        .sheath_nitrogen_g_n = state.branch_sheath_nitrogen_g,
+        .stalk_nitrogen_g_n = state.branch_stalk_nitrogen_g,
+        .reserve_nitrogen_g_n = state.branch_reserve_nitrogen_g,
+        .husk_nitrogen_g_n = state.branch_husk_nitrogen_g,
+        .ear_nitrogen_g_n = state.branch_ear_nitrogen_g,
+        .leaf_phosphorus_g_p = state.branch_leaf_phosphorus_g,
+        .sheath_phosphorus_g_p = state.branch_sheath_phosphorus_g,
+        .stalk_phosphorus_g_p = state.branch_stalk_phosphorus_g,
+        .reserve_phosphorus_g_p = state.branch_reserve_phosphorus_g,
+        .husk_phosphorus_g_p = state.branch_husk_phosphorus_g,
+        .ear_phosphorus_g_p = state.branch_ear_phosphorus_g,
+    }, branch, .{
+        .carbon_g_c_per_timestep = organGrowthElement(growth.carbon_g),
+        .nitrogen_g_n_per_timestep = organGrowthElement(growth.nitrogen_g),
+        .phosphorus_g_p_per_timestep = organGrowthElement(growth.phosphorus_g),
+    });
+}
+
+fn organGrowthElement(values: [organ_count]f64) branch_organ_growth_publication.ElementGrowth {
+    return .{
+        .leaf = values[@intFromEnum(Organ.leaf)],
+        .sheath = values[@intFromEnum(Organ.sheath)],
+        .stalk = values[@intFromEnum(Organ.stalk)],
+        .reserve = values[@intFromEnum(Organ.reserve)],
+        .husk = values[@intFromEnum(Organ.husk)],
+        .ear = values[@intFromEnum(Organ.ear)],
+    };
 }
 
 fn organGrowthMappings() @TypeOf(.{
@@ -718,14 +763,10 @@ pub fn validateBranchOrganGrowthTransaction(state: *const State, branch: usize, 
     // prevents a late overflow from leaving earlier organs committed.
     inline for (mappings) |mapping| {
         const index = @intFromEnum(mapping[0]);
-        const grain_index = @intFromEnum(Organ.grain);
-        const grain_carbon = if (mapping[0] == .reserve) growth.carbon_g[grain_index] else 0;
-        const grain_nitrogen = if (mapping[0] == .reserve) growth.nitrogen_g[grain_index] else 0;
-        const grain_phosphorus = if (mapping[0] == .reserve) growth.phosphorus_g[grain_index] else 0;
         inline for (.{
-            @field(state, mapping[1])[branch] + growth.carbon_g[index] + grain_carbon,
-            @field(state, mapping[2])[branch] + growth.nitrogen_g[index] + grain_nitrogen,
-            @field(state, mapping[3])[branch] + growth.phosphorus_g[index] + grain_phosphorus,
+            @field(state, mapping[1])[branch] + growth.carbon_g[index],
+            @field(state, mapping[2])[branch] + growth.nitrogen_g[index],
+            @field(state, mapping[3])[branch] + growth.phosphorus_g[index],
         }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidBranchOrganGrowthTransaction;
     }
 }
@@ -740,21 +781,28 @@ pub fn distributeLeafGrowth(state: *State, branch: usize, newest_node_within_bra
     const first = @max(first_growing_node_within_branch, newest_node_within_branch + 1 -| maximum_concurrently_growing_nodes);
     const count = newest_node_within_branch - first + 1;
     const allocation = 1.0 / @as(f64, @floatFromInt(count));
-    for (first..newest_node_within_branch + 1) |local_node| {
-        const node = nodes.first + local_node;
-        const carbon = allocation * growth.carbon_g;
-        const nitrogen = allocation * growth.nitrogen_g;
-        const phosphorus = allocation * growth.phosphorus_g;
-        const updated_leaf_carbon = state.node_leaf_carbon_g[node] + carbon;
-        const specific_leaf_area = etoliation_factor * base_specific_leaf_area_m2_per_g_c * std.math.pow(f64, @max(minimum_leaf_carbon_per_cell_g, updated_leaf_carbon) / plant_density_per_m2, leaf_area_exponent) * turgor_expansion_fraction;
-        const area_growth = carbon * specific_leaf_area;
-        state.node_leaf_carbon_g[node] = updated_leaf_carbon;
-        state.node_leaf_nitrogen_g[node] += nitrogen;
-        state.node_leaf_phosphorus_g[node] += phosphorus;
-        state.node_leaf_protein_g[node] += @min(nitrogen * protein_per_nitrogen_g_per_g_n, phosphorus * protein_per_phosphorus_g_per_g_p);
-        state.node_leaf_area_m2[node] += area_growth;
-        state.branch_leaf_area_m2[branch] += area_growth;
-    }
+    try leaf_node_growth_publication.publish(.{
+        .leaf_carbon_g_c = state.node_leaf_carbon_g[nodes.first..nodes.end],
+        .leaf_nitrogen_g_n = state.node_leaf_nitrogen_g[nodes.first..nodes.end],
+        .leaf_phosphorus_g_p = state.node_leaf_phosphorus_g[nodes.first..nodes.end],
+        .leaf_protein_g = state.node_leaf_protein_g[nodes.first..nodes.end],
+        .leaf_area_m2 = state.node_leaf_area_m2[nodes.first..nodes.end],
+        .branch_leaf_area_m2 = &state.branch_leaf_area_m2[branch],
+    }, .{
+        .first_node = first,
+        .last_node = newest_node_within_branch,
+        .carbon_growth_g_c_per_node = allocation * growth.carbon_g,
+        .nitrogen_growth_g_n_per_node = allocation * growth.nitrogen_g,
+        .phosphorus_growth_g_p_per_node = allocation * growth.phosphorus_g,
+        .protein_per_nitrogen_g_per_g_n = protein_per_nitrogen_g_per_g_n,
+        .protein_per_phosphorus_g_per_g_p = protein_per_phosphorus_g_per_g_p,
+        .etiolation_factor = etoliation_factor,
+        .base_specific_leaf_area_m2_per_g_c = base_specific_leaf_area_m2_per_g_c,
+        .minimum_leaf_carbon_g_c = minimum_leaf_carbon_per_cell_g,
+        .plant_population = plant_density_per_m2,
+        .leaf_mass_exponent = leaf_area_exponent,
+        .turgor_expansion_fraction = turgor_expansion_fraction,
+    });
 }
 
 pub fn distributeSheathGrowth(state: *State, branch: usize, newest_node_within_branch: usize, first_growing_node_within_branch: usize, maximum_concurrently_growing_nodes: usize, growth: LeafGrowth, protein_per_nitrogen_g_per_g_n: f64, protein_per_phosphorus_g_per_g_p: f64, etoliation_factor: f64, base_specific_length_m_per_g_c: f64, minimum_sheath_carbon_per_cell_g: f64, plant_density_per_m2: f64, length_exponent: f64, turgor_expansion_fraction: f64, vertical_projection_fraction: f64) !void {
@@ -810,7 +858,7 @@ pub fn allocateLeafAcrossCanopyLayers(leaf_area_m2: f64, leaf_carbon_g: f64, lea
     @memset(outputs.carbon_g, 0);
     @memset(outputs.nitrogen_g, 0);
     @memset(outputs.phosphorus_g, 0);
-    if (leaf_area_m2 == 0) return 0;
+    if (leaf_area_m2 == 0) return @min(maximum_canopy_height_m + 0.01, stalk_height_m + sheath_height_m);
 
     const leaf_length_m = @sqrt(leaf_length_to_width_ratio * leaf_area_m2 / population_per_m2);
     const leaf_base_height_m = stalk_height_m + sheath_height_m;
@@ -858,6 +906,17 @@ fn addLeafLayer(outputs: LayerLeafOutputs, layer: usize, fraction: f64, area_m2:
     outputs.carbon_g[layer] += fraction * carbon_g;
     outputs.nitrogen_g[layer] += fraction * nitrogen_g;
     outputs.phosphorus_g[layer] += fraction * phosphorus_g;
+}
+
+test "GROSUB zero-area leaf still advances canopy height to capped leaf base" {
+    var area = [_]f64{ 9, 9 };
+    var carbon = [_]f64{ 9, 9 };
+    var nitrogen = [_]f64{ 9, 9 };
+    var phosphorus = [_]f64{ 9, 9 };
+    const height_m = try allocateLeafAcrossCanopyLayers(0, 0, 0, 0, 100, 2, 0.8, 0.4, 1, &.{ 0, 0.5, 1.01 }, &.{ 0.2, 0.5, 0.8, 1 }, &.{ 0.1, 0.2, 0.3, 0.4 }, .{ .area_m2 = &area, .carbon_g = &carbon, .nitrogen_g = &nitrogen, .phosphorus_g = &phosphorus });
+    try std.testing.expectEqual(@as(f64, 1.01), height_m);
+    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, &area);
+    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, &carbon);
 }
 
 pub const StalkLayerAllocation = struct {
@@ -919,15 +978,26 @@ pub fn compatibilitySeedSetParameters() SeedSetParameters {
 pub const CanopyWaterGrowthResponse = struct { stomatal_fraction: f64, growth_fraction: f64, turgor_expansion_fraction: f64, water_potential_expansion_fraction: f64 };
 
 pub fn canopyWaterGrowthResponse(shallow_root_profile: bool, canopy_turgor_potential_mpa: f64, minimum_turgor_potential_mpa: f64, canopy_total_water_potential_mpa: f64, stomatal_turgor_shape: f64) !CanopyWaterGrowthResponse {
-    inline for (.{ canopy_turgor_potential_mpa, minimum_turgor_potential_mpa, canopy_total_water_potential_mpa, stomatal_turgor_shape }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyWaterGrowthInput;
-    const water_potential_coefficient: f64 = if (shallow_root_profile) 0.05 else 0.10;
-    const growth_fraction = std.math.clamp(@exp(water_potential_coefficient * canopy_total_water_potential_mpa), 0, 1);
+    const response = try @import("canopy_water_stress_response.zig").calculate(.{
+        .root_profile = if (shallow_root_profile) .shallow else .non_shallow,
+        .canopy_turgor_potential_mpa = canopy_turgor_potential_mpa,
+        .minimum_canopy_turgor_potential_mpa = minimum_turgor_potential_mpa,
+        .canopy_water_potential_mpa = canopy_total_water_potential_mpa,
+        .stomatal_turgor_shape_per_mpa = stomatal_turgor_shape,
+    });
     return .{
-        .stomatal_fraction = if (shallow_root_profile) 1 else std.math.clamp(@exp(stomatal_turgor_shape * canopy_turgor_potential_mpa), 0, 1),
-        .growth_fraction = growth_fraction,
-        .turgor_expansion_fraction = std.math.clamp(canopy_turgor_potential_mpa - minimum_turgor_potential_mpa, 0, 1),
-        .water_potential_expansion_fraction = std.math.pow(f64, growth_fraction, 0.25),
+        .stomatal_fraction = response.stomatal_resistance_factor,
+        .growth_fraction = response.growth_factor,
+        .turgor_expansion_fraction = response.turgor_expansion_factor,
+        .water_potential_expansion_fraction = response.water_potential_expansion_factor,
     };
+}
+
+test "production canopy water response retains source values above one" {
+    const response = try canopyWaterGrowthResponse(false, 0.5, -1.0, 2.0, 2.0);
+    try std.testing.expectApproxEqAbs(std.math.exp(1.0), response.stomatal_fraction, 1.0e-15);
+    try std.testing.expectApproxEqAbs(std.math.exp(0.2), response.growth_fraction, 1.0e-15);
+    try std.testing.expect(response.water_potential_expansion_fraction > 1);
 }
 
 pub const SeedSetResult = struct {
@@ -974,13 +1044,13 @@ pub fn updateSeedNumberAndSize(input: SeedSetInputs) !SeedSetResult {
 }
 
 /// GROSUB RSTK/ARSTKB/WVSTKB and ARSTK allocation for one branch.
-pub fn allocateStalkAcrossCanopyLayers(stalk_carbon_g: f64, retained_stalk_carbon_g: f64, population_per_m2: f64, stalk_volume_m3_per_g_c: f64, branch_base_height_m: f64, branch_tip_height_m: f64, annual_growth_habit: bool, standing_live_stalk_present: bool, layer_boundary_height_m: []const f64, layer_stalk_area_m2: []f64) !StalkLayerAllocation {
+pub fn allocateStalkAcrossCanopyLayers(stalk_carbon_g: f64, retained_stalk_carbon_g: f64, population_per_m2: f64, stalk_volume_m3_per_g_c: f64, branch_base_height_m: f64, branch_tip_height_m: f64, annual_growth_habit: bool, specific_internode_length_positive: bool, layer_boundary_height_m: []const f64, layer_stalk_area_m2: []f64) !StalkLayerAllocation {
     inline for (.{ stalk_carbon_g, retained_stalk_carbon_g, population_per_m2, stalk_volume_m3_per_g_c, branch_base_height_m, branch_tip_height_m }) |value| if (!std.math.isFinite(value)) return error.NonFiniteStalkLayerAllocationInput;
     if (stalk_carbon_g < 0 or retained_stalk_carbon_g < 0 or population_per_m2 <= 0 or stalk_volume_m3_per_g_c <= 0 or branch_base_height_m < 0 or branch_tip_height_m < branch_base_height_m or layer_boundary_height_m.len < 2 or layer_stalk_area_m2.len != layer_boundary_height_m.len - 1) return error.InvalidStalkLayerAllocationInput;
     for (1..layer_boundary_height_m.len) |index| if (!std.math.isFinite(layer_boundary_height_m[index - 1]) or !std.math.isFinite(layer_boundary_height_m[index]) or layer_boundary_height_m[index] < layer_boundary_height_m[index - 1]) return error.InvalidCanopyLayerBoundary;
     @memset(layer_stalk_area_m2, 0);
     const stalk_height_m = branch_tip_height_m - branch_base_height_m;
-    if (stalk_height_m == 0) return .{ .radius_m = 0, .surface_area_m2 = 0, .sapwood_carbon_g = if (standing_live_stalk_present) 0 else retained_stalk_carbon_g };
+    if (stalk_height_m == 0) return .{ .radius_m = 0, .surface_area_m2 = 0, .sapwood_carbon_g = if (specific_internode_length_positive) 0 else retained_stalk_carbon_g };
     const radius_m = @sqrt(stalk_volume_m3_per_g_c * (stalk_carbon_g / population_per_m2) / (3.1416 * stalk_height_m));
     const surface_area_m2 = 6.2832 * radius_m * stalk_height_m * population_per_m2;
     const sapwood_carbon_g = if (annual_growth_habit)
@@ -997,17 +1067,15 @@ pub fn allocateStalkAcrossCanopyLayers(stalk_carbon_g: f64, retained_stalk_carbo
     return .{ .radius_m = radius_m, .surface_area_m2 = surface_area_m2, .sapwood_carbon_g = sapwood_carbon_g };
 }
 
-pub fn distributeStalkGrowth(state: *State, branch: usize, newest_node_within_branch: usize, emerged: bool, maximum_concurrently_growing_nodes: usize, growth: LeafGrowth, etoliation_factor: f64, base_specific_internode_length_m_per_g_c: f64, minimum_stalk_carbon_per_cell_g: f64, plant_density_per_m2: f64, length_exponent: f64, turgor_expansion_fraction: f64, vertical_projection_fraction: f64, stalk_volume_m3_per_g_c: f64) !StalkGrowthResult {
+pub fn distributeStalkGrowth(state: *State, branch: usize, first_growing_node_within_branch: usize, last_growing_node_within_branch: usize, growth: LeafGrowth, etoliation_factor: f64, base_specific_internode_length_m_per_g_c: f64, minimum_stalk_carbon_per_cell_g: f64, plant_density_per_m2: f64, length_exponent: f64, turgor_expansion_fraction: f64, vertical_projection_fraction: f64, stalk_volume_m3_per_g_c: f64) !StalkGrowthResult {
     inline for (.{ growth.carbon_g, growth.nitrogen_g, growth.phosphorus_g, etoliation_factor, base_specific_internode_length_m_per_g_c, minimum_stalk_carbon_per_cell_g, plant_density_per_m2, length_exponent, turgor_expansion_fraction, vertical_projection_fraction, stalk_volume_m3_per_g_c }) |value| if (!std.math.isFinite(value)) return error.NonFiniteStalkGrowthInput;
-    if (growth.carbon_g < 0 or growth.nitrogen_g < 0 or growth.phosphorus_g < 0 or etoliation_factor < 0 or base_specific_internode_length_m_per_g_c < 0 or minimum_stalk_carbon_per_cell_g < 0 or plant_density_per_m2 <= 0 or turgor_expansion_fraction < 0 or vertical_projection_fraction < 0 or stalk_volume_m3_per_g_c < 0 or maximum_concurrently_growing_nodes == 0) return error.InvalidStalkGrowthInput;
+    if (growth.carbon_g < 0 or growth.nitrogen_g < 0 or growth.phosphorus_g < 0 or etoliation_factor < 0 or base_specific_internode_length_m_per_g_c < 0 or minimum_stalk_carbon_per_cell_g < 0 or plant_density_per_m2 <= 0 or turgor_expansion_fraction < 0 or vertical_projection_fraction < 0 or stalk_volume_m3_per_g_c < 0) return error.InvalidStalkGrowthInput;
     const nodes = try state.nodeRange(branch);
-    if (newest_node_within_branch >= nodes.end - nodes.first) return error.CanopyNodeIndexOutOfBounds;
-    const lower_bound: usize = @intFromBool(emerged);
-    const first = @max(lower_bound, newest_node_within_branch + 1 -| maximum_concurrently_growing_nodes);
-    if (first > newest_node_within_branch) return .{ .stem_diameter_m = 0 };
-    const count = newest_node_within_branch - first + 1;
+    if (last_growing_node_within_branch >= nodes.end - nodes.first or first_growing_node_within_branch > last_growing_node_within_branch) return error.CanopyNodeIndexOutOfBounds;
+    const first = first_growing_node_within_branch;
+    const count = last_growing_node_within_branch - first + 1;
     const allocation = 1.0 / @as(f64, @floatFromInt(count));
-    for (first..newest_node_within_branch + 1) |local_node| {
+    for (first..last_growing_node_within_branch + 1) |local_node| {
         const node = nodes.first + local_node;
         const carbon = allocation * growth.carbon_g;
         state.node_internode_carbon_g[node] += carbon;
@@ -1032,6 +1100,7 @@ pub fn distributeStalkGrowth(state: *State, branch: usize, newest_node_within_br
 pub const RecyclingFractions = struct { carbon: f64, nitrogen: f64, phosphorus: f64 };
 
 pub const NodeSenescenceAllocation = struct {
+    leaf_present: bool,
     leaf_fraction: f64,
     sheath_fraction: f64,
     leaf_recycled_carbon_g: f64,
@@ -1042,21 +1111,37 @@ pub const NodeSenescenceAllocation = struct {
 };
 
 pub fn allocateNodeSenescenceDemand(node_respiration_demand_g_c: f64, leaf_carbon_g: f64, sheath_carbon_g: f64, carbon_recycling_fraction: f64, phenological_senescence_fraction: f64, nonwoody_carbon_fraction: f64) !NodeSenescenceAllocation {
+    return allocateNodeSenescenceDemandWithThreshold(node_respiration_demand_g_c, leaf_carbon_g, sheath_carbon_g, carbon_recycling_fraction, phenological_senescence_fraction, nonwoody_carbon_fraction, 0);
+}
+
+fn allocateNodeSenescenceDemandWithThreshold(node_respiration_demand_g_c: f64, leaf_carbon_g: f64, sheath_carbon_g: f64, carbon_recycling_fraction: f64, phenological_senescence_fraction: f64, nonwoody_carbon_fraction: f64, leaf_presence_threshold_g_c: f64) !NodeSenescenceAllocation {
     inline for (.{ node_respiration_demand_g_c, leaf_carbon_g, sheath_carbon_g, carbon_recycling_fraction, phenological_senescence_fraction, nonwoody_carbon_fraction }) |value| if (!std.math.isFinite(value)) return error.NonFiniteNodeSenescenceInput;
     if (node_respiration_demand_g_c < 0 or leaf_carbon_g < 0 or sheath_carbon_g < 0 or carbon_recycling_fraction < 0 or carbon_recycling_fraction > 1 or phenological_senescence_fraction < 0 or phenological_senescence_fraction > 1 or nonwoody_carbon_fraction < 0 or nonwoody_carbon_fraction > 1) return error.InvalidNodeSenescenceInput;
-    const leaf_sheath_total = leaf_carbon_g + sheath_carbon_g;
-    const leaf_demand = if (leaf_carbon_g > 0 and leaf_sheath_total > 0) node_respiration_demand_g_c * leaf_carbon_g / leaf_sheath_total else 0;
-    const sheath_demand = node_respiration_demand_g_c - leaf_demand;
-    const recyclable_leaf = leaf_carbon_g * carbon_recycling_fraction;
-    const leaf_fraction = if (leaf_carbon_g > 0) (if (recyclable_leaf > 0) std.math.clamp(leaf_demand / recyclable_leaf, 0, 1) else 1) else 0;
-    const consumed_leaf_recycling = leaf_fraction * recyclable_leaf * nonwoody_carbon_fraction;
+    const request = try node_senescence_remobilization_request.calculate(.{
+        .leaf_carbon_g_c = &.{leaf_carbon_g},
+        .sheath_carbon_g_c = &.{sheath_carbon_g},
+        .leaf_nitrogen_g_n = &.{0},
+        .leaf_phosphorus_g_p = &.{0},
+    }, 0, node_respiration_demand_g_c, leaf_presence_threshold_g_c, .{
+        .carbon = carbon_recycling_fraction,
+        .nitrogen = 0,
+        .phosphorus = 0,
+    });
+    const recyclable_leaf = request.remobilizable_leaf_carbon_g_c;
+    const leaf_present = leaf_carbon_g > leaf_presence_threshold_g_c;
+    const leaf_fraction = if (leaf_present) request.leaf_mass_removal_fraction else 1;
+    const consumed_leaf_recycling = request.leaf_mass_removal_fraction * recyclable_leaf * nonwoody_carbon_fraction;
     var remaining = @max(0.0, node_respiration_demand_g_c - consumed_leaf_recycling);
     const recyclable_sheath = sheath_carbon_g * carbon_recycling_fraction;
-    const sheath_fraction = if (sheath_carbon_g > 0) (if (recyclable_sheath > 0) std.math.clamp(sheath_demand / recyclable_sheath, 0, 1) else 1) else 0;
+    const sheath_fraction = if (request.sheath_senescence_respiration_g_c_per_timestep > 0 and sheath_carbon_g > 0)
+        (if (recyclable_sheath > leaf_presence_threshold_g_c) std.math.clamp(request.sheath_senescence_respiration_g_c_per_timestep / recyclable_sheath, 0, 1) else 1)
+    else
+        0;
     const consumed_sheath_recycling = sheath_fraction * recyclable_sheath * nonwoody_carbon_fraction;
     remaining = @max(0.0, remaining - consumed_sheath_recycling);
     const recycled_carbon = consumed_leaf_recycling + consumed_sheath_recycling;
     return .{
+        .leaf_present = leaf_present,
         .leaf_fraction = leaf_fraction,
         .sheath_fraction = sheath_fraction,
         .leaf_recycled_carbon_g = leaf_fraction * recyclable_leaf,
@@ -1068,23 +1153,33 @@ pub fn allocateNodeSenescenceDemand(node_respiration_demand_g_c: f64, leaf_carbo
 }
 
 pub fn recyclingFractions(emerged: bool, mobile_carbon_g_per_g: f64, mobile_nitrogen_g_per_g: f64, mobile_phosphorus_g_per_g: f64, nitrogen_inhibition_g_n_per_g_c: f64, phosphorus_inhibition_g_p_per_g_c: f64, minimum_carbon_recycling_fraction: f64, responsive_carbon_recycling_fraction: f64, maximum_nitrogen_recycling_fraction: f64, maximum_phosphorus_recycling_fraction: f64) !RecyclingFractions {
-    inline for (.{ mobile_carbon_g_per_g, mobile_nitrogen_g_per_g, mobile_phosphorus_g_per_g, nitrogen_inhibition_g_n_per_g_c, phosphorus_inhibition_g_p_per_g_c, minimum_carbon_recycling_fraction, responsive_carbon_recycling_fraction, maximum_nitrogen_recycling_fraction, maximum_phosphorus_recycling_fraction }) |value| if (!std.math.isFinite(value)) return error.NonFiniteRecyclingInput;
-    if (mobile_carbon_g_per_g < 0 or mobile_nitrogen_g_per_g < 0 or mobile_phosphorus_g_per_g < 0 or nitrogen_inhibition_g_n_per_g_c <= 0 or phosphorus_inhibition_g_p_per_g_c <= 0 or minimum_carbon_recycling_fraction < 0 or responsive_carbon_recycling_fraction < 0 or maximum_nitrogen_recycling_fraction < 0 or maximum_phosphorus_recycling_fraction < 0) return error.InvalidRecyclingInput;
-    var carbon_constraint: f64 = 1;
-    var nitrogen_constraint: f64 = 0;
-    var phosphorus_constraint: f64 = 0;
-    if (emerged and mobile_carbon_g_per_g > 0) {
-        carbon_constraint = std.math.clamp(@min(
-            mobile_nitrogen_g_per_g / (mobile_nitrogen_g_per_g + mobile_carbon_g_per_g * nitrogen_inhibition_g_n_per_g_c),
-            mobile_phosphorus_g_per_g / (mobile_phosphorus_g_per_g + mobile_carbon_g_per_g * phosphorus_inhibition_g_p_per_g_c),
-        ), 0, 1);
-        nitrogen_constraint = std.math.clamp(mobile_carbon_g_per_g / (mobile_carbon_g_per_g + mobile_nitrogen_g_per_g / nitrogen_inhibition_g_n_per_g_c), 0, 1);
-        phosphorus_constraint = std.math.clamp(mobile_carbon_g_per_g / (mobile_carbon_g_per_g + mobile_phosphorus_g_per_g / phosphorus_inhibition_g_p_per_g_c), 0, 1);
-    }
+    const minimum_carbon = [1]f64{minimum_carbon_recycling_fraction};
+    const responsive_carbon = [1]f64{responsive_carbon_recycling_fraction};
+    const maximum_nitrogen = [1]f64{maximum_nitrogen_recycling_fraction};
+    const maximum_phosphorus = [1]f64{maximum_phosphorus_recycling_fraction};
+    const result = try shoot_recycling_fraction.calculate(
+        emerged,
+        0,
+        .{
+            .mobile_carbon_g_c_per_g_c = mobile_carbon_g_per_g,
+            .mobile_nitrogen_g_n_per_g_c = mobile_nitrogen_g_per_g,
+            .mobile_phosphorus_g_p_per_g_c = mobile_phosphorus_g_per_g,
+        },
+        .{
+            .nitrogen_g_n_per_g_c = nitrogen_inhibition_g_n_per_g_c,
+            .phosphorus_g_p_per_g_c = phosphorus_inhibition_g_p_per_g_c,
+        },
+        .{
+            .minimum_carbon_fraction = &minimum_carbon,
+            .responsive_carbon_fraction = &responsive_carbon,
+            .maximum_nitrogen_fraction = &maximum_nitrogen,
+            .maximum_phosphorus_fraction = &maximum_phosphorus,
+        },
+    );
     return .{
-        .carbon = minimum_carbon_recycling_fraction + carbon_constraint * responsive_carbon_recycling_fraction,
-        .nitrogen = nitrogen_constraint * maximum_nitrogen_recycling_fraction,
-        .phosphorus = phosphorus_constraint * maximum_phosphorus_recycling_fraction,
+        .carbon = result.carbon,
+        .nitrogen = result.nitrogen,
+        .phosphorus = result.phosphorus,
     };
 }
 
@@ -1152,9 +1247,9 @@ pub fn commitNodeSenescenceDemand(state: *State, branch: usize, node_within_bran
     const sheath_c = state.node_sheath_carbon_g[node];
     const sheath_n = state.node_sheath_nitrogen_g[node];
     const sheath_p = state.node_sheath_phosphorus_g[node];
-    const recycled_leaf_c = leaf_c * recycling.carbon;
-    const recycled_leaf_n = leaf_n * (recycling.nitrogen + (1.0 - recycling.nitrogen) * recycling.carbon);
-    const recycled_leaf_p = leaf_p * (recycling.phosphorus + (1.0 - recycling.phosphorus) * recycling.carbon);
+    const recycled_leaf_c = if (allocation.leaf_present) leaf_c * recycling.carbon else 0;
+    const recycled_leaf_n = if (allocation.leaf_present) leaf_n * (recycling.nitrogen + (1.0 - recycling.nitrogen) * recycling.carbon) else 0;
+    const recycled_leaf_p = if (allocation.leaf_present) leaf_p * (recycling.phosphorus + (1.0 - recycling.phosphorus) * recycling.carbon) else 0;
     const recycled_sheath_c = sheath_c * recycling.carbon;
     const recycled_sheath_n = sheath_n * (recycling.nitrogen + (1.0 - recycling.nitrogen) * recycling.carbon);
     const recycled_sheath_p = sheath_p * (recycling.phosphorus + (1.0 - recycling.phosphorus) * recycling.carbon);
@@ -1172,36 +1267,106 @@ pub fn commitNodeSenescenceDemand(state: *State, branch: usize, node_within_bran
         products.nonwoody_nitrogen_g[kinetic] = leaf_woody_nitrogen_fraction[1] * leaf_kinetics.nitrogen[kinetic] * allocation.leaf_fraction * (leaf_n - recycled_leaf_n) + sheath_woody_nitrogen_fraction[1] * sheath_kinetics.nitrogen[kinetic] * allocation.sheath_fraction * (sheath_n - recycled_sheath_n);
         products.nonwoody_phosphorus_g[kinetic] = leaf_woody_phosphorus_fraction[1] * leaf_kinetics.phosphorus[kinetic] * allocation.leaf_fraction * (leaf_p - recycled_leaf_p) + sheath_woody_phosphorus_fraction[1] * sheath_kinetics.phosphorus[kinetic] * allocation.sheath_fraction * (sheath_p - recycled_sheath_p);
     }
-    const removed_c4 = allocation.leaf_fraction * (state.node_c3_nonstructural_carbon_g[node] + state.node_c4_mesophyll_nonstructural_carbon_g[node]);
-    products.nonwoody_carbon_g[1] += removed_c4;
-    state.node_c3_nonstructural_carbon_g[node] *= 1.0 - allocation.leaf_fraction;
-    state.node_c4_mesophyll_nonstructural_carbon_g[node] *= 1.0 - allocation.leaf_fraction;
+    const leaf_publication = try @import("leaf_senescence_state_publication.zig").calculate(.{
+        .branch = .{ .area_m2 = state.branch_leaf_area_m2[branch], .carbon_g_c = state.branch_leaf_carbon_g[branch], .nitrogen_g_n = state.branch_leaf_nitrogen_g[branch], .phosphorus_g_p = state.branch_leaf_phosphorus_g[branch] },
+        .node = .{ .area_m2 = state.node_leaf_area_m2[node], .carbon_g_c = leaf_c, .nitrogen_g_n = leaf_n, .phosphorus_g_p = leaf_p },
+        .node_protein_g = state.node_leaf_protein_g[node],
+        .senescing_snapshot = .{ .area_m2 = state.node_leaf_area_m2[node], .carbon_g_c = leaf_c, .nitrogen_g_n = leaf_n, .phosphorus_g_p = leaf_p },
+        .area_removal_fraction = allocation.leaf_fraction,
+        .mass_removal_fraction = allocation.leaf_fraction,
+        .protein_per_nitrogen_g_per_g_n = protein_per_nitrogen_g_per_g_n,
+        .protein_per_phosphorus_g_per_g_p = protein_per_phosphorus_g_per_g_p,
+        .branch_mobile_carbon_g_c = state.branch_mobile_carbon_g[branch],
+        .branch_mobile_nitrogen_g_n = state.branch_mobile_nitrogen_g[branch],
+        .branch_mobile_phosphorus_g_p = state.branch_mobile_phosphorus_g[branch],
+        .recycled_carbon_g_c = products.recycled_carbon_g,
+        .recycled_nitrogen_g_n = products.recycled_nitrogen_g,
+        .recycled_phosphorus_g_p = products.recycled_phosphorus_g,
+    });
+    const c4_state: c4_leaf_nonstructural_carbon_senescence.State = .{
+        .bundle_sheath_carbon_g_c = state.node_c3_nonstructural_carbon_g,
+        .mesophyll_carbon_g_c = state.node_c4_mesophyll_nonstructural_carbon_g,
+        .foliar_litter_carbon_g_c_by_kinetic_pool = &products.nonwoody_carbon_g,
+    };
+    const c4_routing: c4_leaf_nonstructural_carbon_senescence.Routing = .{
+        .selected_node = node,
+        .foliar_litter_kinetic_pool = 1,
+    };
+    if (allocation.leaf_present)
+        try c4_leaf_nonstructural_carbon_senescence.routePartial(c4_state, c4_routing, allocation.leaf_fraction)
+    else
+        try c4_leaf_nonstructural_carbon_senescence.routeAll(c4_state, c4_routing);
 
-    const removed_leaf_area = allocation.leaf_fraction * state.node_leaf_area_m2[node];
-    state.node_leaf_area_m2[node] -= removed_leaf_area;
-    state.branch_leaf_area_m2[branch] = @max(0.0, state.branch_leaf_area_m2[branch] - removed_leaf_area);
-    state.node_leaf_carbon_g[node] = leaf_c * (1.0 - allocation.leaf_fraction);
-    state.node_leaf_nitrogen_g[node] = leaf_n * (1.0 - allocation.leaf_fraction);
-    state.node_leaf_phosphorus_g[node] = leaf_p * (1.0 - allocation.leaf_fraction);
-    state.node_leaf_protein_g[node] = @max(0.0, state.node_leaf_protein_g[node] - allocation.leaf_fraction * @max(state.node_leaf_nitrogen_g[node] * protein_per_nitrogen_g_per_g_n, state.node_leaf_phosphorus_g[node] * protein_per_phosphorus_g_per_g_p));
+    state.branch_leaf_area_m2[branch] = leaf_publication.branch.area_m2;
+    state.branch_leaf_carbon_g[branch] = leaf_publication.branch.carbon_g_c;
+    state.branch_leaf_nitrogen_g[branch] = leaf_publication.branch.nitrogen_g_n;
+    state.branch_leaf_phosphorus_g[branch] = leaf_publication.branch.phosphorus_g_p;
+    state.node_leaf_area_m2[node] = leaf_publication.node.area_m2;
+    state.node_leaf_carbon_g[node] = leaf_publication.node.carbon_g_c;
+    state.node_leaf_nitrogen_g[node] = leaf_publication.node.nitrogen_g_n;
+    state.node_leaf_phosphorus_g[node] = leaf_publication.node.phosphorus_g_p;
+    state.node_leaf_protein_g[node] = leaf_publication.node_protein_g;
     state.node_sheath_height_m[node] *= 1.0 - allocation.sheath_fraction;
     state.node_sheath_carbon_g[node] = sheath_c * (1.0 - allocation.sheath_fraction);
     state.node_sheath_nitrogen_g[node] = sheath_n * (1.0 - allocation.sheath_fraction);
     state.node_sheath_phosphorus_g[node] = sheath_p * (1.0 - allocation.sheath_fraction);
-    state.node_sheath_protein_g[node] = @max(0.0, state.node_sheath_protein_g[node] - allocation.sheath_fraction * @max(state.node_sheath_nitrogen_g[node] * protein_per_nitrogen_g_per_g_n, state.node_sheath_phosphorus_g[node] * protein_per_phosphorus_g_per_g_p));
-    state.branch_leaf_carbon_g[branch] = @max(0.0, state.branch_leaf_carbon_g[branch] - allocation.leaf_fraction * leaf_c);
-    state.branch_leaf_nitrogen_g[branch] = @max(0.0, state.branch_leaf_nitrogen_g[branch] - allocation.leaf_fraction * leaf_n);
-    state.branch_leaf_phosphorus_g[branch] = @max(0.0, state.branch_leaf_phosphorus_g[branch] - allocation.leaf_fraction * leaf_p);
+    state.node_sheath_protein_g[node] = @max(0.0, state.node_sheath_protein_g[node] - allocation.sheath_fraction * @max(sheath_n * protein_per_nitrogen_g_per_g_n, sheath_p * protein_per_phosphorus_g_per_g_p));
     state.branch_sheath_carbon_g[branch] = @max(0.0, state.branch_sheath_carbon_g[branch] - allocation.sheath_fraction * sheath_c);
     state.branch_sheath_nitrogen_g[branch] = @max(0.0, state.branch_sheath_nitrogen_g[branch] - allocation.sheath_fraction * sheath_n);
     state.branch_sheath_phosphorus_g[branch] = @max(0.0, state.branch_sheath_phosphorus_g[branch] - allocation.sheath_fraction * sheath_p);
-    state.branch_mobile_carbon_g[branch] += products.recycled_carbon_g;
-    state.branch_mobile_nitrogen_g[branch] += products.recycled_nitrogen_g;
-    state.branch_mobile_phosphorus_g[branch] += products.recycled_phosphorus_g;
+    state.branch_mobile_carbon_g[branch] = leaf_publication.branch_mobile_carbon_g_c;
+    state.branch_mobile_nitrogen_g[branch] = leaf_publication.branch_mobile_nitrogen_g_n;
+    state.branch_mobile_phosphorus_g[branch] = leaf_publication.branch_mobile_phosphorus_g_p;
     return products;
 }
 
 pub const InternodeSenescenceResult = struct { fraction: f64, remaining_respiration_demand_g_c: f64, products: SenescenceProducts };
+
+fn commitInternodeSenescenceDemandScaled(state: *State, branch: usize, node_within_branch: usize, respiration_demand_g_c: f64, phenological_senescence_fraction: f64, scaled_recycling: perennial_stalk_senescence_setup.RecyclingFractions, presence_threshold_g_c: f64, woody_carbon_fraction: [2]f64, woody_nitrogen_fraction: [2]f64, woody_phosphorus_fraction: [2]f64, woody_kinetics: KineticFractions, stalk_kinetics: KineticFractions) !InternodeSenescenceResult {
+    const nodes = try state.nodeRange(branch);
+    if (node_within_branch >= nodes.end - nodes.first) return error.CanopyNodeIndexOutOfBounds;
+    const node = nodes.first + node_within_branch;
+    var products: SenescenceProducts = .{};
+    const reserve_carbon_before = state.branch_reserve_carbon_g[branch];
+    const reserve_nitrogen_before = state.branch_reserve_nitrogen_g[branch];
+    const reserve_phosphorus_before = state.branch_reserve_phosphorus_g[branch];
+    const result = try internode_senescence_publication.publish(.{
+        .branch_stalk_carbon_g_c = &state.branch_stalk_carbon_g[branch],
+        .branch_stalk_nitrogen_g_n = &state.branch_stalk_nitrogen_g[branch],
+        .branch_stalk_phosphorus_g_p = &state.branch_stalk_phosphorus_g[branch],
+        .node_height_m = state.node_height_m,
+        .internode_length_m = state.node_internode_length_m,
+        .internode_carbon_g_c = state.node_internode_carbon_g,
+        .internode_nitrogen_g_n = state.node_internode_nitrogen_g,
+        .internode_phosphorus_g_p = state.node_internode_phosphorus_g,
+        .reserve_carbon_g_c = &state.branch_reserve_carbon_g[branch],
+        .reserve_nitrogen_g_n = &state.branch_reserve_nitrogen_g[branch],
+        .reserve_phosphorus_g_p = &state.branch_reserve_phosphorus_g[branch],
+        .litter = .{
+            .woody_carbon_g_c = &products.woody_carbon_g,
+            .woody_nitrogen_g_n = &products.woody_nitrogen_g,
+            .woody_phosphorus_g_p = &products.woody_phosphorus_g,
+            .stalk_carbon_g_c = &products.nonwoody_carbon_g,
+            .stalk_nitrogen_g_n = &products.nonwoody_nitrogen_g,
+            .stalk_phosphorus_g_p = &products.nonwoody_phosphorus_g,
+        },
+    }, .{
+        .selected_node = node,
+        .respiration_demand_g_c_per_timestep = respiration_demand_g_c,
+        .presence_threshold_g_c = presence_threshold_g_c,
+        .phenological_senescence_fraction = phenological_senescence_fraction,
+        .sapwood_recycling = .{ .carbon = scaled_recycling.carbon, .nitrogen = scaled_recycling.nitrogen, .phosphorus = scaled_recycling.phosphorus },
+        .woody_fraction = .{ .carbon = woody_carbon_fraction[0], .nitrogen = woody_nitrogen_fraction[0], .phosphorus = woody_phosphorus_fraction[0] },
+        .nonwoody_fraction = .{ .carbon = woody_carbon_fraction[1], .nitrogen = woody_nitrogen_fraction[1], .phosphorus = woody_phosphorus_fraction[1] },
+        .woody_kinetics = .{ .carbon = &woody_kinetics.carbon, .nitrogen = &woody_kinetics.nitrogen, .phosphorus = &woody_kinetics.phosphorus },
+        .stalk_kinetics = .{ .carbon = &stalk_kinetics.carbon, .nitrogen = &stalk_kinetics.nitrogen, .phosphorus = &stalk_kinetics.phosphorus },
+    });
+    products.recycled_carbon_g = state.branch_reserve_carbon_g[branch] - reserve_carbon_before;
+    products.recycled_nitrogen_g = state.branch_reserve_nitrogen_g[branch] - reserve_nitrogen_before;
+    products.recycled_phosphorus_g = state.branch_reserve_phosphorus_g[branch] - reserve_phosphorus_before;
+    products.respired_carbon_g = respiration_demand_g_c - result.remaining_respiration_g_c_per_timestep - products.recycled_carbon_g;
+    return .{ .fraction = result.removal_fraction, .remaining_respiration_demand_g_c = result.remaining_respiration_g_c_per_timestep, .products = products };
+}
 
 pub fn commitInternodeSenescenceDemand(state: *State, branch: usize, node_within_branch: usize, respiration_demand_g_c: f64, phenological_senescence_fraction: f64, recycling: RecyclingFractions, woody_carbon_fraction: [2]f64, woody_nitrogen_fraction: [2]f64, woody_phosphorus_fraction: [2]f64, woody_kinetics: KineticFractions, stalk_kinetics: KineticFractions) !InternodeSenescenceResult {
     inline for (.{ respiration_demand_g_c, phenological_senescence_fraction, recycling.carbon, recycling.nitrogen, recycling.phosphorus }) |value| if (!std.math.isFinite(value)) return error.NonFiniteInternodeSenescenceInput;
@@ -1313,6 +1478,61 @@ pub fn commitResidualStalkSenescenceDemand(state: *State, branch: usize, respira
     return .{ .fraction = fraction, .remaining_respiration_demand_g_c = @max(0.0, respiration_demand_g_c - consumed_recyclable_c), .products = products };
 }
 
+fn commitResidualStalkSenescenceDemandScaled(state: *State, branch: usize, respiration_demand_g_c: f64, phenological_senescence_fraction: f64, scaled_recycling: perennial_stalk_senescence_setup.RecyclingFractions, presence_threshold_g_c: f64, woody_carbon_fraction: [2]f64, woody_nitrogen_fraction: [2]f64, woody_phosphorus_fraction: [2]f64, woody_kinetics: KineticFractions, stalk_kinetics: KineticFractions) !InternodeSenescenceResult {
+    const request = try residual_stalk_senescence_request.calculate(.{
+        .carbon = state.branch_senescing_stalk_carbon_g[branch],
+        .nitrogen = state.branch_senescing_stalk_nitrogen_g[branch],
+        .phosphorus = state.branch_senescing_stalk_phosphorus_g[branch],
+    }, .{
+        .carbon = scaled_recycling.carbon,
+        .nitrogen = scaled_recycling.nitrogen,
+        .phosphorus = scaled_recycling.phosphorus,
+    }, respiration_demand_g_c, presence_threshold_g_c) orelse return .{
+        .fraction = 0,
+        .remaining_respiration_demand_g_c = respiration_demand_g_c,
+        .products = .{},
+    };
+    const nodes = try state.nodeRange(branch);
+    var products: SenescenceProducts = .{};
+    const reserve_carbon_before = state.branch_reserve_carbon_g[branch];
+    const reserve_nitrogen_before = state.branch_reserve_nitrogen_g[branch];
+    const reserve_phosphorus_before = state.branch_reserve_phosphorus_g[branch];
+    const result = try residual_stalk_senescence_publication.publish(.{
+        .branch_stalk_carbon_g_c = &state.branch_stalk_carbon_g[branch],
+        .branch_stalk_nitrogen_g_n = &state.branch_stalk_nitrogen_g[branch],
+        .branch_stalk_phosphorus_g_p = &state.branch_stalk_phosphorus_g[branch],
+        .residual_stalk_carbon_g_c = &state.branch_senescing_stalk_carbon_g[branch],
+        .residual_stalk_nitrogen_g_n = &state.branch_senescing_stalk_nitrogen_g[branch],
+        .residual_stalk_phosphorus_g_p = &state.branch_senescing_stalk_phosphorus_g[branch],
+        .node_height_m = state.node_height_m[nodes.first..nodes.end],
+        .reserve_carbon_g_c = &state.branch_reserve_carbon_g[branch],
+        .reserve_nitrogen_g_n = &state.branch_reserve_nitrogen_g[branch],
+        .reserve_phosphorus_g_p = &state.branch_reserve_phosphorus_g[branch],
+        .litter = .{
+            .woody_carbon_g_c = &products.woody_carbon_g,
+            .woody_nitrogen_g_n = &products.woody_nitrogen_g,
+            .woody_phosphorus_g_p = &products.woody_phosphorus_g,
+            .stalk_carbon_g_c = &products.nonwoody_carbon_g,
+            .stalk_nitrogen_g_n = &products.nonwoody_nitrogen_g,
+            .stalk_phosphorus_g_p = &products.nonwoody_phosphorus_g,
+        },
+    }, .{
+        .removal_fraction = request.removal_fraction,
+        .recyclable = .{ .carbon = request.recyclable.carbon, .nitrogen = request.recyclable.nitrogen, .phosphorus = request.recyclable.phosphorus },
+        .respiration_demand_g_c_per_timestep = respiration_demand_g_c,
+        .phenological_senescence_fraction = phenological_senescence_fraction,
+        .woody_fraction = .{ .carbon = woody_carbon_fraction[0], .nitrogen = woody_nitrogen_fraction[0], .phosphorus = woody_phosphorus_fraction[0] },
+        .nonwoody_fraction = .{ .carbon = woody_carbon_fraction[1], .nitrogen = woody_nitrogen_fraction[1], .phosphorus = woody_phosphorus_fraction[1] },
+        .woody_kinetics = .{ .carbon = &woody_kinetics.carbon, .nitrogen = &woody_kinetics.nitrogen, .phosphorus = &woody_kinetics.phosphorus },
+        .stalk_kinetics = .{ .carbon = &stalk_kinetics.carbon, .nitrogen = &stalk_kinetics.nitrogen, .phosphorus = &stalk_kinetics.phosphorus },
+    });
+    products.recycled_carbon_g = state.branch_reserve_carbon_g[branch] - reserve_carbon_before;
+    products.recycled_nitrogen_g = state.branch_reserve_nitrogen_g[branch] - reserve_nitrogen_before;
+    products.recycled_phosphorus_g = state.branch_reserve_phosphorus_g[branch] - reserve_phosphorus_before;
+    products.respired_carbon_g = respiration_demand_g_c - result.remaining_respiration_g_c_per_timestep - products.recycled_carbon_g;
+    return .{ .fraction = request.removal_fraction, .remaining_respiration_demand_g_c = result.remaining_respiration_g_c_per_timestep, .products = products };
+}
+
 pub const ReserveFallbackPolicy = enum { source_compatible, consume_available };
 
 pub const SenescenceLitterParameters = struct {
@@ -1337,6 +1557,7 @@ pub const BranchSenescenceRequest = struct {
     node_group_count: usize,
     perennial: bool,
     reserve_fallback_policy: ReserveFallbackPolicy = .source_compatible,
+    leaf_presence_threshold_g_c: f64 = 0,
     demand_tolerance_g_c: f64,
 };
 
@@ -1350,45 +1571,67 @@ pub const BranchSenescenceResult = struct {
 /// groups through reserve C, internodes, and residual stalk. Runtime node
 /// offsets replace the source's modulo-25 storage ring.
 pub fn commitBranchSenescenceDemand(state: *State, branch: usize, request: BranchSenescenceRequest, recycling: RecyclingFractions, protein_per_nitrogen_g_per_g_n: f64, protein_per_phosphorus_g_per_g_p: f64, litter: SenescenceLitterParameters) !BranchSenescenceResult {
-    inline for (.{ request.total_respiration_demand_g_c, request.phenological_senescence_fraction, request.demand_tolerance_g_c }) |value| if (!std.math.isFinite(value)) return error.NonFiniteBranchSenescenceInput;
-    if (request.total_respiration_demand_g_c < 0 or request.phenological_senescence_fraction < 0 or request.phenological_senescence_fraction > 1 or request.node_group_count == 0 or request.demand_tolerance_g_c < 0) return error.InvalidBranchSenescenceInput;
+    inline for (.{ request.total_respiration_demand_g_c, request.phenological_senescence_fraction, request.leaf_presence_threshold_g_c, request.demand_tolerance_g_c }) |value| if (!std.math.isFinite(value)) return error.NonFiniteBranchSenescenceInput;
+    if (request.total_respiration_demand_g_c < 0 or request.phenological_senescence_fraction < 0 or request.phenological_senescence_fraction > 1 or request.node_group_count == 0 or request.leaf_presence_threshold_g_c < 0 or request.demand_tolerance_g_c < 0) return error.InvalidBranchSenescenceInput;
     const nodes = try state.nodeRange(branch);
     const node_count = nodes.end - nodes.first;
     if (request.first_node_within_branch > request.last_node_within_branch or request.last_node_within_branch >= node_count) return error.CanopyNodeIndexOutOfBounds;
     var result: BranchSenescenceResult = .{ .remaining_respiration_demand_g_c = 0, .reserve_carbon_respired_g_c = 0, .products = .{} };
-    const group_demand_g_c = request.total_respiration_demand_g_c / @as(f64, @floatFromInt(request.node_group_count));
+    const cascade_threshold_g_c = if (request.reserve_fallback_policy == .source_compatible)
+        request.leaf_presence_threshold_g_c
+    else
+        request.demand_tolerance_g_c;
+    const group_demand_g_c = try node_senescence_remobilization_request.respirationPerPass(
+        request.total_respiration_demand_g_c,
+        request.node_group_count,
+    );
     for (0..request.node_group_count) |group| {
         var remaining_g_c = group_demand_g_c;
-        const group_start = @min(request.first_node_within_branch + group, request.last_node_within_branch);
-        for (group_start..request.last_node_within_branch + 1) |node_within_branch| {
+        const group_start = try node_senescence_cascade_progress.firstNodeForPass(request.first_node_within_branch, request.last_node_within_branch, group);
+        if (group_start) |first_node| for (first_node..request.last_node_within_branch + 1) |node_within_branch| {
             const node = nodes.first + node_within_branch;
-            const allocation = try allocateNodeSenescenceDemand(remaining_g_c, state.node_leaf_carbon_g[node], state.node_sheath_carbon_g[node], recycling.carbon, request.phenological_senescence_fraction, litter.woody_carbon_fraction[1]);
+            const allocation = try allocateNodeSenescenceDemandWithThreshold(remaining_g_c, state.node_leaf_carbon_g[node], state.node_sheath_carbon_g[node], recycling.carbon, request.phenological_senescence_fraction, litter.woody_carbon_fraction[1], request.leaf_presence_threshold_g_c);
             const products = try commitNodeSenescenceDemand(state, branch, node_within_branch, allocation, recycling, protein_per_nitrogen_g_per_g_n, protein_per_phosphorus_g_per_g_p, litter.woody_carbon_fraction, litter.leaf_woody_nitrogen_fraction, litter.sheath_woody_nitrogen_fraction, litter.leaf_woody_phosphorus_fraction, litter.sheath_woody_phosphorus_fraction, litter.woody_kinetics, litter.leaf_kinetics, litter.sheath_kinetics);
             addSenescenceProducts(&result.products, products);
             remaining_g_c = allocation.remaining_respiration_demand_g_c;
-            if (remaining_g_c <= request.demand_tolerance_g_c) break;
-        }
-        if (remaining_g_c > request.demand_tolerance_g_c) {
-            const reserve_g_c = state.branch_reserve_carbon_g[branch];
-            const consume_reserve = request.reserve_fallback_policy == .consume_available or reserve_g_c > remaining_g_c;
-            if (consume_reserve) {
+            if (remaining_g_c <= cascade_threshold_g_c) break;
+        };
+        if (remaining_g_c > cascade_threshold_g_c) {
+            if (request.reserve_fallback_policy == .consume_available) {
+                const reserve_g_c = state.branch_reserve_carbon_g[branch];
                 const consumed_g_c = @min(reserve_g_c, remaining_g_c);
                 state.branch_reserve_carbon_g[branch] -= consumed_g_c;
                 result.reserve_carbon_respired_g_c += consumed_g_c;
                 remaining_g_c -= consumed_g_c;
+            } else {
+                const reserve = try node_senescence_cascade_progress.applyReserveFallback(.{
+                    .reserve_carbon_g_c = &state.branch_reserve_carbon_g[branch],
+                }, remaining_g_c, request.phenological_senescence_fraction);
+                result.reserve_carbon_respired_g_c += reserve.reserve_carbon_respired_g_c_per_timestep;
+                remaining_g_c = reserve.excess_maintenance_respiration_g_c_per_timestep;
             }
         }
-        if (request.perennial and remaining_g_c > request.demand_tolerance_g_c) {
-            var ordinal = request.last_node_within_branch + 1;
-            while (ordinal > request.first_node_within_branch) {
-                ordinal -= 1;
-                const internode = try commitInternodeSenescenceDemand(state, branch, ordinal, remaining_g_c, 0, recycling, litter.woody_carbon_fraction, litter.stalk_woody_nitrogen_fraction, litter.stalk_woody_phosphorus_fraction, litter.woody_kinetics, litter.stalk_kinetics);
+        if (request.perennial and remaining_g_c > cascade_threshold_g_c) {
+            const stalk_setup = try perennial_stalk_senescence_setup.prepare(.{
+                .is_perennial = true,
+                .excess_maintenance_respiration_g_c_per_timestep = remaining_g_c,
+                .stalk_carbon_g_c = state.branch_stalk_carbon_g[branch],
+                .sapwood_carbon_g_c = state.branch_sapwood_carbon_g[branch],
+                .presence_threshold_g_c = request.leaf_presence_threshold_g_c,
+                .first_internode = request.first_node_within_branch,
+                .last_internode = request.last_node_within_branch,
+                .shoot_recycling = .{ .carbon = recycling.carbon, .nitrogen = recycling.nitrogen, .phosphorus = recycling.phosphorus },
+            });
+            if (stalk_setup) |setup| for (0..setup.last_internode - setup.first_internode + 1) |iteration| {
+                const ordinal = perennial_stalk_senescence_setup.descendingInternode(setup, iteration).?;
+                const internode = try commitInternodeSenescenceDemandScaled(state, branch, ordinal, remaining_g_c, setup.phenological_senescence_fraction, setup.sapwood_recycling, request.leaf_presence_threshold_g_c, litter.woody_carbon_fraction, litter.stalk_woody_nitrogen_fraction, litter.stalk_woody_phosphorus_fraction, litter.woody_kinetics, litter.stalk_kinetics);
                 addSenescenceProducts(&result.products, internode.products);
                 remaining_g_c = internode.remaining_respiration_demand_g_c;
-                if (remaining_g_c <= request.demand_tolerance_g_c) break;
-            }
-            if (remaining_g_c > request.demand_tolerance_g_c) {
-                const residual = try commitResidualStalkSenescenceDemand(state, branch, remaining_g_c, 0, recycling, litter.woody_carbon_fraction, litter.stalk_woody_nitrogen_fraction, litter.stalk_woody_phosphorus_fraction, litter.woody_kinetics, litter.stalk_kinetics);
+                if (remaining_g_c <= cascade_threshold_g_c) break;
+            };
+            if (stalk_setup != null and remaining_g_c > cascade_threshold_g_c) {
+                const setup = stalk_setup.?;
+                const residual = try commitResidualStalkSenescenceDemandScaled(state, branch, remaining_g_c, setup.phenological_senescence_fraction, setup.sapwood_recycling, request.leaf_presence_threshold_g_c, litter.woody_carbon_fraction, litter.stalk_woody_nitrogen_fraction, litter.stalk_woody_phosphorus_fraction, litter.woody_kinetics, litter.stalk_kinetics);
                 addSenescenceProducts(&result.products, residual.products);
                 remaining_g_c = residual.remaining_respiration_demand_g_c;
             }
@@ -1445,14 +1688,19 @@ pub fn remobilizeNodeLeafNutrients(state: *State, branch: usize, node_within_bra
 /// remobilization is already enabled (IFLGZ=1), the later senescence cascade
 /// owns the reserve transaction instead.
 pub fn consumeReserveForRespiration(state: *State, branch: usize, shoot_remobilization_enabled: bool, remaining_respiration_demand_g_c: f64, maximum_nonstructural_carbon_oxidation_per_h: f64, canopy_growth_temperature_factor: f64, timestep_h: f64) !f64 {
-    inline for (.{ remaining_respiration_demand_g_c, maximum_nonstructural_carbon_oxidation_per_h, canopy_growth_temperature_factor, timestep_h }) |value| if (!std.math.isFinite(value)) return error.NonFiniteReserveRespirationInput;
     if (branch >= state.branch_reserve_carbon_g.len) return error.CanopyBranchIndexOutOfBounds;
-    if (remaining_respiration_demand_g_c < 0 or maximum_nonstructural_carbon_oxidation_per_h < 0 or canopy_growth_temperature_factor < 0 or timestep_h <= 0) return error.InvalidReserveRespirationInput;
-    if (shoot_remobilization_enabled or remaining_respiration_demand_g_c == 0 or state.branch_reserve_carbon_g[branch] == 0) return remaining_respiration_demand_g_c;
-    const oxidized = @min(remaining_respiration_demand_g_c, maximum_nonstructural_carbon_oxidation_per_h * state.branch_reserve_carbon_g[branch] * canopy_growth_temperature_factor) * timestep_h;
-    if (oxidized > state.branch_reserve_carbon_g[branch] + 1e-12) return error.ReserveRespirationExceedsPool;
-    state.branch_reserve_carbon_g[branch] = @max(0.0, state.branch_reserve_carbon_g[branch] - oxidized);
-    return @max(0.0, remaining_respiration_demand_g_c - oxidized);
+    var demand = [1]f64{remaining_respiration_demand_g_c};
+    _ = try reserve_maintenance_respiration.apply(.{
+        .reserve_carbon_g_c = state.branch_reserve_carbon_g[branch .. branch + 1],
+        .excess_maintenance_respiration_g_c_per_timestep = &demand,
+    }, .{
+        .branch = 0,
+        .shoot_remobilization_status = if (shoot_remobilization_enabled) .active else .not_started,
+        .maximum_nonstructural_carbon_oxidation_per_h = maximum_nonstructural_carbon_oxidation_per_h,
+        .canopy_growth_temperature_response = canopy_growth_temperature_factor,
+        .timestep_h = timestep_h,
+    });
+    return demand[0];
 }
 
 pub const SenescenceDemand = struct {
@@ -1460,22 +1708,43 @@ pub const SenescenceDemand = struct {
     total_respiration_g_c: f64,
     phenological_fraction: f64,
     node_group_count: usize,
+    first_preceding_node: usize,
 };
 
 pub fn senescenceDemand(shoot_remobilization_enabled: bool, phenological_remobilization_enabled: bool, perennial: bool, canopy_leaf_area_m2: f64, horizontal_cell_area_m2: f64, leaf_storage_exchange_per_h: f64, branch_leaf_sheath_carbon_g: f64, remobilization_elapsed_h: f64, full_senescence_h: f64, timestep_h: f64, excess_maintenance_respiration_g_c: f64, highest_leaf_ordinal: usize, lowest_leaf_ordinal: usize) !SenescenceDemand {
-    inline for (.{ canopy_leaf_area_m2, horizontal_cell_area_m2, leaf_storage_exchange_per_h, branch_leaf_sheath_carbon_g, remobilization_elapsed_h, full_senescence_h, timestep_h, excess_maintenance_respiration_g_c }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSenescenceDemandInput;
-    if (canopy_leaf_area_m2 < 0 or horizontal_cell_area_m2 <= 0 or leaf_storage_exchange_per_h < 0 or branch_leaf_sheath_carbon_g < 0 or remobilization_elapsed_h < 0 or full_senescence_h <= 0 or timestep_h <= 0 or excess_maintenance_respiration_g_c < 0 or highest_leaf_ordinal < lowest_leaf_ordinal) return error.InvalidSenescenceDemandInput;
-    const phenological = if (shoot_remobilization_enabled and phenological_remobilization_enabled and perennial) blk: {
-        const leaf_area_index = canopy_leaf_area_m2 / horizontal_cell_area_m2;
-        const density_factor = 1.0 + @max(0.0, leaf_area_index - 4.0);
-        break :blk leaf_storage_exchange_per_h * density_factor * branch_leaf_sheath_carbon_g * @min(1.0, remobilization_elapsed_h / full_senescence_h) * timestep_h;
-    } else 0;
-    const total = excess_maintenance_respiration_g_c + phenological;
-    return .{
-        .phenological_respiration_g_c = phenological,
-        .total_respiration_g_c = total,
-        .phenological_fraction = if (total > 0) phenological / total else 0,
+    const exchange = [1]f64{leaf_storage_exchange_per_h};
+    const setup = try shoot_total_senescence_setup.calculate(.{
+        .shoot_remobilization = if (shoot_remobilization_enabled) .enabled else .disabled,
+        .phenological_remobilization = if (phenological_remobilization_enabled) .enabled else .disabled,
+        .perennial_growth_habit = perennial,
+        .plant_leaf_area_m2 = canopy_leaf_area_m2,
+        .horizontal_cell_area_m2 = horizontal_cell_area_m2,
+        .aboveground_turnover_index = 0,
+        .leaf_storage_exchange_fraction_per_h_by_turnover = &exchange,
+        .branch_leaf_and_sheath_carbon_g_c = branch_leaf_sheath_carbon_g,
+        .remobilization_elapsed_h = remobilization_elapsed_h,
+        .full_senescence_duration_h = full_senescence_h,
+        .timestep_h = timestep_h,
+        .excess_maintenance_respiration_g_c_per_timestep = excess_maintenance_respiration_g_c,
+        .structural_presence_threshold_g_c = 0,
+        .newest_leaf_node = highest_leaf_ordinal,
+        .lowest_leaf_node = lowest_leaf_ordinal,
+        .runtime_node_count = try std.math.add(usize, highest_leaf_ordinal, 1),
+    });
+    if (setup == null) return .{
+        .phenological_respiration_g_c = 0,
+        .total_respiration_g_c = 0,
+        .phenological_fraction = 0,
         .node_group_count = (highest_leaf_ordinal - lowest_leaf_ordinal) / 2 + 1,
+        .first_preceding_node = lowest_leaf_ordinal -| 1,
+    };
+    const result = setup.?;
+    return .{
+        .phenological_respiration_g_c = result.phenological_respiration_g_c_per_timestep,
+        .total_respiration_g_c = result.total_senescence_respiration_g_c_per_timestep,
+        .phenological_fraction = result.phenological_fraction,
+        .node_group_count = result.node_group_count,
+        .first_preceding_node = result.first_preceding_node,
     };
 }
 
@@ -2357,13 +2626,16 @@ pub fn fillGrainFromReserve(state: *State, branch: usize, grain_fill_started: bo
     if (reserve_n > 0) {
         const reserve_constraint = reserve_n / (reserve_n + reserve_nitrogen_half_saturation_g_per_g_c * reserve_c);
         const grain_ratio = minimum_grain_nutrient_fraction + responsive_fraction * std.math.clamp(reserve_constraint, 0, 1);
-        nitrogen_translocated = @min(maximum_carbon_translocation * maximum_grain_nitrogen_to_carbon_g_per_g, @max(0.0, @max(reserve_n * grain_ratio, (grain_c + carbon_translocated) * maximum_grain_nitrogen_to_carbon_g_per_g - grain_n)));
+        // GROSUB 5181--5183 is a three-argument AMIN1.  The reserve term is
+        // bounded below independently; the grain deficit is deliberately not.
+        nitrogen_translocated = @min(maximum_carbon_translocation * maximum_grain_nitrogen_to_carbon_g_per_g, @min(@max(0.0, reserve_n * grain_ratio), (grain_c + carbon_translocated) * maximum_grain_nitrogen_to_carbon_g_per_g - grain_n));
     }
     var phosphorus_translocated: f64 = 0;
     if (reserve_p > 0) {
         const reserve_constraint = reserve_p / (reserve_p + reserve_phosphorus_half_saturation_g_per_g_c * reserve_c);
         const grain_ratio = minimum_grain_nutrient_fraction + responsive_fraction * std.math.clamp(reserve_constraint, 0, 1);
-        phosphorus_translocated = @min(maximum_carbon_translocation * maximum_grain_phosphorus_to_carbon_g_per_g, @max(0.0, @max(reserve_p * grain_ratio, (grain_c + carbon_translocated) * maximum_grain_phosphorus_to_carbon_g_per_g - grain_p)));
+        // GROSUB 5191--5193 has the same source-ordered three-way minimum.
+        phosphorus_translocated = @min(maximum_carbon_translocation * maximum_grain_phosphorus_to_carbon_g_per_g, @min(@max(0.0, reserve_p * grain_ratio), (grain_c + carbon_translocated) * maximum_grain_phosphorus_to_carbon_g_per_g - grain_p));
     }
     nitrogen_translocated = @min(nitrogen_translocated, phosphorus_translocated * maximum_grain_nitrogen_to_carbon_g_per_g / maximum_grain_phosphorus_to_carbon_g_per_g);
     phosphorus_translocated = @min(phosphorus_translocated, nitrogen_translocated * maximum_grain_phosphorus_to_carbon_g_per_g / maximum_grain_nitrogen_to_carbon_g_per_g);
@@ -2736,7 +3008,18 @@ test "GROSUB branch pools and C4 transfer conserve internal carbon" {
     const before = state.node_c3_nonstructural_carbon_g[0] + state.node_c4_mesophyll_nonstructural_carbon_g[0] + state.node_bundle_sheath_co2_carbon_g[0] + state.node_bundle_sheath_bicarbonate_carbon_g[0];
     var parameters = sourceC4CarbonParameters();
     parameters.decarboxylated_co2_fraction = 0.7;
+    const expected_exchange = try c4_mesophyll_bundle_exchange.exchange(.{
+        .bundle_sheath_nonstructural_carbon_g_c = 0.5,
+        .mesophyll_nonstructural_carbon_g_c = 0.8,
+        .bundle_sheath_fixation_g_c_per_timestep = 0.01,
+        .mesophyll_fixation_g_c_per_timestep = 0.02,
+        .leaf_carbon_g_c = 10,
+        .bundle_sheath_water_g_h2o_per_g_c = parameters.bundle_sheath_water_g_per_g_c,
+        .mesophyll_water_g_h2o_per_g_c = parameters.mesophyll_water_g_per_g_c,
+        .timestep_h = 0.1,
+    });
     const fluxes = try advanceC4CarbonPools(&state, 0, 0.02, 0.01, 10, parameters, 0.1);
+    try std.testing.expectEqual(expected_exchange.mesophyll_to_bundle_sheath_carbon_g_c, fluxes.mesophyll_to_bundle_sheath_g_c);
     const after = state.node_c3_nonstructural_carbon_g[0] + state.node_c4_mesophyll_nonstructural_carbon_g[0] + state.node_bundle_sheath_co2_carbon_g[0] + state.node_bundle_sheath_bicarbonate_carbon_g[0];
     try std.testing.expectApproxEqAbs(before + 0.02 - 0.01 - fluxes.bundle_sheath_co2_leakage_g_c, after, 1e-13);
 }
@@ -2769,7 +3052,7 @@ test "GROSUB organ partition and branch commit preserve all C N P products" {
     try applyBranchOrganGrowth(&state, 0, growth);
     try std.testing.expectApproxEqAbs(growth.value(.leaf).carbon_g, state.branch_leaf_carbon_g[0], 1e-15);
     try std.testing.expectApproxEqAbs(growth.value(.ear).phosphorus_g, state.branch_ear_phosphorus_g[0], 1e-15);
-    try std.testing.expectApproxEqAbs(growth.value(.reserve).carbon_g + growth.value(.grain).carbon_g, state.branch_reserve_carbon_g[0], 1e-15);
+    try std.testing.expectApproxEqAbs(growth.value(.reserve).carbon_g, state.branch_reserve_carbon_g[0], 1e-15);
     try std.testing.expectEqual(0, state.branch_grain_carbon_g[0]);
 }
 
@@ -2796,10 +3079,37 @@ test "GROSUB sheath and stalk growth retain runtime node geometry" {
     try distributeSheathGrowth(&state, 0, 4, 1, 3, .{ .carbon_g = 0.6, .nitrogen_g = 0.06, .phosphorus_g = 0.012 }, 2, 10, 1.5, 0.4, 0.01, 2, 0, 0.8, 0.5);
     try std.testing.expectEqual(0, state.node_sheath_carbon_g[1]);
     for (2..5) |node| try std.testing.expectApproxEqAbs(0.2, state.node_sheath_carbon_g[node], 1e-15);
-    const stalk = try distributeStalkGrowth(&state, 0, 4, true, 3, .{ .carbon_g = 0.9, .nitrogen_g = 0.09, .phosphorus_g = 0.009 }, 1, 0.5, 0.01, 2, 0, 1, 0.8, 1e-5);
+    const stalk = try distributeStalkGrowth(&state, 0, 2, 4, .{ .carbon_g = 0.9, .nitrogen_g = 0.09, .phosphorus_g = 0.009 }, 1, 0.5, 0.01, 2, 0, 1, 0.8, 1e-5);
     try std.testing.expect(stalk.stem_diameter_m > 0);
     try std.testing.expect(state.node_height_m[4] > state.node_height_m[3]);
     try std.testing.expectApproxEqAbs(0.9, state.node_internode_carbon_g[2] + state.node_internode_carbon_g[3] + state.node_internode_carbon_g[4], 1e-15);
+}
+
+test "GROSUB stalk allocation accepts an exact runtime window wider than twenty five nodes" {
+    const branch_counts = [_]usize{1};
+    const node_counts = [_]usize{32};
+    const sample_counts = [_]usize{0} ** 32;
+    var state = try State.init(std.testing.allocator, 1, 1, &branch_counts, &node_counts, &sample_counts);
+    defer state.deinit();
+
+    _ = try distributeStalkGrowth(
+        &state,
+        0,
+        1,
+        30,
+        .{ .carbon_g = 3, .nitrogen_g = 0.3, .phosphorus_g = 0.03 },
+        1,
+        0.5,
+        0.01,
+        2,
+        0,
+        1,
+        0.8,
+        1e-5,
+    );
+    try std.testing.expectEqual(@as(f64, 0), state.node_internode_carbon_g[0]);
+    for (1..31) |node| try std.testing.expectApproxEqAbs(@as(f64, 0.1), state.node_internode_carbon_g[node], 1e-15);
+    try std.testing.expectEqual(@as(f64, 0), state.node_internode_carbon_g[31]);
 }
 
 test "GROSUB recycling and leaf sheath senescence conserve C N P" {
@@ -2895,6 +3205,30 @@ test "GROSUB node senescence commit conserves structural mobile litter and respi
     try std.testing.expectApproxEqAbs(0.04, state.node_leaf_phosphorus_g[0] + state.node_sheath_phosphorus_g[0] + litter_p + products.recycled_phosphorus_g, 1e-13);
 }
 
+test "GROSUB absent leaf routes all C4 carbon without consuming sheath" {
+    var state = try State.init(std.testing.allocator, 1, 1, &.{1}, &.{1}, &.{0});
+    defer state.deinit();
+    state.node_leaf_carbon_g[0] = 1.0e-12;
+    state.branch_leaf_carbon_g[0] = 1.0e-12;
+    state.node_sheath_carbon_g[0] = 2;
+    state.branch_sheath_carbon_g[0] = 2;
+    state.node_c3_nonstructural_carbon_g[0] = 0.4;
+    state.node_c4_mesophyll_nonstructural_carbon_g[0] = 0.6;
+    const allocation = try allocateNodeSenescenceDemandWithThreshold(1, 1.0e-12, 2, 0.5, 0.25, 0.8, 1.0e-9);
+    try std.testing.expect(!allocation.leaf_present);
+    try std.testing.expectEqual(@as(f64, 0), allocation.sheath_fraction);
+    const kinetics: KineticFractions = .{ .carbon = @splat(0.25), .nitrogen = @splat(0.25), .phosphorus = @splat(0.25) };
+    const products = try commitNodeSenescenceDemand(&state, 0, 0, allocation, .{ .carbon = 0.5, .nitrogen = 0.6, .phosphorus = 0.7 }, 2, 20, .{ 0.25, 0.75 }, .{ 0.25, 0.75 }, .{ 0.25, 0.75 }, .{ 0.25, 0.75 }, .{ 0.25, 0.75 }, kinetics, kinetics, kinetics);
+    try std.testing.expectEqual(@as(f64, 0), state.node_c3_nonstructural_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 0), state.node_c4_mesophyll_nonstructural_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 0), state.node_leaf_carbon_g[0]);
+    var litter_carbon_g_c: f64 = 0;
+    for (0..4) |kinetic| litter_carbon_g_c += products.woody_carbon_g[kinetic] + products.nonwoody_carbon_g[kinetic];
+    try std.testing.expectApproxEqAbs(@as(f64, 1.000000000001), litter_carbon_g_c, 1.0e-15);
+    try std.testing.expectEqual(@as(f64, 2), state.node_sheath_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 2), state.branch_sheath_carbon_g[0]);
+}
+
 test "GROSUB internode senescence conserves stalk reserve litter and respired C N P" {
     const branch_counts = [_]usize{1};
     const node_counts = [_]usize{1};
@@ -2926,6 +3260,37 @@ test "GROSUB internode senescence conserves stalk reserve litter and respired C 
     try std.testing.expectApproxEqAbs(0.04, state.node_internode_phosphorus_g[0] + litter_p + result.products.recycled_phosphorus_g, 1e-13);
     try std.testing.expectApproxEqAbs(8.0, state.branch_stalk_carbon_g[0], 1e-15);
     try std.testing.expectApproxEqAbs(0.15, result.remaining_respiration_demand_g_c, 1e-15);
+}
+
+test "GROSUB descending stalk sweep scales sapwood recycling only once" {
+    var state = try State.init(std.testing.allocator, 1, 1, &.{1}, &.{2}, &.{ 0, 0 });
+    defer state.deinit();
+    state.branch_stalk_carbon_g[0] = 20;
+    state.branch_stalk_nitrogen_g[0] = 2;
+    state.branch_stalk_phosphorus_g[0] = 0.2;
+    state.branch_sapwood_carbon_g[0] = 5;
+    @memset(state.node_internode_carbon_g, 4);
+    @memset(state.node_internode_nitrogen_g, 0.4);
+    @memset(state.node_internode_phosphorus_g, 0.04);
+    @memset(state.node_internode_length_m, 1);
+    state.node_height_m[0] = 1;
+    state.node_height_m[1] = 2;
+    const setup = (try perennial_stalk_senescence_setup.prepare(.{
+        .is_perennial = true,
+        .excess_maintenance_respiration_g_c_per_timestep = 1,
+        .stalk_carbon_g_c = 20,
+        .sapwood_carbon_g_c = 5,
+        .presence_threshold_g_c = 0,
+        .first_internode = 0,
+        .last_internode = 1,
+        .shoot_recycling = .{ .carbon = 1, .nitrogen = 1, .phosphorus = 1 },
+    })).?;
+    const kinetics: KineticFractions = .{ .carbon = @splat(0.25), .nitrogen = @splat(0.25), .phosphorus = @splat(0.25) };
+    const first = try commitInternodeSenescenceDemandScaled(&state, 0, 1, 1, 0, setup.sapwood_recycling, 0, .{ 0.2, 0.8 }, .{ 0.2, 0.8 }, .{ 0.2, 0.8 }, kinetics, kinetics);
+    const second = try commitInternodeSenescenceDemandScaled(&state, 0, 0, first.remaining_respiration_demand_g_c, 0, setup.sapwood_recycling, 0, .{ 0.2, 0.8 }, .{ 0.2, 0.8 }, .{ 0.2, 0.8 }, kinetics, kinetics);
+    try std.testing.expectEqual(@as(f64, 1), first.fraction);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), second.fraction, 1.0e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.2), state.node_internode_carbon_g[0], 1.0e-15);
 }
 
 test "GROSUB residual stalk senescence conserves elements and lowers canopy height" {
@@ -3020,6 +3385,41 @@ test "GROSUB branch senescence cascade exits after reserve satisfies node remain
     try std.testing.expectApproxEqAbs(2.1, state.node_leaf_carbon_g[0] + state.branch_reserve_carbon_g[0] + litter_c + result.products.recycled_carbon_g + result.products.respired_carbon_g + result.reserve_carbon_respired_g_c, 1e-13);
 }
 
+test "GROSUB cascade does not repeat final node and reserve equality is strict" {
+    var state = try State.init(std.testing.allocator, 1, 1, &.{1}, &.{1}, &.{0});
+    defer state.deinit();
+    state.node_leaf_carbon_g[0] = 10;
+    state.branch_leaf_carbon_g[0] = 10;
+    state.branch_reserve_carbon_g[0] = 2.25;
+    const kinetics: KineticFractions = .{ .carbon = @splat(0.25), .nitrogen = @splat(0.25), .phosphorus = @splat(0.25) };
+    const litter: SenescenceLitterParameters = .{
+        .woody_carbon_fraction = .{ 0.25, 0.75 },
+        .leaf_woody_nitrogen_fraction = .{ 0.25, 0.75 },
+        .sheath_woody_nitrogen_fraction = .{ 0.25, 0.75 },
+        .stalk_woody_nitrogen_fraction = .{ 0.25, 0.75 },
+        .leaf_woody_phosphorus_fraction = .{ 0.25, 0.75 },
+        .sheath_woody_phosphorus_fraction = .{ 0.25, 0.75 },
+        .stalk_woody_phosphorus_fraction = .{ 0.25, 0.75 },
+        .woody_kinetics = kinetics,
+        .leaf_kinetics = kinetics,
+        .sheath_kinetics = kinetics,
+        .stalk_kinetics = kinetics,
+    };
+    const result = try commitBranchSenescenceDemand(&state, 0, .{
+        .total_respiration_demand_g_c = 3,
+        .phenological_senescence_fraction = 0,
+        .first_node_within_branch = 0,
+        .last_node_within_branch = 0,
+        .node_group_count = 3,
+        .perennial = false,
+        .demand_tolerance_g_c = 0,
+    }, .{ .carbon = 1, .nitrogen = 1, .phosphorus = 1 }, 0, 0, litter);
+    try std.testing.expectEqual(@as(f64, 9), state.node_leaf_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 1), result.remaining_respiration_demand_g_c);
+    try std.testing.expectEqual(@as(f64, 1), state.branch_reserve_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 1.25), result.reserve_carbon_respired_g_c);
+}
+
 test "GROSUB reserve to grain fill conserves precursor and translocated C N P" {
     const branch_counts = [_]usize{1};
     const node_counts = [_]usize{0};
@@ -3038,6 +3438,40 @@ test "GROSUB reserve to grain fill conserves precursor and translocated C N P" {
     try std.testing.expectApproxEqAbs(3.0 + precursor.carbon_g, state.branch_reserve_carbon_g[0] + state.branch_grain_carbon_g[0], 1e-14);
     try std.testing.expectApproxEqAbs(0.25 + precursor.nitrogen_g, state.branch_reserve_nitrogen_g[0] + state.branch_grain_nitrogen_g[0], 1e-14);
     try std.testing.expectApproxEqAbs(0.025 + precursor.phosphorus_g, state.branch_reserve_phosphorus_g[0] + state.branch_grain_phosphorus_g[0], 1e-14);
+}
+
+test "GROSUB grain nutrient fill uses three-way minimum rather than reserve-deficit maximum" {
+    var state = try State.init(std.testing.allocator, 1, 1, &.{1}, &.{0}, &.{});
+    defer state.deinit();
+    state.branch_reserve_carbon_g[0] = 10;
+    state.branch_reserve_nitrogen_g[0] = 0.1;
+    state.branch_reserve_phosphorus_g[0] = 0.1;
+    state.branch_grain_carbon_g[0] = 1;
+    state.branch_grain_nitrogen_g[0] = 0;
+    state.branch_grain_phosphorus_g[0] = 0;
+
+    const result = try fillGrainFromReserve(
+        &state,
+        0,
+        true,
+        1,
+        10,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        0,
+        0,
+        .{ .carbon_g = 0, .nitrogen_g = 0, .phosphorus_g = 0 },
+    );
+    // The grain deficit is 2 g for both nutrients, but each reserve contains
+    // only 0.1 g. The former production max selected the deficit and overdrawn
+    // the reserve; the source minimum selects the available reserve term.
+    try std.testing.expectApproxEqAbs(@as(f64, 1), result.carbon_translocated_g, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.1), result.nitrogen_translocated_g, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.1), result.phosphorus_translocated_g, 1e-15);
 }
 
 test "GROSUB grain fill rejects non-finite authoritative pool state" {

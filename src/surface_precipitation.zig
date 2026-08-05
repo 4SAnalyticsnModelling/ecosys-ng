@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const water_flux = @import("soil_water_flux.zig");
 const surface_water_flow = @import("surface_water_flow.zig");
+const snow_cover = @import("snow_cover_fraction.zig");
 
 pub const RuntimeState = struct {
     allocator: std.mem.Allocator,
@@ -15,9 +16,9 @@ pub const RuntimeState = struct {
     water_to_litter_m3_per_h: []f64,
     water_to_matrix_m3_per_h: []f64,
     water_to_macropore_m3_per_h: []f64,
-    heat_to_snow_mj_per_h: []f64,
-    heat_to_litter_mj_per_h: []f64,
-    heat_to_soil_mj_per_h: []f64,
+    heat_to_snow_megajoules_per_h: []f64,
+    heat_to_litter_megajoules_per_h: []f64,
+    heat_to_soil_megajoules_per_h: []f64,
     rainfall_m3_per_h: []f64,
     snowfall_water_equivalent_m3_per_h: []f64,
     intercepted_rain_m3_per_h: []f64,
@@ -70,7 +71,15 @@ pub fn prepareFromModel(state: *RuntimeState, atmosphere: *const @import("atmosp
         state.rainfall_m3_per_h[cell] = atmosphere.rainfall_m[cell] * area;
         state.snowfall_water_equivalent_m3_per_h[cell] = atmosphere.snowfall_water_equivalent_m[cell] * area;
         state.intercepted_rain_m3_per_h[cell] = if (canopy) |value| value.cell_retention_m3_per_h[cell] else 0;
-        state.snow_cover_fraction[cell] = @min(std.math.pow(f64, snow_depth_m[cell] / full_snow_cover_depth_m, 2), 1);
+        // WATSUB `FSNW`, `watsub.f` 386--392. Delegated to the single
+        // authoritative owner. This site previously squared the depth ratio
+        // where the source takes its SQUARE ROOT, and omitted the `FSNX`
+        // `1.0e-3` floor, understating cover by up to 52x for thin snow. See
+        // `docs/traceability/watsub_snow_cover_fraction_exponent_defect.md`.
+        // Consumers derive the snow-free fraction as `1 - snow_cover_fraction`,
+        // which is exact here because the owner returns the covered fraction as
+        // the exact complement of the floored snow-free fraction.
+        state.snow_cover_fraction[cell] = (try snow_cover.evaluate(snow_depth_m[cell], full_snow_cover_depth_m)).snow_fraction;
         state.atmospheric_temperature_k[cell] = atmosphere.air_temperature_k[cell];
         state.matrix_fraction[cell] = grid.matrix_pore_capacity_m3[top] / total_pore_capacity;
         state.macropore_fraction[cell] = grid.macropore_pore_capacity_m3[top] / total_pore_capacity;
@@ -123,15 +132,15 @@ pub fn prepareRuntimeIngress(state: *RuntimeState, inputs: RuntimeInputs) !void 
         state.water_to_litter_m3_per_h[cell] = redistributed.litter_water_m3;
         state.water_to_matrix_m3_per_h[cell] = redistributed.matrix_water_m3;
         state.water_to_macropore_m3_per_h[cell] = redistributed.macropore_water_m3;
-        state.heat_to_snow_mj_per_h[cell] = partition.heat_to_snow_mj_per_h;
-        state.heat_to_litter_mj_per_h[cell] = redistributed.litter_heat_mj;
-        state.heat_to_soil_mj_per_h[cell] = redistributed.soil_heat_mj;
+        state.heat_to_snow_megajoules_per_h[cell] = partition.heat_to_snow_megajoules_per_h;
+        state.heat_to_litter_megajoules_per_h[cell] = redistributed.litter_heat_megajoules;
+        state.heat_to_soil_megajoules_per_h[cell] = redistributed.soil_heat_megajoules;
     }
 }
 
 fn calculateRuntimeIngressCell(state: *const RuntimeState, inputs: RuntimeInputs, cell: usize) !struct { partition: SurfacePartition, redistributed: Redistribution } {
     const partition = try partitionAtmosphericWater(.{ .rain_and_irrigation_m3_per_h = inputs.rainfall_m3_per_h[cell], .intercepted_rain_m3_per_h = inputs.intercepted_rain_m3_per_h[cell], .snowfall_water_equivalent_m3_per_h = inputs.snowfall_water_equivalent_m3_per_h[cell], .snow_cover_fraction = inputs.snow_cover_fraction[cell], .snow_free_fraction = 1.0 - inputs.snow_cover_fraction[cell], .litter_cover_fraction = state.litter_cover_fraction[cell], .litter_water_capacity_m3 = state.litter_water_capacity_m3[cell], .litter_water_m3 = state.litter_water_m3[cell], .litter_absent_above_water_table = inputs.litter_absent_above_water_table[cell], .atmospheric_temperature_k = inputs.atmospheric_temperature_k[cell], .matrix_fraction = inputs.matrix_fraction[cell], .macropore_fraction = inputs.macropore_fraction[cell], .maximum_iterations = inputs.maximum_iterations });
-    const redistributed = try redistribute(.{ .soil_surface_present = true, .rain_and_irrigation_to_matrix_m3 = partition.water_to_matrix_m3_per_h, .rain_and_irrigation_to_macropore_m3 = partition.water_to_macropore_m3_per_h, .rain_and_irrigation_to_litter_m3 = partition.water_to_litter_m3_per_h, .matrix_air_capacity_m3 = inputs.matrix_air_capacity_m3[cell], .macropore_air_capacity_m3 = inputs.macropore_air_capacity_m3[cell], .snow_free_fraction = 1.0 - inputs.snow_cover_fraction[cell], .atmospheric_temperature_k = inputs.atmospheric_temperature_k[cell], .litter_input_heat_mj = partition.heat_to_litter_mj_per_h, .soil_input_heat_mj = partition.heat_to_soil_mj_per_h });
+    const redistributed = try redistribute(.{ .soil_surface_present = true, .rain_and_irrigation_to_matrix_m3 = partition.water_to_matrix_m3_per_h, .rain_and_irrigation_to_macropore_m3 = partition.water_to_macropore_m3_per_h, .rain_and_irrigation_to_litter_m3 = partition.water_to_litter_m3_per_h, .matrix_air_capacity_m3 = inputs.matrix_air_capacity_m3[cell], .macropore_air_capacity_m3 = inputs.macropore_air_capacity_m3[cell], .snow_free_fraction = 1.0 - inputs.snow_cover_fraction[cell], .atmospheric_temperature_k = inputs.atmospheric_temperature_k[cell], .litter_input_heat_megajoules = partition.heat_to_litter_megajoules_per_h, .soil_input_heat_megajoules = partition.heat_to_soil_megajoules_per_h });
     return .{ .partition = partition, .redistributed = redistributed };
 }
 
@@ -237,12 +246,12 @@ fn poreCapacityRoundoffToleranceM3(capacity_m3: f64) f64 {
     );
 }
 
-pub fn bindSoilHeatIngress(state: *const RuntimeState, grid: *const @import("grid.zig").GridState, soil_heat_source_mj: []f64, timestep_h: f64) !void {
-    if (grid.cell_count != state.cell_count or soil_heat_source_mj.len != grid.layer_count or !std.math.isFinite(timestep_h) or timestep_h <= 0) return error.SurfaceIngressDimensionMismatch;
+pub fn bindSoilHeatIngress(state: *const RuntimeState, grid: *const @import("grid.zig").GridState, soil_heat_source_megajoules: []f64, timestep_h: f64) !void {
+    if (grid.cell_count != state.cell_count or soil_heat_source_megajoules.len != grid.layer_count or !std.math.isFinite(timestep_h) or timestep_h <= 0) return error.SurfaceIngressDimensionMismatch;
     for (0..state.cell_count) |cell| {
-        const heat = state.heat_to_soil_mj_per_h[cell] * timestep_h;
+        const heat = state.heat_to_soil_megajoules_per_h[cell] * timestep_h;
         if (!std.math.isFinite(heat)) return error.InvalidSurfaceIngressCommit;
-        soil_heat_source_mj[cell * grid.soil_layer_capacity] += heat;
+        soil_heat_source_megajoules[cell * grid.soil_layer_capacity] += heat;
     }
 }
 
@@ -265,12 +274,12 @@ pub const SurfacePartitionInputs = struct {
 pub const SurfacePartition = struct {
     rain_to_snow_m3_per_h: f64,
     snow_to_snow_m3_per_h: f64,
-    heat_to_snow_mj_per_h: f64,
+    heat_to_snow_megajoules_per_h: f64,
     water_to_litter_m3_per_h: f64,
     water_to_matrix_m3_per_h: f64,
     water_to_macropore_m3_per_h: f64,
-    heat_to_litter_mj_per_h: f64,
-    heat_to_soil_mj_per_h: f64,
+    heat_to_litter_megajoules_per_h: f64,
+    heat_to_soil_megajoules_per_h: f64,
 };
 
 /// WATSUB precipitation partition before the nonlinear soil solve. NPH is
@@ -291,24 +300,24 @@ pub fn partitionAtmosphericWater(inputs: SurfacePartitionInputs) !SurfacePartiti
     return .{
         .rain_to_snow_m3_per_h = rain_to_snow,
         .snow_to_snow_m3_per_h = inputs.snowfall_water_equivalent_m3_per_h,
-        .heat_to_snow_mj_per_h = inputs.atmospheric_temperature_k * (2.095 * inputs.snowfall_water_equivalent_m3_per_h + 4.19 * rain_to_snow),
+        .heat_to_snow_megajoules_per_h = inputs.atmospheric_temperature_k * (2.095 * inputs.snowfall_water_equivalent_m3_per_h + 4.19 * rain_to_snow),
         .water_to_litter_m3_per_h = water_to_litter,
         .water_to_matrix_m3_per_h = water_to_soil * inputs.matrix_fraction,
         .water_to_macropore_m3_per_h = water_to_soil * inputs.macropore_fraction,
-        .heat_to_litter_mj_per_h = 4.19 * inputs.atmospheric_temperature_k * water_to_litter,
-        .heat_to_soil_mj_per_h = 4.19 * inputs.atmospheric_temperature_k * water_to_soil,
+        .heat_to_litter_megajoules_per_h = 4.19 * inputs.atmospheric_temperature_k * water_to_litter,
+        .heat_to_soil_megajoules_per_h = 4.19 * inputs.atmospheric_temperature_k * water_to_soil,
     };
 }
 
 pub const SolutePrecipitationRouting = struct { rain_to_litter_m3: f64, irrigation_to_litter_m3: f64, rain_to_snow_m3: f64, irrigation_to_snow_m3: f64 };
 
 /// Exact FLQRQ/FLQRI/FLQGQ/FLQGI routing used by TRNSFR and TRNSFRS.
-pub fn routePrecipitationSolutes(snowfall_m3_per_h: f64, rain_m3_per_h: f64, combined_rain_m3_per_h: f64, irrigation_m3_per_h: f64, water_to_litter_m3_per_h: f64, snow_heat_capacity_mj_per_k: f64, minimum_snow_heat_capacity_mj_per_k: f64, timestep_h: f64) !SolutePrecipitationRouting {
-    inline for (.{ snowfall_m3_per_h, rain_m3_per_h, combined_rain_m3_per_h, irrigation_m3_per_h, water_to_litter_m3_per_h, snow_heat_capacity_mj_per_k, minimum_snow_heat_capacity_mj_per_k, timestep_h }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSurfacePrecipitationInput;
-    if (snowfall_m3_per_h < 0 or rain_m3_per_h < 0 or combined_rain_m3_per_h < 0 or irrigation_m3_per_h < 0 or water_to_litter_m3_per_h < 0 or snow_heat_capacity_mj_per_k < 0 or minimum_snow_heat_capacity_mj_per_k < 0 or timestep_h <= 0) return error.InvalidSurfacePrecipitationInput;
-    if (snowfall_m3_per_h > 0 or (rain_m3_per_h > 0 and snow_heat_capacity_mj_per_k > minimum_snow_heat_capacity_mj_per_k)) return .{ .rain_to_litter_m3 = 0, .irrigation_to_litter_m3 = 0, .rain_to_snow_m3 = combined_rain_m3_per_h * timestep_h, .irrigation_to_snow_m3 = irrigation_m3_per_h * timestep_h };
+pub fn routePrecipitationSolutes(snowfall_m3_per_h: f64, rain_m3_per_h: f64, combined_rain_m3_per_h: f64, irrigation_m3_per_h: f64, water_to_litter_m3_per_h: f64, snow_heat_capacity_megajoules_per_k: f64, minimum_snow_heat_capacity_megajoules_per_k: f64, timestep_h: f64) !SolutePrecipitationRouting {
+    inline for (.{ snowfall_m3_per_h, rain_m3_per_h, combined_rain_m3_per_h, irrigation_m3_per_h, water_to_litter_m3_per_h, snow_heat_capacity_megajoules_per_k, minimum_snow_heat_capacity_megajoules_per_k, timestep_h }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSurfacePrecipitationInput;
+    if (snowfall_m3_per_h < 0 or rain_m3_per_h < 0 or combined_rain_m3_per_h < 0 or irrigation_m3_per_h < 0 or water_to_litter_m3_per_h < 0 or snow_heat_capacity_megajoules_per_k < 0 or minimum_snow_heat_capacity_megajoules_per_k < 0 or timestep_h <= 0) return error.InvalidSurfacePrecipitationInput;
+    if (snowfall_m3_per_h > 0 or (rain_m3_per_h > 0 and snow_heat_capacity_megajoules_per_k > minimum_snow_heat_capacity_megajoules_per_k)) return .{ .rain_to_litter_m3 = 0, .irrigation_to_litter_m3 = 0, .rain_to_snow_m3 = combined_rain_m3_per_h * timestep_h, .irrigation_to_snow_m3 = irrigation_m3_per_h * timestep_h };
     const total_liquid = combined_rain_m3_per_h + irrigation_m3_per_h;
-    if (total_liquid > 0 and snow_heat_capacity_mj_per_k <= minimum_snow_heat_capacity_mj_per_k) {
+    if (total_liquid > 0 and snow_heat_capacity_megajoules_per_k <= minimum_snow_heat_capacity_megajoules_per_k) {
         const rain_to_litter = water_to_litter_m3_per_h * combined_rain_m3_per_h / total_liquid * timestep_h;
         const irrigation_to_litter = water_to_litter_m3_per_h * irrigation_m3_per_h / total_liquid * timestep_h;
         return .{ .rain_to_litter_m3 = rain_to_litter, .irrigation_to_litter_m3 = irrigation_to_litter, .rain_to_snow_m3 = combined_rain_m3_per_h * timestep_h - rain_to_litter, .irrigation_to_snow_m3 = irrigation_m3_per_h * timestep_h - irrigation_to_litter };
@@ -325,26 +334,26 @@ pub const RedistributionInputs = struct {
     macropore_air_capacity_m3: f64,
     snow_free_fraction: f64,
     atmospheric_temperature_k: f64,
-    litter_input_heat_mj: f64,
-    soil_input_heat_mj: f64,
+    litter_input_heat_megajoules: f64,
+    soil_input_heat_megajoules: f64,
 };
 
 pub const Redistribution = struct {
     litter_water_m3: f64,
     matrix_water_m3: f64,
     macropore_water_m3: f64,
-    litter_heat_mj: f64,
-    soil_heat_mj: f64,
+    litter_heat_megajoules: f64,
+    soil_heat_megajoules: f64,
 };
 
 pub fn redistribute(inputs: RedistributionInputs) !Redistribution {
     inline for (@typeInfo(RedistributionInputs).@"struct".fields) |field| if (field.type == f64 and !std.math.isFinite(@field(inputs, field.name))) return error.NonFiniteSurfacePrecipitationInput;
     if (inputs.rain_and_irrigation_to_matrix_m3 < 0 or inputs.rain_and_irrigation_to_macropore_m3 < 0 or inputs.rain_and_irrigation_to_litter_m3 < 0 or inputs.matrix_air_capacity_m3 < 0 or inputs.macropore_air_capacity_m3 < 0 or inputs.snow_free_fraction < 0 or inputs.snow_free_fraction > 1 or inputs.atmospheric_temperature_k <= 0) return error.InvalidSurfacePrecipitationInput;
-    if (!inputs.soil_surface_present) return .{ .litter_water_m3 = inputs.rain_and_irrigation_to_litter_m3, .matrix_water_m3 = inputs.rain_and_irrigation_to_matrix_m3, .macropore_water_m3 = inputs.rain_and_irrigation_to_macropore_m3, .litter_heat_mj = inputs.litter_input_heat_mj, .soil_heat_mj = inputs.soil_input_heat_mj };
+    if (!inputs.soil_surface_present) return .{ .litter_water_m3 = inputs.rain_and_irrigation_to_litter_m3, .matrix_water_m3 = inputs.rain_and_irrigation_to_matrix_m3, .macropore_water_m3 = inputs.rain_and_irrigation_to_macropore_m3, .litter_heat_megajoules = inputs.litter_input_heat_megajoules, .soil_heat_megajoules = inputs.soil_input_heat_megajoules };
     const matrix_excess = @max(0.0, inputs.rain_and_irrigation_to_matrix_m3 - inputs.matrix_air_capacity_m3 * inputs.snow_free_fraction);
     const macro_excess = @max(0.0, inputs.rain_and_irrigation_to_macropore_m3 - inputs.macropore_air_capacity_m3 * inputs.snow_free_fraction);
     const redirected_heat = 4.19 * inputs.atmospheric_temperature_k * (matrix_excess + macro_excess);
-    return .{ .litter_water_m3 = inputs.rain_and_irrigation_to_litter_m3 + matrix_excess + macro_excess, .matrix_water_m3 = inputs.rain_and_irrigation_to_matrix_m3 - matrix_excess, .macropore_water_m3 = inputs.rain_and_irrigation_to_macropore_m3 - macro_excess, .litter_heat_mj = inputs.litter_input_heat_mj + redirected_heat, .soil_heat_mj = inputs.soil_input_heat_mj - redirected_heat };
+    return .{ .litter_water_m3 = inputs.rain_and_irrigation_to_litter_m3 + matrix_excess + macro_excess, .matrix_water_m3 = inputs.rain_and_irrigation_to_matrix_m3 - matrix_excess, .macropore_water_m3 = inputs.rain_and_irrigation_to_macropore_m3 - macro_excess, .litter_heat_megajoules = inputs.litter_input_heat_megajoules + redirected_heat, .soil_heat_megajoules = inputs.soil_input_heat_megajoules - redirected_heat };
 }
 
 pub const GasExchangeParameters = struct {
@@ -444,12 +453,30 @@ pub fn rainfallImpact(previous_cumulative_energy_j: f64, inputs: RainfallImpactI
     return .{ .incremental_energy_j = incremental, .cumulative_energy_j = cumulative, .saturated_conductivity_multiplier = multiplier };
 }
 
+test "the runtime snow cover carrier uses the WATSUB square-root relation" {
+    // Regression guard for the exponent defect. `prepareFromModel` is the only
+    // writer of `snow_cover_fraction`, and every consumer derives its snow-free
+    // fraction as `1 - snow_cover_fraction`, so an inverted exponent here
+    // silently mis-partitions rain, heat, and albedo for every thin-snow hour.
+    // This test pins the delegation rather than re-deriving the formula.
+    const owner = @import("snow_cover_fraction.zig");
+    const full_cover_m = 0.07;
+    const cover = try owner.evaluate(0.005, full_cover_m);
+    // The value production used to produce at this depth.
+    const previous_squared = std.math.pow(f64, 0.005 / full_cover_m, 2);
+    try std.testing.expect(cover.snow_fraction > previous_squared * 50);
+    // And the snow-free complement consumers compute stays a valid fraction.
+    const snow_free = 1.0 - cover.snow_fraction;
+    try std.testing.expectApproxEqAbs(cover.snow_free_fraction, snow_free, 1e-15);
+    try std.testing.expect(snow_free > 0 and snow_free < 1);
+}
+
 test "precipitation exceeding pore air is redirected to litter with heat" {
-    const result = try redistribute(.{ .soil_surface_present = true, .rain_and_irrigation_to_matrix_m3 = 0.3, .rain_and_irrigation_to_macropore_m3 = 0.2, .rain_and_irrigation_to_litter_m3 = 0.1, .matrix_air_capacity_m3 = 0.1, .macropore_air_capacity_m3 = 0.1, .snow_free_fraction = 1, .atmospheric_temperature_k = 280, .litter_input_heat_mj = 1, .soil_input_heat_mj = 10 });
+    const result = try redistribute(.{ .soil_surface_present = true, .rain_and_irrigation_to_matrix_m3 = 0.3, .rain_and_irrigation_to_macropore_m3 = 0.2, .rain_and_irrigation_to_litter_m3 = 0.1, .matrix_air_capacity_m3 = 0.1, .macropore_air_capacity_m3 = 0.1, .snow_free_fraction = 1, .atmospheric_temperature_k = 280, .litter_input_heat_megajoules = 1, .soil_input_heat_megajoules = 10 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.4), result.litter_water_m3, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), result.matrix_water_m3, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.1), result.macropore_water_m3, 1e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, 11), result.litter_heat_mj + result.soil_heat_mj, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 11), result.litter_heat_megajoules + result.soil_heat_megajoules, 1e-12);
 }
 
 test "runtime surface ingress retains separate rain snow litter and pore carriers" {
@@ -468,7 +495,7 @@ test "runtime surface ingress retains separate rain snow litter and pore carrier
 }
 
 test "top-soil ingress commit validates every runtime cell before mutation" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 4 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 4 });
     var grid = try @import("grid.zig").GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     var hydrology = try @import("transport_hydrology.zig").State.init(std.testing.allocator, 2, 1, 1, 1);
@@ -495,7 +522,7 @@ test "top-soil ingress commit validates every runtime cell before mutation" {
 test "atmospheric rain snow litter and pore partition conserves liquid water and heat" {
     const result = try partitionAtmosphericWater(.{ .rain_and_irrigation_m3_per_h = 1, .intercepted_rain_m3_per_h = 0.1, .snowfall_water_equivalent_m3_per_h = 0.2, .snow_cover_fraction = 0.25, .snow_free_fraction = 0.75, .litter_cover_fraction = 0.5, .litter_water_capacity_m3 = 1, .litter_water_m3 = 0.9, .litter_absent_above_water_table = false, .atmospheric_temperature_k = 280, .matrix_fraction = 0.8, .macropore_fraction = 0.2, .maximum_iterations = 4 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.9), result.rain_to_snow_m3_per_h + result.water_to_litter_m3_per_h + result.water_to_matrix_m3_per_h + result.water_to_macropore_m3_per_h, 1e-12);
-    try std.testing.expectApproxEqAbs(4.19 * 280 * 0.9 + 2.095 * 280 * 0.2, result.heat_to_snow_mj_per_h + result.heat_to_litter_mj_per_h + result.heat_to_soil_mj_per_h, 1e-10);
+    try std.testing.expectApproxEqAbs(4.19 * 280 * 0.9 + 2.095 * 280 * 0.2, result.heat_to_snow_megajoules_per_h + result.heat_to_litter_megajoules_per_h + result.heat_to_soil_megajoules_per_h, 1e-10);
 }
 
 test "solute precipitation routing follows snow presence and dry-surface branches" {
@@ -598,7 +625,7 @@ test "litter-soil flux uses litter donor temperature when flow is into soil" {
     );
     try std.testing.expectApproxEqAbs(
         4.19 * 300 * expected_flux.limited_water_m3,
-        result.convective_heat_mj,
+        result.convective_heat_megajoules,
         1e-12,
     );
 }
@@ -633,7 +660,7 @@ test "litter-soil flux uses soil donor temperature when flow is upward" {
     try std.testing.expect(result.water_m3 <= 0);
     try std.testing.expectApproxEqAbs(
         4.19 * 280 * result.water_m3,
-        result.convective_heat_mj,
+        result.convective_heat_megajoules,
         1e-15,
     );
 }

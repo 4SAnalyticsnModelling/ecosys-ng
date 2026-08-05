@@ -8,7 +8,7 @@ pub const Parameters = struct {
     minimum_canopy_resistance_h_per_m: f64,
     maximum_canopy_resistance_h_per_m: f64,
     canopy_drag_length_m: f64,
-    volumetric_air_heat_capacity_mj_per_m3_k: f64,
+    volumetric_air_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const State = struct {
@@ -20,7 +20,7 @@ pub const State = struct {
     resistance_below_species_h_per_m: []f64,
     resistance_below_standing_dead_h_per_m: []f64,
     latent_boundary_numerator_m2_per_h: []f64,
-    sensible_boundary_numerator_mj_per_m_h_k: []f64,
+    sensible_boundary_numerator_megajoules_per_m_h_k: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize) !State {
         if (cell_count == 0 or species_count == 0) return error.InvalidCanopyAirflowDimensions;
@@ -34,7 +34,7 @@ pub const State = struct {
             .resistance_below_species_h_per_m = undefined,
             .resistance_below_standing_dead_h_per_m = undefined,
             .latent_boundary_numerator_m2_per_h = undefined,
-            .sensible_boundary_numerator_mj_per_m_h_k = undefined,
+            .sensible_boundary_numerator_megajoules_per_m_h_k = undefined,
         };
         errdefer allocator.free(state.neutral_resistance_below_biome_h_per_m);
         state.resistance_below_biome_h_per_m = try allocator.alloc(f64, cell_count);
@@ -45,7 +45,7 @@ pub const State = struct {
         errdefer allocator.free(state.resistance_below_standing_dead_h_per_m);
         state.latent_boundary_numerator_m2_per_h = try allocator.alloc(f64, cell_count);
         errdefer allocator.free(state.latent_boundary_numerator_m2_per_h);
-        state.sensible_boundary_numerator_mj_per_m_h_k = try allocator.alloc(f64, cell_count);
+        state.sensible_boundary_numerator_megajoules_per_m_h_k = try allocator.alloc(f64, cell_count);
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) @memset(@field(state, field.name), 0);
         return state;
     }
@@ -83,7 +83,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
     inline for (.{ context.cell_area_m2, context.total_canopy_area_m2, context.biome_canopy_height_m, context.surface_roughness_height_m, context.atmospheric_vapor_diffusivity_m2_per_h, context.atmospheric_temperature_k, context.ground_air_temperature_k, context.bulk_richardson_coefficient_k }) |values| if (values.len != state.cell_count) return error.CanopyAirflowDimensionMismatch;
     inline for (.{ context.species_canopy_height_m, context.standing_dead_height_m, context.species_canopy_air_temperature_k, context.standing_dead_air_temperature_k }) |values| if (values.len != species_values) return error.CanopyAirflowDimensionMismatch;
     inline for (@typeInfo(Parameters).@"struct".fields) |field| if (!std.math.isFinite(@field(p, field.name))) return error.NonFiniteCanopyAirflowParameter;
-    if (p.maximum_richardson_number < p.minimum_richardson_number or p.richardson_resistance_multiplier <= 0 or p.minimum_canopy_resistance_h_per_m <= 0 or p.maximum_canopy_resistance_h_per_m < p.minimum_canopy_resistance_h_per_m or p.canopy_drag_length_m < 0 or p.volumetric_air_heat_capacity_mj_per_m3_k <= 0) return error.InvalidCanopyAirflowParameter;
+    if (p.maximum_richardson_number < p.minimum_richardson_number or p.richardson_resistance_multiplier <= 0 or p.minimum_canopy_resistance_h_per_m <= 0 or p.maximum_canopy_resistance_h_per_m < p.minimum_canopy_resistance_h_per_m or p.canopy_drag_length_m < 0 or p.volumetric_air_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidCanopyAirflowParameter;
 
     for (range.first..range.end) |cell| {
         inline for (.{ context.cell_area_m2[cell], context.total_canopy_area_m2[cell], context.biome_canopy_height_m[cell], context.surface_roughness_height_m[cell], context.atmospheric_vapor_diffusivity_m2_per_h[cell], context.atmospheric_temperature_k[cell], context.ground_air_temperature_k[cell], context.bulk_richardson_coefficient_k[cell] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyAirflowInput;
@@ -106,7 +106,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         state.neutral_resistance_below_biome_h_per_m[cell] = neutral_resistance;
         state.resistance_below_biome_h_per_m[cell] = std.math.clamp(neutral_resistance / atmosphere_stability, p.minimum_canopy_resistance_h_per_m, p.maximum_canopy_resistance_h_per_m);
         state.latent_boundary_numerator_m2_per_h[cell] = context.cell_area_m2[cell];
-        state.sensible_boundary_numerator_mj_per_m_h_k[cell] = context.cell_area_m2[cell] * p.volumetric_air_heat_capacity_mj_per_m3_k;
+        state.sensible_boundary_numerator_megajoules_per_m_h_k[cell] = context.cell_area_m2[cell] * p.volumetric_air_heat_capacity_megajoules_per_m3_k;
 
         for (0..state.species_count) |species| {
             const index = cell * state.species_count + species;
@@ -176,7 +176,7 @@ test "WATSUB canopy airflow supports runtime species and HOUR1 numerators" {
             .minimum_canopy_resistance_h_per_m = 1.0e-8,
             .maximum_canopy_resistance_h_per_m = 1.0e6,
             .canopy_drag_length_m = 2.0e-4,
-            .volumetric_air_heat_capacity_mj_per_m3_k = 1.25e-3,
+            .volumetric_air_heat_capacity_megajoules_per_m3_k = 1.25e-3,
         },
     };
     try applyTile(&context, .{ .first = 0, .end = 1 });
@@ -186,5 +186,5 @@ test "WATSUB canopy airflow supports runtime species and HOUR1 numerators" {
     try std.testing.expectApproxEqAbs(expected_neutral, state.resistance_below_species_h_per_m[6], 1e-15);
     try std.testing.expectApproxEqAbs(state.resistance_below_species_h_per_m[6], state.resistance_below_standing_dead_h_per_m[6], 1e-15);
     try std.testing.expectEqual(@as(f64, 10), state.latent_boundary_numerator_m2_per_h[0]);
-    try std.testing.expectEqual(@as(f64, 0.0125), state.sensible_boundary_numerator_mj_per_m_h_k[0]);
+    try std.testing.expectEqual(@as(f64, 0.0125), state.sensible_boundary_numerator_megajoules_per_m_h_k[0]);
 }

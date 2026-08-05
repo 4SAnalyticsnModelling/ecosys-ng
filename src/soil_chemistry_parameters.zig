@@ -13,14 +13,14 @@ const surface_fertilizer = @import("surface_litter_fertilizer.zig");
 
 pub const SurfaceLitterParameters = struct {
     carboxyl_dissociation_constant: f64,
-    carboxyl_sites_mol_per_Mg_c: f64,
+    carboxyl_sites_mol_per_megagram_c: f64,
 };
 
 pub const SurfaceFertilizerParameters = struct {
     ammonium_dissolution_fraction_per_h: f64,
     ammonia_dissolution_fraction_per_h: f64,
     nitrate_dissolution_fraction_per_h: f64,
-    minimum_urea_half_saturation_mol_n_per_Mg: f64,
+    minimum_urea_half_saturation_mol_n_per_megagram: f64,
     microbial_activity_inhibition_g_c_per_m3_per_h: f64,
     specific_urea_hydrolysis_mol_n_per_g_c_per_h: f64,
     fast_release_inhibition_decline_fraction_per_h: f64,
@@ -43,7 +43,7 @@ pub const SurfaceFertilizerParameters = struct {
             .ammonium_dissolution_fraction_per_step = @min(1, self.ammonium_dissolution_fraction_per_h * timestep_h),
             .ammonia_dissolution_fraction_per_step = @min(1, self.ammonia_dissolution_fraction_per_h * timestep_h),
             .nitrate_dissolution_fraction_per_step = @min(1, self.nitrate_dissolution_fraction_per_h * timestep_h),
-            .minimum_urea_half_saturation_mol_n_per_Mg = self.minimum_urea_half_saturation_mol_n_per_Mg,
+            .minimum_urea_half_saturation_mol_n_per_megagram = self.minimum_urea_half_saturation_mol_n_per_megagram,
             .microbial_activity_inhibition_g_c_per_m3_per_h = self.microbial_activity_inhibition_g_c_per_m3_per_h,
             .specific_urea_hydrolysis_mol_n_per_g_c = self.specific_urea_hydrolysis_mol_n_per_g_c_per_h * timestep_h,
             .urease_inhibition_decline_fraction_per_step = @min(1, decline * timestep_h),
@@ -73,20 +73,20 @@ pub const Parameters = struct {
     pub fn forLayer(
         self: Parameters,
         fractions: @import("solute_charge_classification.zig").ZoneFractions,
-        non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3: f64,
-        band_phosphate_soil_mass_per_water_volume_Mg_per_m3: f64,
-        cation_exchange_capacity_mol_charge_per_Mg: f64,
-        total_carboxyl_sites_mol_per_Mg: f64,
+        non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3: f64,
+        band_phosphate_soil_mass_per_water_volume_megagrams_per_m3: f64,
+        cation_exchange_capacity_mol_charge_per_megagram: f64,
+        total_carboxyl_sites_mol_per_megagram: f64,
         cation_exchange_water_ratios: chemistry.CationExchangeWaterRatios,
         cation_selectivity: cation_exchange.Selectivity,
     ) chemistry.ReactionParameters {
         return .{
             .fractions = fractions,
-            .non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3,
-            .band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = band_phosphate_soil_mass_per_water_volume_Mg_per_m3,
-            .cation_exchange_capacity_mol_charge_per_Mg = cation_exchange_capacity_mol_charge_per_Mg,
+            .non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3,
+            .band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = band_phosphate_soil_mass_per_water_volume_megagrams_per_m3,
+            .cation_exchange_capacity_mol_charge_per_megagram = cation_exchange_capacity_mol_charge_per_megagram,
             .cation_exchange_water_ratios = cation_exchange_water_ratios,
-            .total_carboxyl_sites_mol_per_Mg = total_carboxyl_sites_mol_per_Mg,
+            .total_carboxyl_sites_mol_per_megagram = total_carboxyl_sites_mol_per_megagram,
             .carboxyl_exchange_parameters = carboxyl_exchange.Parameters{
                 .dissociation_constant_mol_per_m3 = self.surface_litter.carboxyl_dissociation_constant,
                 .maximum_exchange_mol_per_m3_per_iteration = self.cation_maximum_adsorption_mol_charge_per_m3_step,
@@ -112,15 +112,15 @@ pub const Parameters = struct {
         self: Parameters,
         activity: activity_coefficients.Result,
         cation_selectivity: cation_exchange.Selectivity,
-        cation_exchange_capacity_mol_charge_per_Mg_litter: f64,
-        litter_mass_per_water_volume_Mg_per_m3: f64,
+        cation_exchange_capacity_mol_charge_per_megagram_litter: f64,
+        litter_mass_per_water_volume_megagrams_per_m3: f64,
         dynamic_salts: bool,
     ) surface_litter_rates.Context {
         const phosphate = self.phosphate_constants;
         const minerals = self.phosphate_minerals;
         const geochemistry = self.geochemistry_products;
         return .{
-            .litter_mass_per_water_volume_Mg_per_m3 = litter_mass_per_water_volume_Mg_per_m3,
+            .litter_mass_per_water_volume_megagrams_per_m3 = litter_mass_per_water_volume_megagrams_per_m3,
             .dynamic_salts = dynamic_salts,
             .parameters = .{
                 .activity = activity,
@@ -160,7 +160,7 @@ pub const Parameters = struct {
                     .maximum_cation_adsorption_mol_charge_per_m3_step = self.cation_maximum_adsorption_mol_charge_per_m3_step,
                     .calcite_hydroxide_inhibition_constant_mol_per_m3 = self.geochemistry_kinetics.calcite_hydroxide_inhibition_constant_mol_per_m3,
                 },
-                .cation_exchange_capacity_mol_charge_per_Mg = cation_exchange_capacity_mol_charge_per_Mg_litter,
+                .cation_exchange_capacity_mol_charge_per_megagram = cation_exchange_capacity_mol_charge_per_megagram_litter,
                 .cation_selectivity = cation_selectivity,
                 .water_activity_product_mol2_per_m6 = self.water_activity_product_mol2_per_m6,
                 .negligible_water_ion_concentration_mol_per_m3 = self.negligible_water_ion_concentration_mol_per_m3,
@@ -283,7 +283,7 @@ fn validate(parameters: Parameters) !void {
     if (parameters.water_activity_product_mol2_per_m6 <= 0 or parameters.negligible_water_ion_concentration_mol_per_m3 <= 0 or parameters.water_concentration_mol_per_m3 <= 0) return error.InvalidChemistryParameter;
     if (parameters.aqueous_kinetics.ammonium_substrate_limit_fraction > 1 or parameters.aqueous_kinetics.general_substrate_limit_fraction > 1 or parameters.phosphate_kinetics.substrate_limit_fraction > 1 or parameters.phosphate_surface.substrate_limit_fraction > 1 or parameters.cation_substrate_limit_fraction > 1 or parameters.geochemistry_kinetics.general_substrate_limit_fraction > 1 or parameters.geochemistry_kinetics.hydrogen_coupled_substrate_limit_fraction > 1) return error.InvalidChemistryParameter;
     const fertilizer = parameters.surface_fertilizer;
-    if (fertilizer.ammonium_dissolution_fraction_per_h > 1 or fertilizer.ammonia_dissolution_fraction_per_h > 1 or fertilizer.nitrate_dissolution_fraction_per_h > 1 or fertilizer.minimum_urea_half_saturation_mol_n_per_Mg <= 0 or fertilizer.microbial_activity_inhibition_g_c_per_m3_per_h <= 0 or fertilizer.fast_release_inhibition_decline_fraction_per_h > 1 or fertilizer.normal_release_inhibition_decline_fraction_per_h > 1 or fertilizer.slow_release_inhibition_decline_fraction_per_h > 1) return error.InvalidChemistryParameter;
+    if (fertilizer.ammonium_dissolution_fraction_per_h > 1 or fertilizer.ammonia_dissolution_fraction_per_h > 1 or fertilizer.nitrate_dissolution_fraction_per_h > 1 or fertilizer.minimum_urea_half_saturation_mol_n_per_megagram <= 0 or fertilizer.microbial_activity_inhibition_g_c_per_m3_per_h <= 0 or fertilizer.fast_release_inhibition_decline_fraction_per_h > 1 or fertilizer.normal_release_inhibition_decline_fraction_per_h > 1 or fertilizer.slow_release_inhibition_decline_fraction_per_h > 1) return error.InvalidChemistryParameter;
 }
 
 test "chemistry parameters accept flexible delimiters and case-insensitive labels" {
@@ -309,7 +309,7 @@ test "surface fertilizer formulation maps inhibitor decline rate by code" {
         .ammonium_dissolution_fraction_per_h = 0.1,
         .ammonia_dissolution_fraction_per_h = 0.2,
         .nitrate_dissolution_fraction_per_h = 0.3,
-        .minimum_urea_half_saturation_mol_n_per_Mg = 0.05,
+        .minimum_urea_half_saturation_mol_n_per_megagram = 0.05,
         .microbial_activity_inhibition_g_c_per_m3_per_h = 50,
         .specific_urea_hydrolysis_mol_n_per_g_c_per_h = 0.03,
         .fast_release_inhibition_decline_fraction_per_h = 0.05,
@@ -369,11 +369,11 @@ test "surface litter coefficients are derived from runtime SOLUTE parameters" {
     const parameters = try parse(source);
     const activity = try activity_coefficients.calculate(.{ .trivalent_cations_mol = 0, .trivalent_anions_mol = 0, .divalent_cations_mol = 0, .divalent_anions_mol = 0, .monovalent_cations_mol = 0, .monovalent_anions_mol = 0, .neutral_solutes_mol = 0 }, 1);
     const context = parameters.forSurfaceLitter(activity, .{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }, 3, 2, true);
-    try std.testing.expectEqual(@as(f64, 3), context.parameters.cation_exchange_capacity_mol_charge_per_Mg);
+    try std.testing.expectEqual(@as(f64, 3), context.parameters.cation_exchange_capacity_mol_charge_per_megagram);
     try std.testing.expectEqual(@as(f64, 0.01), context.parameters.dissociation.carboxyl);
-    try std.testing.expectEqual(@as(f64, 250), parameters.surface_litter.carboxyl_sites_mol_per_Mg_c);
+    try std.testing.expectEqual(@as(f64, 250), parameters.surface_litter.carboxyl_sites_mol_per_megagram_c);
     try std.testing.expectApproxEqAbs(9.8e-15 / (4.8e-10 * 6.2e-5), context.parameters.minerals.fixed_ph_aluminum_h2po4, 1e-15);
-    try std.testing.expectEqual(@as(f64, 2), context.litter_mass_per_water_volume_Mg_per_m3);
+    try std.testing.expectEqual(@as(f64, 2), context.litter_mass_per_water_volume_megagrams_per_m3);
     try std.testing.expect(context.dynamic_salts);
     try std.testing.expectEqual(
         parameters.aqueous_kinetics.maximum_slow_association_mol_per_m3_step,

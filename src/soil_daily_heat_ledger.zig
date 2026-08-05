@@ -4,7 +4,7 @@ pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     layer_capacity: usize,
-    total_radiation_mj_per_m2: []f64,
+    total_radiation_megajoules_per_m2: []f64,
     maximum_air_temperature_c: []f64,
     minimum_air_temperature_c: []f64,
     maximum_vapor_pressure_kpa: []f64,
@@ -30,7 +30,7 @@ pub const State = struct {
             .allocator = allocator,
             .cell_count = cell_count,
             .layer_capacity = layer_capacity,
-            .total_radiation_mj_per_m2 = scalar[0 * cell_count .. 1 * cell_count],
+            .total_radiation_megajoules_per_m2 = scalar[0 * cell_count .. 1 * cell_count],
             .maximum_air_temperature_c = scalar[1 * cell_count .. 2 * cell_count],
             .minimum_air_temperature_c = scalar[2 * cell_count .. 3 * cell_count],
             .maximum_vapor_pressure_kpa = scalar[3 * cell_count .. 4 * cell_count],
@@ -51,12 +51,12 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         self.allocator.free(self.sample_count);
         self.allocator.free(self.maximum_soil_temperature_c.ptr[0 .. self.maximum_soil_temperature_c.len * 2]);
-        self.allocator.free(self.total_radiation_mj_per_m2.ptr[0 .. self.total_radiation_mj_per_m2.len * 10]);
+        self.allocator.free(self.total_radiation_megajoules_per_m2.ptr[0 .. self.total_radiation_megajoules_per_m2.len * 10]);
         self.* = undefined;
     }
 
     pub fn reset(self: *State) void {
-        @memset(self.total_radiation_mj_per_m2, 0);
+        @memset(self.total_radiation_megajoules_per_m2, 0);
         @memset(self.cumulative_wind_distance_m, 0);
         @memset(self.total_precipitation_mm, 0);
         @memset(self.ionic_outflow_mol, 0);
@@ -75,7 +75,7 @@ pub const State = struct {
         self: *State,
         cell: usize,
         active_layer_count: usize,
-        shortwave_radiation_mj_per_m2: f64,
+        shortwave_radiation_megajoules_per_m2: f64,
         air_temperature_k: f64,
         vapor_pressure_kpa: f64,
         wind_speed_m_per_h: f64,
@@ -85,14 +85,14 @@ pub const State = struct {
         ionic_boundary_net_flux_mol: f64,
     ) !void {
         if (cell >= self.cell_count or active_layer_count == 0 or active_layer_count > self.layer_capacity or soil_temperature_k.len != active_layer_count) return error.DailyHeatDimensionMismatch;
-        inline for (.{ shortwave_radiation_mj_per_m2, air_temperature_k, vapor_pressure_kpa, wind_speed_m_per_h, precipitation_m, surface_temperature_k, ionic_boundary_net_flux_mol }) |value|
+        inline for (.{ shortwave_radiation_megajoules_per_m2, air_temperature_k, vapor_pressure_kpa, wind_speed_m_per_h, precipitation_m, surface_temperature_k, ionic_boundary_net_flux_mol }) |value|
             if (!std.math.isFinite(value)) return error.NonFiniteDailyHeatInput;
-        if (shortwave_radiation_mj_per_m2 < 0 or air_temperature_k <= 0 or vapor_pressure_kpa < 0 or wind_speed_m_per_h < 0 or precipitation_m < 0 or ionic_boundary_net_flux_mol < 0) return error.InvalidDailyHeatInput;
+        if (shortwave_radiation_megajoules_per_m2 < 0 or air_temperature_k <= 0 or vapor_pressure_kpa < 0 or wind_speed_m_per_h < 0 or precipitation_m < 0 or ionic_boundary_net_flux_mol < 0) return error.InvalidDailyHeatInput;
         for (soil_temperature_k) |temperature| if (!std.math.isFinite(temperature) or temperature <= 0) return error.InvalidDailyHeatInput;
         if (self.sample_count[cell] == std.math.maxInt(u8)) return error.DailyHeatSampleCountOverflow;
         const air_c = air_temperature_k - 273.15;
         const surface_c = surface_temperature_k - 273.15;
-        self.total_radiation_mj_per_m2[cell] = try addFinite(self.total_radiation_mj_per_m2[cell], shortwave_radiation_mj_per_m2);
+        self.total_radiation_megajoules_per_m2[cell] = try addFinite(self.total_radiation_megajoules_per_m2[cell], shortwave_radiation_megajoules_per_m2);
         self.cumulative_wind_distance_m[cell] = try addFinite(self.cumulative_wind_distance_m[cell], wind_speed_m_per_h);
         self.total_precipitation_mm[cell] = try addFinite(self.total_precipitation_mm[cell], 1000 * precipitation_m);
         self.ionic_outflow_mol[cell] = try addFinite(self.ionic_outflow_mol[cell], ionic_boundary_net_flux_mol);
@@ -129,7 +129,7 @@ test "daily heat ledger retains extrema and accepted hourly totals at runtime de
     try state.accumulateHour(0, 2, 1, 280, 1, 100, 0.028, &.{ 275, 276 }, 278, 3);
     try state.accumulateHour(0, 2, 2, 290, 2, 200, 0.014, &.{ 285, 274 }, 288, 1);
     try state.validateCell(0);
-    try std.testing.expectEqual(@as(f64, 3), state.total_radiation_mj_per_m2[0]);
+    try std.testing.expectEqual(@as(f64, 3), state.total_radiation_megajoules_per_m2[0]);
     try std.testing.expectApproxEqAbs(@as(f64, 16.85), state.maximum_air_temperature_c[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 6.85), state.minimum_air_temperature_c[0], 1e-12);
     try std.testing.expectEqual(@as(f64, 300), state.cumulative_wind_distance_m[0]);

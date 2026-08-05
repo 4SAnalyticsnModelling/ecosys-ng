@@ -161,6 +161,18 @@ pub const AutotrophicInputs = struct {
     nitrite_oxidizer_carbon_efficiency_g_c_per_g_n: f64,
     anaerobic_growth_respiration_fraction: f64,
     additional_ammonium_oxidation_per_nitrite_reduction: f64,
+    /// Source NITRO.F 2029/2031 `FNH4*3.0*ZNH4S(L,NY,NX)*XNFH`: how much NO2
+    /// reduction one gram of ammonium N can support as electron donor. This is
+    /// a distinct constant from
+    /// `additional_ammonium_oxidation_per_nitrite_reduction`, which is source
+    /// `0.333` at NITRO.F 2040/2041. The bound path previously reconstructed
+    /// this limit as `NH4 / 0.333 = 3.003003...*NH4`, conflating the two and
+    /// overstating the donor ceiling by a factor of `1/(3*0.333) = 1.001001`.
+    /// The isolated exact kernel `soil_autotrophic_nitrite_reduction.zig`
+    /// already carried both constants separately; see its test
+    /// "NITRO autotrophic denitrification retains distinct 3 and 0.333
+    /// factors".
+    ammonium_supply_per_nitrite_reduction: f64 = 3,
 };
 
 pub const AutotrophicPotential = struct {
@@ -179,7 +191,7 @@ pub fn calculateAutotrophicPotential(inputs: AutotrophicInputs, parameters: Para
     try parameters.validate();
     inline for (@typeInfo(AutotrophicInputs).@"struct".fields) |field| if (field.type == f64 and (!std.math.isFinite(@field(inputs, field.name)) or @field(inputs, field.name) < 0)) return error.InvalidAutotrophicDenitrificationInput;
     inline for (.{ inputs.non_band, inputs.band }) |zone| inline for (@typeInfo(AutotrophicZone).@"struct".fields) |field| if (!std.math.isFinite(@field(zone, field.name)) or @field(zone, field.name) < 0) return error.InvalidAutotrophicDenitrificationZone;
-    if (inputs.timestep_h <= 0 or inputs.additional_ammonium_oxidation_per_nitrite_reduction <= 0) return error.InvalidAutotrophicDenitrificationInput;
+    if (inputs.timestep_h <= 0 or inputs.additional_ammonium_oxidation_per_nitrite_reduction <= 0 or inputs.ammonium_supply_per_nitrite_reduction <= 0) return error.InvalidAutotrophicDenitrificationInput;
     const zones = [_]AutotrophicZone{ inputs.non_band, inputs.band };
     const unmet_oxygen_g_o = @max(0, inputs.oxygen_demand_g_o - inputs.oxygen_reduction_g_o);
     const nitrite_demand_g_n = parameters.nitrate_n_per_unmet_oxygen_g_n_per_g_o * unmet_oxygen_g_o * inputs.aqueous_co2_activity;
@@ -190,7 +202,7 @@ pub fn calculateAutotrophicPotential(inputs: AutotrophicInputs, parameters: Para
     var reduction: [2]f64 = .{ 0, 0 };
     for (zones, 0..) |zone, index| {
         const nitrite_supply = zone.nitrite_amount_g_n + zone.preceding_ammonia_oxidation_g_n;
-        const electron_donor_limit = zone.ammonium_competition_fraction * zone.ammonium_amount_g_n * inputs.timestep_h / inputs.additional_ammonium_oxidation_per_nitrite_reduction;
+        const electron_donor_limit = zone.ammonium_competition_fraction * inputs.ammonium_supply_per_nitrite_reduction * zone.ammonium_amount_g_n * inputs.timestep_h;
         reduction[index] = @max(0, @min(capacity[index], nitrite_supply, electron_donor_limit));
     }
     const total = reduction[0] + reduction[1];

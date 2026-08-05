@@ -32,8 +32,8 @@ pub const Inputs = struct {
     mode: SaltEquilibriumMode,
     initial: InitialIonTransformations,
     external_hydrogen_mol_per_m3_step: f64,
-    carboxyl_hydrogen_exchange_mol_per_Mg_step: f64,
-    litter_mass_per_water_volume_Mg_per_m3: f64,
+    carboxyl_hydrogen_exchange_mol_per_megagram_step: f64,
+    litter_mass_per_water_volume_megagrams_per_m3: f64,
     association: AssociationRates,
     phosphate_minerals: PhosphateMineralRates,
 };
@@ -75,8 +75,8 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
     const hydrogen =
         initial.hydrogen_mol_per_m3_step +
         inputs.external_hydrogen_mol_per_m3_step -
-        inputs.carboxyl_hydrogen_exchange_mol_per_Mg_step *
-            inputs.litter_mass_per_water_volume_Mg_per_m3 -
+        inputs.carboxyl_hydrogen_exchange_mol_per_megagram_step *
+            inputs.litter_mass_per_water_volume_megagrams_per_m3 -
         association.carbon_dioxide_mol_c_per_m3_step -
         association.bicarbonate_mol_c_per_m3_step +
         2.0 *
@@ -130,13 +130,13 @@ fn validateInputs(inputs: Inputs) !void {
     try validateFiniteStruct(inputs.phosphate_minerals);
     inline for (.{
         inputs.external_hydrogen_mol_per_m3_step,
-        inputs.carboxyl_hydrogen_exchange_mol_per_Mg_step,
-        inputs.litter_mass_per_water_volume_Mg_per_m3,
+        inputs.carboxyl_hydrogen_exchange_mol_per_megagram_step,
+        inputs.litter_mass_per_water_volume_megagrams_per_m3,
     }) |value| {
         if (!std.math.isFinite(value))
             return error.InvalidSurfaceLitterDynamicSaltAssemblyInput;
     }
-    if (inputs.litter_mass_per_water_volume_Mg_per_m3 <= 0)
+    if (inputs.litter_mass_per_water_volume_megagrams_per_m3 <= 0)
         return error.InvalidSurfaceLitterDynamicSaltAssemblyInput;
 }
 
@@ -165,8 +165,8 @@ fn testInputs() Inputs {
             .calcium_mol_per_m3_step = 0.50,
         },
         .external_hydrogen_mol_per_m3_step = 0.60,
-        .carboxyl_hydrogen_exchange_mol_per_Mg_step = 0.07,
-        .litter_mass_per_water_volume_Mg_per_m3 = 2,
+        .carboxyl_hydrogen_exchange_mol_per_megagram_step = 0.07,
+        .litter_mass_per_water_volume_megagrams_per_m3 = 2,
         .association = .{
             .carbon_dioxide_mol_c_per_m3_step = 0.08,
             .bicarbonate_mol_c_per_m3_step = 0.09,
@@ -193,8 +193,8 @@ test "SOLUTE dynamic salt assembly preserves every source equation" {
     try std.testing.expectEqual(
         initial.hydrogen_mol_per_m3_step +
             inputs.external_hydrogen_mol_per_m3_step -
-            inputs.carboxyl_hydrogen_exchange_mol_per_Mg_step *
-                inputs.litter_mass_per_water_volume_Mg_per_m3 -
+            inputs.carboxyl_hydrogen_exchange_mol_per_megagram_step *
+                inputs.litter_mass_per_water_volume_megagrams_per_m3 -
             association.carbon_dioxide_mol_c_per_m3_step -
             association.bicarbonate_mol_c_per_m3_step +
             2.0 *
@@ -262,7 +262,7 @@ test "dynamic salt assembly accepts signed reversible rates" {
 
 test "dynamic salt assembly rejects invalid input and overflow" {
     var inputs = testInputs();
-    inputs.litter_mass_per_water_volume_Mg_per_m3 = 0;
+    inputs.litter_mass_per_water_volume_megagrams_per_m3 = 0;
     try std.testing.expectError(
         error.InvalidSurfaceLitterDynamicSaltAssemblyInput,
         calculateSourceOrder(inputs),
@@ -276,9 +276,9 @@ test "dynamic salt assembly rejects invalid input and overflow" {
     );
 
     inputs = testInputs();
-    inputs.litter_mass_per_water_volume_Mg_per_m3 =
+    inputs.litter_mass_per_water_volume_megagrams_per_m3 =
         std.math.floatMax(f64);
-    inputs.carboxyl_hydrogen_exchange_mol_per_Mg_step =
+    inputs.carboxyl_hydrogen_exchange_mol_per_megagram_step =
         std.math.floatMax(f64);
     try std.testing.expectError(
         error.NonFiniteSurfaceLitterDynamicSaltAssemblyResult,

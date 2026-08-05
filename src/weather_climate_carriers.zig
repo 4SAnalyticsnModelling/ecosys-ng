@@ -1,10 +1,10 @@
 const std = @import("std");
 
 pub const Carriers = struct {
-    direct_shortwave_mj_per_m2: f64,
-    diffuse_shortwave_mj_per_m2: f64,
-    direct_par_mj_per_m2: f64,
-    diffuse_par_mj_per_m2: f64,
+    direct_shortwave_megajoules_per_m2: f64,
+    diffuse_shortwave_megajoules_per_m2: f64,
+    direct_par_megajoules_per_m2: f64,
+    diffuse_par_megajoules_per_m2: f64,
     wind_speed_m_per_h: f64,
     vapor_pressure_kpa: f64,
     saturated_vapor_pressure_kpa: f64,
@@ -58,13 +58,13 @@ pub fn apply(
     }
 
     const next: Carriers = .{
-        .direct_shortwave_mj_per_m2 = carriers.direct_shortwave_mj_per_m2 *
+        .direct_shortwave_megajoules_per_m2 = carriers.direct_shortwave_megajoules_per_m2 *
             modifiers.radiation_fraction,
-        .diffuse_shortwave_mj_per_m2 = carriers.diffuse_shortwave_mj_per_m2 *
+        .diffuse_shortwave_megajoules_per_m2 = carriers.diffuse_shortwave_megajoules_per_m2 *
             modifiers.radiation_fraction,
-        .direct_par_mj_per_m2 = carriers.direct_par_mj_per_m2 *
+        .direct_par_megajoules_per_m2 = carriers.direct_par_megajoules_per_m2 *
             modifiers.radiation_fraction,
-        .diffuse_par_mj_per_m2 = carriers.diffuse_par_mj_per_m2 *
+        .diffuse_par_megajoules_per_m2 = carriers.diffuse_par_megajoules_per_m2 *
             modifiers.radiation_fraction,
         .wind_speed_m_per_h = carriers.wind_speed_m_per_h *
             modifiers.wind_speed_fraction,
@@ -93,10 +93,10 @@ pub fn apply(
 
 fn exampleCarriers() Carriers {
     return .{
-        .direct_shortwave_mj_per_m2 = 2,
-        .diffuse_shortwave_mj_per_m2 = 1,
-        .direct_par_mj_per_m2 = 0.8,
-        .diffuse_par_mj_per_m2 = 0.4,
+        .direct_shortwave_megajoules_per_m2 = 2,
+        .diffuse_shortwave_megajoules_per_m2 = 1,
+        .direct_par_megajoules_per_m2 = 0.8,
+        .diffuse_par_megajoules_per_m2 = 0.4,
         .wind_speed_m_per_h = 100,
         .vapor_pressure_kpa = 1.5,
         .saturated_vapor_pressure_kpa = 2,
@@ -127,10 +127,10 @@ test "WTHR scales four radiation beams and clamps humidity" {
         .precipitation_ammonium_g_per_m3 = 0.1,
         .precipitation_nitrate_g_per_m3 = 0.2,
     });
-    try std.testing.expectEqual(@as(f64, 3), carriers.direct_shortwave_mj_per_m2);
-    try std.testing.expectEqual(@as(f64, 1.5), carriers.diffuse_shortwave_mj_per_m2);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.2), carriers.direct_par_mj_per_m2, 1e-15);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.6), carriers.diffuse_par_mj_per_m2, 1e-15);
+    try std.testing.expectEqual(@as(f64, 3), carriers.direct_shortwave_megajoules_per_m2);
+    try std.testing.expectEqual(@as(f64, 1.5), carriers.diffuse_shortwave_megajoules_per_m2);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.2), carriers.direct_par_megajoules_per_m2, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6), carriers.diffuse_par_megajoules_per_m2, 1e-15);
     try std.testing.expectEqual(@as(f64, 50), carriers.wind_speed_m_per_h);
     try std.testing.expectEqual(@as(f64, 2), carriers.vapor_pressure_kpa);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0012), carriers.rainfall_m, 1e-15);
@@ -170,7 +170,7 @@ test "invalid late modifier rolls back every weather carrier" {
 
 test "overflowing beam scaling rolls back state" {
     var carriers = exampleCarriers();
-    carriers.diffuse_par_mj_per_m2 = std.math.floatMax(f64);
+    carriers.diffuse_par_megajoules_per_m2 = std.math.floatMax(f64);
     const before = carriers;
     var modifiers = exampleModifiers();
     modifiers.radiation_fraction = 2;

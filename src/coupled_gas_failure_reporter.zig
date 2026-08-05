@@ -11,6 +11,9 @@ pub const Options = struct {
 
 /// Maps live solver input into the immutable diagnostic schema. Accepted-flux
 /// ledgers are intentionally omitted because a failure has no accepted commit.
+/// Everything the residual reads is carried, including the REDIST bubble
+/// receiver map: it selects where released gas lands, so dropping it would
+/// make a replay solve a different system than the one that failed.
 pub fn inputView(inputs: solver.Inputs) snapshot.InputView {
     return .{
         .faces = inputs.faces,
@@ -23,6 +26,7 @@ pub fn inputView(inputs: solver.Inputs) snapshot.InputView {
         .gas_water_exchange_rate_per_step = inputs.gas_water_exchange_rate_per_step,
         .band_gas_water_exchange_rate_per_step = inputs.band_gas_water_exchange_rate_per_step,
         .bubbling_enabled = inputs.bubbling_enabled,
+        .bubble_receiver_cell_by_cell = inputs.bubble_receiver_cell_by_cell,
     };
 }
 
@@ -52,6 +56,7 @@ pub fn replayInputs(replay_case: *snapshot.ReplayCase) solver.Inputs {
         .gas_water_exchange_rate_per_step = inputs.gas_water_exchange_rate_per_step,
         .band_gas_water_exchange_rate_per_step = inputs.band_gas_water_exchange_rate_per_step,
         .bubbling_enabled = inputs.bubbling_enabled,
+        .bubble_receiver_cell_by_cell = inputs.bubble_receiver_cell_by_cell,
     };
 }
 
@@ -146,6 +151,7 @@ const TestFixture = struct {
     exchange: [2 * gas.species_count]f64,
     band_exchange: [2 * gas.species_count]f64,
     bubbling: [2]bool,
+    bubble_receivers: [2]?usize,
 
     fn init(allocator: std.mem.Allocator) !TestFixture {
         var state = try gas.State.init(allocator, 2);
@@ -173,6 +179,7 @@ const TestFixture = struct {
             .exchange = [_]f64{0.1} ** (2 * gas.species_count),
             .band_exchange = [_]f64{0.05} ** (2 * gas.species_count),
             .bubbling = .{ true, false },
+            .bubble_receivers = .{ 1, null },
         };
     }
 
@@ -191,6 +198,7 @@ const TestFixture = struct {
             .gas_water_exchange_rate_per_step = &self.exchange,
             .band_gas_water_exchange_rate_per_step = &self.band_exchange,
             .bubbling_enabled = &self.bubbling,
+            .bubble_receiver_cell_by_cell = &self.bubble_receivers,
         };
     }
 };
@@ -230,6 +238,13 @@ test "reporter publishes an atomic snapshot readable as an owned replay case" {
     try std.testing.expectEqual(options.max_iterations, restored.options.max_iterations);
     const mapped_inputs = replayInputs(&restored);
     try std.testing.expectEqual(@as(usize, 1), mapped_inputs.faces.len);
+    // The replay must solve the same system, so the receiver map has to
+    // survive capture, serialization, and mapping back into solver inputs.
+    try std.testing.expectEqualSlices(
+        ?usize,
+        &fixture.bubble_receivers,
+        mapped_inputs.bubble_receiver_cell_by_cell.?,
+    );
     try std.testing.expectEqual(options, replayOptions(restored.options));
 }
 

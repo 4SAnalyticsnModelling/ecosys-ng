@@ -1,7 +1,9 @@
 const std = @import("std");
 const RootState = @import("plant_root_system.zig").State;
 const magic = "ECOSROOT";
-const version: u32 = 3;
+const version: u32 = 6;
+const previous_version: u32 = 5;
+const compressed_porosity_version: u32 = 4;
 
 pub const Limits = struct { maximum_plants: usize, maximum_soil_layers: usize, maximum_root_axes: usize };
 
@@ -23,7 +25,10 @@ pub fn write(writer: anytype, state: RootState) !void {
 pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits) !RootState {
     if (limits.maximum_plants == 0 or limits.maximum_soil_layers == 0 or limits.maximum_root_axes == 0) return error.InvalidPlantRootCheckpointLimits;
     if (!std.mem.eql(u8, try reader.takeArray(magic.len), magic)) return error.InvalidPlantRootCheckpointMagic;
-    if (try reader.takeInt(u32, .little) != version) return error.UnsupportedPlantRootCheckpointVersion;
+    const stored_version = try reader.takeInt(u32, .little);
+    if (stored_version != version and stored_version != previous_version and
+        stored_version != compressed_porosity_version)
+        return error.UnsupportedPlantRootCheckpointVersion;
     const plants = try bounded(reader, limits.maximum_plants, error.PlantRootCheckpointPlantLimitExceeded);
     const layers = try bounded(reader, limits.maximum_soil_layers, error.PlantRootCheckpointLayerLimitExceeded);
     const axes = try bounded(reader, limits.maximum_root_axes, error.PlantRootCheckpointAxisLimitExceeded);
@@ -31,8 +36,22 @@ pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits
     var state = try RootState.init(allocator, plants, layers, axes);
     errdefer state.deinit();
     inline for (@typeInfo(RootState).@"struct".fields) |field| switch (field.type) {
-        []f64 => try readF64Slice(reader, @field(state, field.name)),
-        []usize => try readUsizeSlice(reader, @field(state, field.name)),
+        []f64 => if (stored_version == compressed_porosity_version and
+            (comptime std.mem.eql(u8, field.name, "current_porosity_fraction_by_domain") or
+                std.mem.eql(u8, field.name, "initial_porosity_fraction_by_domain")))
+        {
+            const per_plant = try allocator.alloc(f64, plants);
+            defer allocator.free(per_plant);
+            try readF64Slice(reader, per_plant);
+            for (per_plant, 0..) |value, plant| {
+                for (0..@import("plant_root_system.zig").biological_domain_count) |domain| {
+                    @field(state, field.name)[try state.domainIndex(plant, domain)] = value;
+                }
+            }
+        } else try readF64Slice(reader, @field(state, field.name)),
+        []usize => if (stored_version < version and (comptime isRootedLayerBound(field.name))) {
+            @memcpy(@field(state, field.name), state.planting_layer_by_plant);
+        } else try readUsizeSlice(reader, @field(state, field.name)),
         []bool => try readBoolSlice(reader, @field(state, field.name)),
         else => {},
     };
@@ -92,12 +111,17 @@ test "root checkpoint round trip preserves runtime plants layers axes and every 
     var source = try RootState.init(std.testing.allocator, 7, 4, 12);
     defer source.deinit();
     source.planting_layer_by_plant[6] = 3;
+    source.current_deepest_rooted_layer_by_plant[6] = 3;
+    source.next_deepest_rooted_layer_by_plant[6] = 3;
+    try source.includeNextDeepestRootedLayer(5, 2);
     source.active_root_axis_count[6] = 11;
     source.roots_dead[6] = false;
     source.total_carbon_g[source.total_carbon_g.len - 1] = 42;
     source.axis_secondary_phosphorus_g[source.axis_secondary_phosphorus_g.len - 1] = 0.25;
     source.salt_content_mol[source.salt_content_mol.len - 1] = 3.5;
     source.exudate_carbon_exchange_g_c_per_h[source.exudate_carbon_exchange_g_c_per_h.len - 1] = -0.1;
+    source.current_porosity_fraction_by_domain[try source.domainIndex(6, 0)] = 0.21;
+    source.current_porosity_fraction_by_domain[try source.domainIndex(6, 1)] = 0.47;
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer bytes.deinit();
     try write(&bytes.writer, source);
@@ -112,6 +136,75 @@ test "root checkpoint round trip preserves runtime plants layers axes and every 
     try std.testing.expectEqualSlices(f64, source.axis_secondary_phosphorus_g, restored.axis_secondary_phosphorus_g);
     try std.testing.expectEqualSlices(f64, source.salt_content_mol, restored.salt_content_mol);
     try std.testing.expectEqualSlices(f64, source.exudate_carbon_exchange_g_c_per_h, restored.exudate_carbon_exchange_g_c_per_h);
+    try std.testing.expectEqualSlices(f64, source.current_porosity_fraction_by_domain, restored.current_porosity_fraction_by_domain);
+    try std.testing.expectEqualSlices(usize, source.current_deepest_rooted_layer_by_plant, restored.current_deepest_rooted_layer_by_plant);
+    try std.testing.expectEqualSlices(usize, source.next_deepest_rooted_layer_by_plant, restored.next_deepest_rooted_layer_by_plant);
+}
+
+fn isRootedLayerBound(comptime name: []const u8) bool {
+    return std.mem.eql(u8, name, "current_deepest_rooted_layer_by_plant") or
+        std.mem.eql(u8, name, "next_deepest_rooted_layer_by_plant");
+}
+
+fn writePriorVersionForTest(writer: anytype, state: RootState, stored_version: u32) !void {
+    try validate(state);
+    try writer.writeAll(magic);
+    if (stored_version != compressed_porosity_version and stored_version != previous_version)
+        return error.UnsupportedPlantRootCheckpointVersion;
+    try writer.writeInt(u32, stored_version, .little);
+    try writer.writeInt(u64, @intCast(state.plant_count), .little);
+    try writer.writeInt(u64, @intCast(state.soil_layer_count), .little);
+    try writer.writeInt(u64, @intCast(state.root_axis_count), .little);
+    inline for (@typeInfo(RootState).@"struct".fields) |field| switch (field.type) {
+        []f64 => if (stored_version == compressed_porosity_version and
+            (comptime std.mem.eql(u8, field.name, "current_porosity_fraction_by_domain") or
+                std.mem.eql(u8, field.name, "initial_porosity_fraction_by_domain")))
+        {
+            for (0..state.plant_count) |plant|
+                try writeF64Slice(writer, @field(state, field.name)[try state.domainIndex(plant, 0)..][0..1]);
+        } else try writeF64Slice(writer, @field(state, field.name)),
+        []usize => if (!(comptime isRootedLayerBound(field.name)))
+            try writeUsizeSlice(writer, @field(state, field.name)),
+        []bool => try writeBoolSlice(writer, @field(state, field.name)),
+        else => {},
+    };
+}
+
+test "version four root checkpoint expands plant porosity into every biological domain" {
+    var source = try RootState.init(std.testing.allocator, 2, 2, 3);
+    defer source.deinit();
+    source.current_porosity_fraction_by_domain[try source.domainIndex(0, 0)] = 0.23;
+    source.initial_porosity_fraction_by_domain[try source.domainIndex(0, 0)] = 0.19;
+    source.current_porosity_fraction_by_domain[try source.domainIndex(0, 1)] = 0.61;
+    source.initial_porosity_fraction_by_domain[try source.domainIndex(0, 1)] = 0.62;
+    var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer bytes.deinit();
+    try writePriorVersionForTest(&bytes.writer, source, compressed_porosity_version);
+    var reader: std.Io.Reader = .fixed(bytes.written());
+    var restored = try read(std.testing.allocator, &reader, .{ .maximum_plants = 2, .maximum_soil_layers = 2, .maximum_root_axes = 3 });
+    defer restored.deinit();
+    try std.testing.expectEqual(@as(f64, 0.23), restored.current_porosity_fraction_by_domain[try restored.domainIndex(0, 0)]);
+    try std.testing.expectEqual(@as(f64, 0.23), restored.current_porosity_fraction_by_domain[try restored.domainIndex(0, 1)]);
+    try std.testing.expectEqual(@as(f64, 0.19), restored.initial_porosity_fraction_by_domain[try restored.domainIndex(0, 1)]);
+}
+
+test "version five root checkpoint initializes NI and NIX from planting layer" {
+    var source = try RootState.init(std.testing.allocator, 2, 4, 3);
+    defer source.deinit();
+    source.planting_layer_by_plant[0] = 1;
+    source.planting_layer_by_plant[1] = 2;
+    source.current_deepest_rooted_layer_by_plant[0] = 3;
+    source.next_deepest_rooted_layer_by_plant[0] = 3;
+    source.current_deepest_rooted_layer_by_plant[1] = 3;
+    source.next_deepest_rooted_layer_by_plant[1] = 3;
+    var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer bytes.deinit();
+    try writePriorVersionForTest(&bytes.writer, source, previous_version);
+    var reader: std.Io.Reader = .fixed(bytes.written());
+    var restored = try read(std.testing.allocator, &reader, .{ .maximum_plants = 2, .maximum_soil_layers = 4, .maximum_root_axes = 3 });
+    defer restored.deinit();
+    try std.testing.expectEqualSlices(usize, source.planting_layer_by_plant, restored.current_deepest_rooted_layer_by_plant);
+    try std.testing.expectEqualSlices(usize, source.planting_layer_by_plant, restored.next_deepest_rooted_layer_by_plant);
 }
 
 test "root checkpoint enforces runtime axis limit before allocation" {

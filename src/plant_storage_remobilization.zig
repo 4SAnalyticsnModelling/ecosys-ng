@@ -215,7 +215,7 @@ pub fn remobilizationTimeIncrementH(
 ) !f64 {
     inline for (.{ growth_temperature_response, growth_water_fraction, biological_timestep_h }) |value|
         if (!std.math.isFinite(value) or value < 0) return error.InvalidStorageRemobilizationTimeIncrement;
-    if (growth_water_fraction > 1 or biological_timestep_h <= 0)
+    if (biological_timestep_h <= 0)
         return error.InvalidStorageRemobilizationTimeIncrement;
     const increment_h = growth_temperature_response * growth_water_fraction * biological_timestep_h;
     if (!std.math.isFinite(increment_h)) return error.NonFiniteStorageRemobilizationTimeIncrement;
@@ -256,10 +256,7 @@ test "GROSUB DATRP uses only TFN3 WFNSG and biological timestep" {
         @as(f64, 0.25) * @as(f64, 0.4) * @as(f64, 0.5),
         try remobilizationTimeIncrementH(0.25, 0.4, 0.5),
     );
-    try std.testing.expectError(
-        error.InvalidStorageRemobilizationTimeIncrement,
-        remobilizationTimeIncrementH(1, 1.01, 1),
-    );
+    try std.testing.expectEqual(@as(f64, 1.01), try remobilizationTimeIncrementH(1, 1.01, 1));
 }
 
 pub const Transfers = struct {

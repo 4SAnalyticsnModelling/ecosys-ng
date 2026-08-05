@@ -1,13 +1,13 @@
 const std = @import("std");
 
 pub const CurrentForcing = struct {
-    shortwave_radiation_mj_per_m2_h: f64,
+    shortwave_radiation_megajoules_per_m2_h: f64,
     air_temperature_k: f64,
     atmospheric_vapor_concentration_m3_per_m3: f64,
 };
 
 pub const Snapshot = struct {
-    previous_shortwave_radiation_mj_per_m2_h: f64,
+    previous_shortwave_radiation_megajoules_per_m2_h: f64,
     previous_air_temperature_k: f64,
     previous_atmospheric_vapor_concentration_m3_per_m3: f64,
 };
@@ -32,7 +32,7 @@ pub fn capture(inputs: Inputs) !Snapshot {
         return error.InvalidWeatherSnapshotTime;
     inline for (.{
         inputs.annual_mean_air_temperature_k,
-        inputs.current.shortwave_radiation_mj_per_m2_h,
+        inputs.current.shortwave_radiation_megajoules_per_m2_h,
         inputs.current.air_temperature_k,
         inputs.current.atmospheric_vapor_concentration_m3_per_m3,
     }) |value| {
@@ -41,7 +41,7 @@ pub fn capture(inputs: Inputs) !Snapshot {
     }
     if (inputs.annual_mean_air_temperature_k <= 0 or
         inputs.current.air_temperature_k <= 0 or
-        inputs.current.shortwave_radiation_mj_per_m2_h < 0 or
+        inputs.current.shortwave_radiation_megajoules_per_m2_h < 0 or
         inputs.current.atmospheric_vapor_concentration_m3_per_m3 < 0)
         return error.InvalidWeatherSnapshotInput;
 
@@ -49,13 +49,13 @@ pub fn capture(inputs: Inputs) !Snapshot {
         inputs.source_hour == 1)
     {
         return .{
-            .previous_shortwave_radiation_mj_per_m2_h = 0,
+            .previous_shortwave_radiation_megajoules_per_m2_h = 0,
             .previous_air_temperature_k = inputs.annual_mean_air_temperature_k,
             .previous_atmospheric_vapor_concentration_m3_per_m3 = 0,
         };
     }
     return .{
-        .previous_shortwave_radiation_mj_per_m2_h = inputs.current.shortwave_radiation_mj_per_m2_h,
+        .previous_shortwave_radiation_megajoules_per_m2_h = inputs.current.shortwave_radiation_megajoules_per_m2_h,
         .previous_air_temperature_k = inputs.current.air_temperature_k,
         .previous_atmospheric_vapor_concentration_m3_per_m3 = inputs.current.atmospheric_vapor_concentration_m3_per_m3,
     };
@@ -68,7 +68,7 @@ fn exampleInputs() Inputs {
         .source_hour = 1,
         .annual_mean_air_temperature_k = 281,
         .current = .{
-            .shortwave_radiation_mj_per_m2_h = 0.5,
+            .shortwave_radiation_megajoules_per_m2_h = 0.5,
             .air_temperature_k = 290,
             .atmospheric_vapor_concentration_m3_per_m3 = 0.001,
         },
@@ -79,7 +79,7 @@ test "first execution hour uses annual temperature and zero carriers" {
     const snapshot = try capture(exampleInputs());
     try std.testing.expectEqual(
         @as(f64, 0),
-        snapshot.previous_shortwave_radiation_mj_per_m2_h,
+        snapshot.previous_shortwave_radiation_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         @as(f64, 281),
@@ -96,8 +96,8 @@ test "later hours snapshot every current forcing carrier" {
     inputs.source_hour = 2;
     const snapshot = try capture(inputs);
     try std.testing.expectEqual(
-        inputs.current.shortwave_radiation_mj_per_m2_h,
-        snapshot.previous_shortwave_radiation_mj_per_m2_h,
+        inputs.current.shortwave_radiation_megajoules_per_m2_h,
+        snapshot.previous_shortwave_radiation_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         inputs.current.air_temperature_k,

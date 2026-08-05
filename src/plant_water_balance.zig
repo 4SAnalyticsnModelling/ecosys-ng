@@ -257,10 +257,10 @@ pub fn refreshRootWorkspace(workspace: *Workspace, roots: *PlantRootState, canop
             for (nodes.first..nodes.end) |node| canopy_height_m = @max(canopy_height_m, canopy.node_height_m[node]);
         }
         const stalk_factor = 3.75e3 * std.math.pow(f64, @max(0.5, 1.0 + plants.canopy_water_potential_mpa[plant] / 50.0), 4);
-        const porosity = workspace.root_porosity_fraction[plant];
-        if (!std.math.isFinite(porosity) or porosity < 0 or porosity >= 1) return error.InvalidRootPorosity;
-        const volume_per_carbon = root_volume_numerator_m3_per_g_c / (root_dry_matter_fraction * (1.0 - porosity));
         for (0..biological_domain_count_by_plant[plant]) |domain| {
+            const porosity = roots.current_porosity_fraction_by_domain[try roots.domainIndex(plant, domain)];
+            if (!std.math.isFinite(porosity) or porosity < 0 or porosity >= 1) return error.InvalidRootPorosity;
+            const volume_per_carbon = root_volume_numerator_m3_per_g_c / (root_dry_matter_fraction * (1.0 - porosity));
             var deepest_primary_root_m: f64 = 0;
             for (0..roots.root_axis_count) |axis| {
                 var has_axis = false;
@@ -355,8 +355,8 @@ pub const CanopyHydraulics = struct {
     active_carbon_g: f64,
     dry_matter_fraction_g_c_per_g: f64,
     water_capacity_m3: f64,
-    dry_heat_capacity_mj_per_k: f64,
-    wet_heat_capacity_mj_per_k: f64,
+    dry_heat_capacity_megajoules_per_k: f64,
+    wet_heat_capacity_megajoules_per_k: f64,
 };
 
 pub fn canopyHydraulics(
@@ -378,7 +378,7 @@ pub fn canopyHydraulics(
     const water_capacity_m3 = 1.0e-6 * active_carbon_g / dry_matter_fraction;
     const dry_heat_capacity = 2.496 * active_carbon_g * stalk_volume_m3_per_g_c;
     const wet_heat_capacity = dry_heat_capacity + 4.19 * (intercepted_water_m3 + canopy_water_m3);
-    return .{ .active_carbon_g = active_carbon_g, .dry_matter_fraction_g_c_per_g = dry_matter_fraction, .water_capacity_m3 = water_capacity_m3, .dry_heat_capacity_mj_per_k = dry_heat_capacity, .wet_heat_capacity_mj_per_k = wet_heat_capacity };
+    return .{ .active_carbon_g = active_carbon_g, .dry_matter_fraction_g_c_per_g = dry_matter_fraction, .water_capacity_m3 = water_capacity_m3, .dry_heat_capacity_megajoules_per_k = dry_heat_capacity, .wet_heat_capacity_megajoules_per_k = wet_heat_capacity };
 }
 
 /// Analytic d(VOLWPZ)/d(PSILT) on the physical PSILT <= 0 branch. This
@@ -398,8 +398,8 @@ pub const CanopyVaporFlux = struct {
     surface_vapor_concentration_m3_per_m3: f64,
     intercepted_evaporation_m3_per_h: f64,
     net_transpiration_into_canopy_m3_per_h: f64,
-    latent_heat_flux_mj_per_h: f64,
-    convective_water_heat_flux_mj_per_h: f64,
+    latent_heat_flux_megajoules_per_h: f64,
+    convective_water_heat_flux_megajoules_per_h: f64,
 };
 
 pub const RootUptakeGeometry = struct {
@@ -465,10 +465,10 @@ pub fn canopyVaporFlux(
     turgor_shape_per_mpa: f64,
     canopy_turgor_potential_mpa: f64,
     water_capacity_deficit_change_m3_per_h: f64,
-    latent_heat_of_vaporization_mj_per_m3: f64,
+    latent_heat_of_vaporization_megajoules_per_m3: f64,
 ) !CanopyVaporFlux {
-    inline for (.{ canopy_temperature_k, canopy_total_water_potential_mpa, aerodynamic_vapor_concentration_m3_per_m3, vapor_conductance_m3_per_h, intercepted_water_m3, minimum_stomatal_resistance_h_per_m, cuticular_resistance_h_per_m, aerodynamic_plus_boundary_resistance_h_per_m, turgor_shape_per_mpa, canopy_turgor_potential_mpa, water_capacity_deficit_change_m3_per_h, latent_heat_of_vaporization_mj_per_m3 }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyVaporInput;
-    if (canopy_temperature_k <= 0 or aerodynamic_vapor_concentration_m3_per_m3 < 0 or vapor_conductance_m3_per_h < 0 or intercepted_water_m3 < 0 or minimum_stomatal_resistance_h_per_m < 0 or cuticular_resistance_h_per_m < minimum_stomatal_resistance_h_per_m or aerodynamic_plus_boundary_resistance_h_per_m < 0 or latent_heat_of_vaporization_mj_per_m3 < 0) return error.InvalidCanopyVaporInput;
+    inline for (.{ canopy_temperature_k, canopy_total_water_potential_mpa, aerodynamic_vapor_concentration_m3_per_m3, vapor_conductance_m3_per_h, intercepted_water_m3, minimum_stomatal_resistance_h_per_m, cuticular_resistance_h_per_m, aerodynamic_plus_boundary_resistance_h_per_m, turgor_shape_per_mpa, canopy_turgor_potential_mpa, water_capacity_deficit_change_m3_per_h, latent_heat_of_vaporization_megajoules_per_m3 }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyVaporInput;
+    if (canopy_temperature_k <= 0 or aerodynamic_vapor_concentration_m3_per_m3 < 0 or vapor_conductance_m3_per_h < 0 or intercepted_water_m3 < 0 or minimum_stomatal_resistance_h_per_m < 0 or cuticular_resistance_h_per_m < minimum_stomatal_resistance_h_per_m or aerodynamic_plus_boundary_resistance_h_per_m < 0 or latent_heat_of_vaporization_megajoules_per_m3 < 0) return error.InvalidCanopyVaporInput;
     const surface_vapor = 2.173e-3 / canopy_temperature_k * 0.61 * @exp(5360.0 * (3.661e-3 - 1.0 / canopy_temperature_k)) * @exp(18.0 * canopy_total_water_potential_mpa / (8.3143 * canopy_temperature_k));
     var vapor_flux = vapor_conductance_m3_per_h * (aerodynamic_vapor_concentration_m3_per_m3 - surface_vapor);
     const intercepted_evaporation = if (vapor_flux > 0) vapor_flux else @max(vapor_flux, -intercepted_water_m3);
@@ -483,8 +483,8 @@ pub fn canopyVaporFlux(
         .surface_vapor_concentration_m3_per_m3 = surface_vapor,
         .intercepted_evaporation_m3_per_h = intercepted_evaporation,
         .net_transpiration_into_canopy_m3_per_h = transpiration,
-        .latent_heat_flux_mj_per_h = (transpiration_surface + intercepted_evaporation) * latent_heat_of_vaporization_mj_per_m3,
-        .convective_water_heat_flux_mj_per_h = intercepted_evaporation * 4.19 * canopy_temperature_k,
+        .latent_heat_flux_megajoules_per_h = (transpiration_surface + intercepted_evaporation) * latent_heat_of_vaporization_megajoules_per_m3,
+        .convective_water_heat_flux_megajoules_per_h = intercepted_evaporation * 4.19 * canopy_temperature_k,
     };
 }
 
@@ -733,7 +733,7 @@ test "UPTAKE canopy water and heat capacity retain source constants" {
     const expected_dry_fraction = 0.16 + 0.10 / 2.05;
     try std.testing.expectApproxEqAbs(expected_dry_fraction, canopy.dry_matter_fraction_g_c_per_g, 1e-14);
     try std.testing.expectApproxEqAbs(1e-6 * 16.25 / expected_dry_fraction, canopy.water_capacity_m3, 1e-14);
-    try std.testing.expectApproxEqAbs(2.496 * 16.25 * 4e-6 + 4.19 * 5e-5, canopy.wet_heat_capacity_mj_per_k, 1e-14);
+    try std.testing.expectApproxEqAbs(2.496 * 16.25 * 4e-6 + 4.19 * 5e-5, canopy.wet_heat_capacity_megajoules_per_k, 1e-14);
     const capacitance = try canopyWaterCapacitanceM3PerMpa(canopy.active_carbon_g, -1);
     const epsilon = 1e-6;
     const wetter = try canopyHydraulics(10, 100, 0.01, 2e-5, 3e-5, -1 + epsilon);
@@ -758,12 +758,12 @@ test "UPTAKE canopy vapor flux limits intercepted evaporation before transpirati
     const flux = try canopyVaporFlux(290, -1, 0, 10, 1e-5, 0.01, 0.1, 0.02, -1, 1, 0, 2450);
     try std.testing.expectApproxEqAbs(-1e-5, flux.intercepted_evaporation_m3_per_h, 1e-14);
     try std.testing.expect(flux.net_transpiration_into_canopy_m3_per_h < 0);
-    try std.testing.expectApproxEqAbs((flux.net_transpiration_into_canopy_m3_per_h + flux.intercepted_evaporation_m3_per_h) * 2450, flux.latent_heat_flux_mj_per_h, 1e-12);
-    try std.testing.expectApproxEqAbs(flux.intercepted_evaporation_m3_per_h * 4.19 * 290, flux.convective_water_heat_flux_mj_per_h, 1e-12);
+    try std.testing.expectApproxEqAbs((flux.net_transpiration_into_canopy_m3_per_h + flux.intercepted_evaporation_m3_per_h) * 2450, flux.latent_heat_flux_megajoules_per_h, 1e-12);
+    try std.testing.expectApproxEqAbs(flux.intercepted_evaporation_m3_per_h * 4.19 * 290, flux.convective_water_heat_flux_megajoules_per_h, 1e-12);
 }
 
 test "UPTAKE commit preserves source sign and resistance-weighted root potential" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var grid = try GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     grid.matric_potential_mpa[0] = -0.2;
@@ -787,7 +787,7 @@ test "UPTAKE commit preserves source sign and resistance-weighted root potential
 }
 
 test "UPTAKE PSILZ retains the daily minimum and resets before the next day" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 2 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 2 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var plants = try PlantState.init(std.testing.allocator, config);
     defer plants.deinit();
     var canopy = try CanopyState.init(std.testing.allocator, 1, 2, &.{ 1, 1 }, &.{ 1, 1 }, &.{ 1, 1 });
@@ -807,7 +807,7 @@ test "UPTAKE PSILZ retains the daily minimum and resets before the next day" {
 }
 
 test "hourly hydraulic workspace skips plants without live root conductance" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var grid = try GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     var plants = try PlantState.init(std.testing.allocator, config);
@@ -829,7 +829,7 @@ test "hourly hydraulic workspace skips plants without live root conductance" {
 }
 
 test "hourly workspace builds live root and mycorrhizal conductance without allocation" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var grid = try GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.2;
@@ -853,6 +853,8 @@ test "hourly workspace builds live root and mycorrhizal conductance without allo
         roots.axis_depth_m[try roots.axisIndex(0, domain, 0)] = 0.1;
         roots.total_carbon_g[try roots.layerIndex(0, domain, 0)] = 1;
     }
+    roots.current_porosity_fraction_by_domain[try roots.domainIndex(0, 0)] = 0.2;
+    roots.current_porosity_fraction_by_domain[try roots.domainIndex(0, 1)] = 0.6;
     var workspace = try Workspace.init(std.testing.allocator, 1, 1, 1);
     defer workspace.deinit();
     workspace.cell_area_m2[0] = 10;
@@ -867,7 +869,7 @@ test "hourly workspace builds live root and mycorrhizal conductance without allo
     const half = [_]f64{0.5};
     const tenth = [_]f64{0.1};
     const conductivity = [_]f64{ 0.01, 0.01, 0.01 };
-    const properties: SoilPropertiesState = .{ .allocator = undefined, .layer_count = 1, .hydraulic_conductivity_class_count = 1, .retention_curve = @constCast(curves), .matrix_bulk_volume_m3 = @constCast(&half), .layer_volume_m3 = @constCast(&one), .layer_thickness_m = @constCast(&tenth), .layer_midpoint_depth_m = @constCast(&half), .layer_bottom_depth_m = @constCast(&one), .bulk_density_megagrams_per_m3 = @constCast(&one), .sand_mass_fraction = @constCast(&half), .clay_mass_fraction = @constCast(&half), .sand_mass_Mg = @constCast(&half), .silt_mass_Mg = @constCast(&half), .clay_mass_Mg = @constCast(&half), .total_organic_carbon_g_per_megagram = @constCast(&one), .cation_exchange_capacity_mol_per_Mg = @constCast(&one), .anion_exchange_capacity_mol_per_Mg = @constCast(&one), .cation_exchange_capacity_mol = @constCast(&one), .anion_exchange_capacity_mol = @constCast(&one), .porosity_fraction = @constCast(&half), .matrix_air_entry_water_fraction = @constCast(&half), .saturation_water_potential_mpa = @constCast(&tenth), .rainfall_conductivity_multiplier = @constCast(&one), .matrix_hydraulic_conductivity_m2_per_h_mpa = @constCast(&conductivity) };
+    const properties: SoilPropertiesState = .{ .allocator = undefined, .layer_count = 1, .hydraulic_conductivity_class_count = 1, .retention_curve = @constCast(curves), .matrix_bulk_volume_m3 = @constCast(&half), .layer_volume_m3 = @constCast(&one), .layer_thickness_m = @constCast(&tenth), .layer_midpoint_depth_m = @constCast(&half), .layer_bottom_depth_m = @constCast(&one), .bulk_density_megagrams_per_m3 = @constCast(&one), .sand_mass_fraction = @constCast(&half), .clay_mass_fraction = @constCast(&half), .sand_mass_megagrams = @constCast(&half), .silt_mass_megagrams = @constCast(&half), .clay_mass_megagrams = @constCast(&half), .total_organic_carbon_g_per_megagram = @constCast(&one), .cation_exchange_capacity_mol_per_megagram = @constCast(&one), .anion_exchange_capacity_mol_per_megagram = @constCast(&one), .cation_exchange_capacity_mol = @constCast(&one), .anion_exchange_capacity_mol = @constCast(&one), .porosity_fraction = @constCast(&half), .matrix_air_entry_water_fraction = @constCast(&half), .saturation_water_potential_mpa = @constCast(&tenth), .rainfall_conductivity_multiplier = @constCast(&one), .matrix_hydraulic_conductivity_m2_per_h_mpa = @constCast(&conductivity) };
     try refreshCanopyWorkspace(&workspace, &canopy, &plants, 1);
     try refreshRootWorkspace(&workspace, &roots, &canopy, &plants, &grid, &properties, 1, &.{2}, 1.0e-6, 0.05, 3.142, @import("plant_root_system.zig").compatibilityMorphologyParameters());
     try workspace.refreshActive(1);
@@ -875,4 +877,5 @@ test "hourly workspace builds live root and mycorrhizal conductance without allo
     try std.testing.expect(workspace.root_conductance_m_per_h_mpa[0] > 0);
     try std.testing.expect(workspace.root_conductance_m_per_h_mpa[1] > 0);
     try std.testing.expect(workspace.maximum_uptake_m[0] > 0);
+    try std.testing.expect(workspace.root_conductance_m_per_h_mpa[0] != workspace.root_conductance_m_per_h_mpa[1]);
 }

@@ -11,8 +11,8 @@ pub const Parameters = struct {
     saturation_relative_humidity: f64,
     saturation_temperature_coefficient_k: f64,
     saturation_reference_inverse_temperature_per_k: f64,
-    latent_heat_of_vaporization_mj_per_m3: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    latent_heat_of_vaporization_megajoules_per_m3: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const Inputs = struct {
@@ -26,7 +26,7 @@ pub const Inputs = struct {
     aerodynamic_resistance_below_standing_dead_h_per_m: f64,
     standing_dead_radiation_fraction: f64,
     latent_boundary_numerator_m2_per_h: f64,
-    sensible_boundary_numerator_mj_per_m_h_k: f64,
+    sensible_boundary_numerator_megajoules_per_m_h_k: f64,
     sensible_surface_resistance_h_per_m: f64,
     latent_surface_resistance_h_per_m: f64,
     intercepted_water_volume_m3: f64,
@@ -37,22 +37,22 @@ pub const Result = struct {
     adjusted_surface_resistance_h_per_m: f64,
     surface_vapor_fraction: f64,
     intercepted_water_change_m3_per_h: f64,
-    latent_heat_flux_mj_per_h: f64,
-    sensible_heat_flux_mj_per_h: f64,
-    vapor_sensible_heat_flux_mj_per_h: f64,
+    latent_heat_flux_megajoules_per_h: f64,
+    sensible_heat_flux_megajoules_per_h: f64,
+    vapor_sensible_heat_flux_megajoules_per_h: f64,
 };
 
 pub const SurfaceEnergyInputs = struct {
     exchange_inputs: Inputs,
-    absorbed_shortwave_mj_per_h: f64,
-    downward_longwave_mj_per_h: f64,
-    lateral_longwave_mj_per_h: f64,
+    absorbed_shortwave_megajoules_per_h: f64,
+    downward_longwave_megajoules_per_h: f64,
+    lateral_longwave_megajoules_per_h: f64,
     ground_surface_temperature_k: f64,
-    emission_coefficient_mj_per_h_k4: f64,
-    dry_and_existing_water_heat_capacity_mj_per_k: f64,
+    emission_coefficient_megajoules_per_h_k4: f64,
+    dry_and_existing_water_heat_capacity_megajoules_per_k: f64,
     retained_precipitation_water_m3_per_h: f64,
-    retained_precipitation_heat_mj_per_h: f64,
-    minimum_effective_heat_capacity_mj_per_k: f64,
+    retained_precipitation_heat_megajoules_per_h: f64,
+    minimum_effective_heat_capacity_megajoules_per_k: f64,
 };
 
 pub const SurfaceSolverOptions = struct {
@@ -64,8 +64,8 @@ pub const SurfaceSolverOptions = struct {
 pub const SurfaceTemperatureResult = struct {
     temperature_k: f64,
     exchange: Result,
-    net_radiation_mj_per_h: f64,
-    storage_heat_flux_mj_per_h: f64,
+    net_radiation_megajoules_per_h: f64,
+    storage_heat_flux_megajoules_per_h: f64,
     iterations: u16,
     newton_raphson_steps: u16,
     picard_steps: u16,
@@ -81,11 +81,11 @@ pub const State = struct {
     cell_count: usize,
     species_count: usize,
     intercepted_water_change_m3_per_h: []f64,
-    net_radiation_mj_per_h: []f64,
-    sensible_heat_flux_mj_per_h: []f64,
-    latent_heat_flux_mj_per_h: []f64,
-    vapor_sensible_heat_flux_mj_per_h: []f64,
-    storage_heat_flux_mj_per_h: []f64,
+    net_radiation_megajoules_per_h: []f64,
+    sensible_heat_flux_megajoules_per_h: []f64,
+    latent_heat_flux_megajoules_per_h: []f64,
+    vapor_sensible_heat_flux_megajoules_per_h: []f64,
+    storage_heat_flux_megajoules_per_h: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize) !State {
         if (cell_count == 0 or species_count == 0) return error.InvalidStandingDeadExchangeDimensions;
@@ -98,16 +98,16 @@ pub const State = struct {
             @memset(values.*, 0);
             allocated += 1;
         }
-        return .{ .allocator = allocator, .cell_count = cell_count, .species_count = species_count, .intercepted_water_change_m3_per_h = arrays[0], .net_radiation_mj_per_h = arrays[1], .sensible_heat_flux_mj_per_h = arrays[2], .latent_heat_flux_mj_per_h = arrays[3], .vapor_sensible_heat_flux_mj_per_h = arrays[4], .storage_heat_flux_mj_per_h = arrays[5] };
+        return .{ .allocator = allocator, .cell_count = cell_count, .species_count = species_count, .intercepted_water_change_m3_per_h = arrays[0], .net_radiation_megajoules_per_h = arrays[1], .sensible_heat_flux_megajoules_per_h = arrays[2], .latent_heat_flux_megajoules_per_h = arrays[3], .vapor_sensible_heat_flux_megajoules_per_h = arrays[4], .storage_heat_flux_megajoules_per_h = arrays[5] };
     }
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.intercepted_water_change_m3_per_h);
-        self.allocator.free(self.net_radiation_mj_per_h);
-        self.allocator.free(self.sensible_heat_flux_mj_per_h);
-        self.allocator.free(self.latent_heat_flux_mj_per_h);
-        self.allocator.free(self.vapor_sensible_heat_flux_mj_per_h);
-        self.allocator.free(self.storage_heat_flux_mj_per_h);
+        self.allocator.free(self.net_radiation_megajoules_per_h);
+        self.allocator.free(self.sensible_heat_flux_megajoules_per_h);
+        self.allocator.free(self.latent_heat_flux_megajoules_per_h);
+        self.allocator.free(self.vapor_sensible_heat_flux_megajoules_per_h);
+        self.allocator.free(self.storage_heat_flux_megajoules_per_h);
         self.* = undefined;
     }
 };
@@ -115,8 +115,8 @@ pub const State = struct {
 pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
     inline for (@typeInfo(Inputs).@"struct".fields) |field| if (!std.math.isFinite(@field(inputs, field.name))) return error.NonFiniteStandingDeadExchangeInput;
     inline for (@typeInfo(Parameters).@"struct".fields) |field| if (!std.math.isFinite(@field(parameters, field.name))) return error.NonFiniteStandingDeadExchangeParameter;
-    if (parameters.maximum_richardson_number < parameters.minimum_richardson_number or parameters.richardson_resistance_multiplier <= 0 or parameters.minimum_boundary_resistance_h_per_m <= 0 or parameters.maximum_boundary_resistance_h_per_m < 5.0 * parameters.minimum_boundary_resistance_h_per_m or parameters.saturation_vapor_prefactor_k <= 0 or parameters.saturation_relative_humidity < 0 or parameters.saturation_relative_humidity > 1 or parameters.saturation_temperature_coefficient_k <= 0 or parameters.saturation_reference_inverse_temperature_per_k <= 0 or parameters.latent_heat_of_vaporization_mj_per_m3 <= 0 or parameters.liquid_water_heat_capacity_mj_per_m3_k <= 0) return error.InvalidStandingDeadExchangeParameter;
-    if (inputs.atmospheric_temperature_k <= 0 or inputs.standing_dead_air_temperature_k <= 0 or inputs.standing_dead_surface_temperature_k <= 0 or inputs.standing_dead_air_vapor_fraction < 0 or inputs.biome_isothermal_boundary_resistance_h_per_m < 0 or inputs.aerodynamic_resistance_below_biome_h_per_m < 0 or inputs.aerodynamic_resistance_below_standing_dead_h_per_m <= 0 or inputs.standing_dead_radiation_fraction < 0 or inputs.latent_boundary_numerator_m2_per_h < 0 or inputs.sensible_boundary_numerator_mj_per_m_h_k < 0 or inputs.sensible_surface_resistance_h_per_m < 0 or inputs.latent_surface_resistance_h_per_m < 0 or inputs.intercepted_water_volume_m3 < 0) return error.InvalidStandingDeadExchangeInput;
+    if (parameters.maximum_richardson_number < parameters.minimum_richardson_number or parameters.richardson_resistance_multiplier <= 0 or parameters.minimum_boundary_resistance_h_per_m <= 0 or parameters.maximum_boundary_resistance_h_per_m < 5.0 * parameters.minimum_boundary_resistance_h_per_m or parameters.saturation_vapor_prefactor_k <= 0 or parameters.saturation_relative_humidity < 0 or parameters.saturation_relative_humidity > 1 or parameters.saturation_temperature_coefficient_k <= 0 or parameters.saturation_reference_inverse_temperature_per_k <= 0 or parameters.latent_heat_of_vaporization_megajoules_per_m3 <= 0 or parameters.liquid_water_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidStandingDeadExchangeParameter;
+    if (inputs.atmospheric_temperature_k <= 0 or inputs.standing_dead_air_temperature_k <= 0 or inputs.standing_dead_surface_temperature_k <= 0 or inputs.standing_dead_air_vapor_fraction < 0 or inputs.biome_isothermal_boundary_resistance_h_per_m < 0 or inputs.aerodynamic_resistance_below_biome_h_per_m < 0 or inputs.aerodynamic_resistance_below_standing_dead_h_per_m <= 0 or inputs.standing_dead_radiation_fraction < 0 or inputs.latent_boundary_numerator_m2_per_h < 0 or inputs.sensible_boundary_numerator_megajoules_per_m_h_k < 0 or inputs.sensible_surface_resistance_h_per_m < 0 or inputs.latent_surface_resistance_h_per_m < 0 or inputs.intercepted_water_volume_m3 < 0) return error.InvalidStandingDeadExchangeInput;
 
     const atmospheric_difference_k = inputs.atmospheric_temperature_k - inputs.standing_dead_air_temperature_k;
     const atmospheric_richardson = std.math.clamp(inputs.bulk_richardson_coefficient_k / inputs.atmospheric_temperature_k * atmospheric_difference_k, parameters.minimum_richardson_number, parameters.maximum_richardson_number);
@@ -137,7 +137,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
         parameters.minimum_boundary_resistance_h_per_m,
         parameters.maximum_boundary_resistance_h_per_m,
     );
-    const sensible_conductance = inputs.standing_dead_radiation_fraction * inputs.sensible_boundary_numerator_mj_per_m_h_k / adjusted_surface_resistance;
+    const sensible_conductance = inputs.standing_dead_radiation_fraction * inputs.sensible_boundary_numerator_megajoules_per_m_h_k / adjusted_surface_resistance;
     const latent_conductance = inputs.standing_dead_radiation_fraction * inputs.latent_boundary_numerator_m2_per_h / (adjusted_surface_resistance + inputs.latent_surface_resistance_h_per_m);
     const surface_vapor_fraction = parameters.saturation_vapor_prefactor_k / inputs.standing_dead_surface_temperature_k *
         parameters.saturation_relative_humidity *
@@ -148,17 +148,17 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
     else
         @max(unrestricted_water_change, -inputs.intercepted_water_volume_m3);
     const sensible_heat = sensible_conductance * surface_difference_k;
-    const latent_heat = water_change * parameters.latent_heat_of_vaporization_mj_per_m3;
-    const vapor_sensible_heat = water_change * parameters.liquid_water_heat_capacity_mj_per_m3_k * inputs.standing_dead_surface_temperature_k;
+    const latent_heat = water_change * parameters.latent_heat_of_vaporization_megajoules_per_m3;
+    const vapor_sensible_heat = water_change * parameters.liquid_water_heat_capacity_megajoules_per_m3_k * inputs.standing_dead_surface_temperature_k;
     inline for (.{ total_aerodynamic_resistance, adjusted_surface_resistance, surface_vapor_fraction, water_change, sensible_heat, latent_heat, vapor_sensible_heat }) |value| if (!std.math.isFinite(value)) return error.NonFiniteStandingDeadExchangeResult;
     return .{
         .total_aerodynamic_resistance_h_per_m = total_aerodynamic_resistance,
         .adjusted_surface_resistance_h_per_m = adjusted_surface_resistance,
         .surface_vapor_fraction = surface_vapor_fraction,
         .intercepted_water_change_m3_per_h = water_change,
-        .latent_heat_flux_mj_per_h = latent_heat,
-        .sensible_heat_flux_mj_per_h = sensible_heat,
-        .vapor_sensible_heat_flux_mj_per_h = vapor_sensible_heat,
+        .latent_heat_flux_megajoules_per_h = latent_heat,
+        .sensible_heat_flux_megajoules_per_h = sensible_heat,
+        .vapor_sensible_heat_flux_megajoules_per_h = vapor_sensible_heat,
     };
 }
 
@@ -181,12 +181,12 @@ pub fn solveSurfaceTemperature(inputs: SurfaceEnergyInputs, parameters: Paramete
     final_inputs.standing_dead_surface_temperature_k = solved.root;
     const exchange = try calculate(final_inputs, parameters);
     const energy = surfaceEnergyAt(inputs, parameters, solved.root, exchange);
-    if (!std.math.isFinite(energy.net_radiation_mj_per_h) or !std.math.isFinite(energy.storage_heat_flux_mj_per_h)) return error.NonFiniteStandingDeadSurfaceEnergyResult;
+    if (!std.math.isFinite(energy.net_radiation_megajoules_per_h) or !std.math.isFinite(energy.storage_heat_flux_megajoules_per_h)) return error.NonFiniteStandingDeadSurfaceEnergyResult;
     return .{
         .temperature_k = solved.root,
         .exchange = exchange,
-        .net_radiation_mj_per_h = energy.net_radiation_mj_per_h,
-        .storage_heat_flux_mj_per_h = energy.storage_heat_flux_mj_per_h,
+        .net_radiation_megajoules_per_h = energy.net_radiation_megajoules_per_h,
+        .storage_heat_flux_megajoules_per_h = energy.storage_heat_flux_megajoules_per_h,
         .iterations = solved.iterations,
         .newton_raphson_steps = solved.newton_raphson_steps,
         .picard_steps = solved.picard_steps,
@@ -213,30 +213,30 @@ fn surfaceTemperatureTarget(context: SurfaceResidualContext, temperature_k: f64)
     exchange_inputs.standing_dead_surface_temperature_k = temperature_k;
     const exchange = calculate(exchange_inputs, context.parameters) catch return std.math.nan(f64);
     const energy = surfaceEnergyAt(context.inputs, context.parameters, temperature_k, exchange);
-    const effective_heat_capacity = context.inputs.dry_and_existing_water_heat_capacity_mj_per_k +
-        context.parameters.liquid_water_heat_capacity_mj_per_m3_k *
+    const effective_heat_capacity = context.inputs.dry_and_existing_water_heat_capacity_megajoules_per_k +
+        context.parameters.liquid_water_heat_capacity_megajoules_per_m3_k *
             (exchange.intercepted_water_change_m3_per_h + context.inputs.retained_precipitation_water_m3_per_h);
-    if (!std.math.isFinite(effective_heat_capacity) or effective_heat_capacity <= context.inputs.minimum_effective_heat_capacity_mj_per_k) return std.math.nan(f64);
-    return (temperature_k * context.inputs.dry_and_existing_water_heat_capacity_mj_per_k + energy.storage_heat_flux_mj_per_h) / effective_heat_capacity;
+    if (!std.math.isFinite(effective_heat_capacity) or effective_heat_capacity <= context.inputs.minimum_effective_heat_capacity_megajoules_per_k) return std.math.nan(f64);
+    return (temperature_k * context.inputs.dry_and_existing_water_heat_capacity_megajoules_per_k + energy.storage_heat_flux_megajoules_per_h) / effective_heat_capacity;
 }
 
-const SurfaceEnergyFluxes = struct { net_radiation_mj_per_h: f64, storage_heat_flux_mj_per_h: f64 };
+const SurfaceEnergyFluxes = struct { net_radiation_megajoules_per_h: f64, storage_heat_flux_megajoules_per_h: f64 };
 
 fn surfaceEnergyAt(inputs: SurfaceEnergyInputs, parameters: Parameters, temperature_k: f64, exchange: Result) SurfaceEnergyFluxes {
     const temperature_fourth = std.math.pow(f64, temperature_k, 4);
     const ground_fourth = std.math.pow(f64, inputs.ground_surface_temperature_k, 4);
-    const emitted_to_sky = inputs.emission_coefficient_mj_per_h_k4 * temperature_fourth;
-    const emitted_to_ground = inputs.emission_coefficient_mj_per_h_k4 * (temperature_fourth - ground_fourth) * inputs.exchange_inputs.standing_dead_radiation_fraction;
-    const net_radiation = inputs.absorbed_shortwave_mj_per_h + inputs.downward_longwave_mj_per_h + inputs.lateral_longwave_mj_per_h - emitted_to_sky - emitted_to_ground;
+    const emitted_to_sky = inputs.emission_coefficient_megajoules_per_h_k4 * temperature_fourth;
+    const emitted_to_ground = inputs.emission_coefficient_megajoules_per_h_k4 * (temperature_fourth - ground_fourth) * inputs.exchange_inputs.standing_dead_radiation_fraction;
+    const net_radiation = inputs.absorbed_shortwave_megajoules_per_h + inputs.downward_longwave_megajoules_per_h + inputs.lateral_longwave_megajoules_per_h - emitted_to_sky - emitted_to_ground;
     return .{
-        .net_radiation_mj_per_h = net_radiation,
-        .storage_heat_flux_mj_per_h = net_radiation + exchange.latent_heat_flux_mj_per_h + exchange.sensible_heat_flux_mj_per_h + exchange.vapor_sensible_heat_flux_mj_per_h + inputs.retained_precipitation_heat_mj_per_h + parameters.liquid_water_heat_capacity_mj_per_m3_k * inputs.retained_precipitation_water_m3_per_h * temperature_k,
+        .net_radiation_megajoules_per_h = net_radiation,
+        .storage_heat_flux_megajoules_per_h = net_radiation + exchange.latent_heat_flux_megajoules_per_h + exchange.sensible_heat_flux_megajoules_per_h + exchange.vapor_sensible_heat_flux_megajoules_per_h + inputs.retained_precipitation_heat_megajoules_per_h + parameters.liquid_water_heat_capacity_megajoules_per_m3_k * inputs.retained_precipitation_water_m3_per_h * temperature_k,
     };
 }
 
 fn validateSurfaceEnergyInputs(inputs: SurfaceEnergyInputs, options: SurfaceSolverOptions) !void {
     inline for (@typeInfo(SurfaceEnergyInputs).@"struct".fields) |field| if (field.type == f64 and !std.math.isFinite(@field(inputs, field.name))) return error.NonFiniteStandingDeadSurfaceEnergyInput;
-    if (inputs.ground_surface_temperature_k <= 0 or inputs.emission_coefficient_mj_per_h_k4 < 0 or inputs.dry_and_existing_water_heat_capacity_mj_per_k <= 0 or inputs.retained_precipitation_water_m3_per_h < 0 or inputs.minimum_effective_heat_capacity_mj_per_k < 0 or !std.math.isFinite(options.minimum_temperature_k) or !std.math.isFinite(options.maximum_temperature_k) or options.minimum_temperature_k <= 0 or options.maximum_temperature_k <= options.minimum_temperature_k) return error.InvalidStandingDeadSurfaceEnergyInput;
+    if (inputs.ground_surface_temperature_k <= 0 or inputs.emission_coefficient_megajoules_per_h_k4 < 0 or inputs.dry_and_existing_water_heat_capacity_megajoules_per_k <= 0 or inputs.retained_precipitation_water_m3_per_h < 0 or inputs.minimum_effective_heat_capacity_megajoules_per_k < 0 or !std.math.isFinite(options.minimum_temperature_k) or !std.math.isFinite(options.maximum_temperature_k) or options.minimum_temperature_k <= 0 or options.maximum_temperature_k <= options.minimum_temperature_k) return error.InvalidStandingDeadSurfaceEnergyInput;
 }
 
 test "UPTAKE standing-dead evaporation is water bounded for arbitrary runtime species" {
@@ -253,7 +253,7 @@ test "UPTAKE standing-dead evaporation is water bounded for arbitrary runtime sp
         .aerodynamic_resistance_below_standing_dead_h_per_m = 0.01,
         .standing_dead_radiation_fraction = 0.5,
         .latent_boundary_numerator_m2_per_h = 1,
-        .sensible_boundary_numerator_mj_per_m_h_k = 0.00125,
+        .sensible_boundary_numerator_megajoules_per_m_h_k = 0.00125,
         .sensible_surface_resistance_h_per_m = 0.00139,
         .latent_surface_resistance_h_per_m = 0.0278,
         .intercepted_water_volume_m3 = 1.0e-4,
@@ -267,8 +267,8 @@ test "UPTAKE standing-dead evaporation is water bounded for arbitrary runtime sp
         .saturation_relative_humidity = 0.61,
         .saturation_temperature_coefficient_k = 5360,
         .saturation_reference_inverse_temperature_per_k = 3.661e-3,
-        .latent_heat_of_vaporization_mj_per_m3 = 2465,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .latent_heat_of_vaporization_megajoules_per_m3 = 2465,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     });
     state.intercepted_water_change_m3_per_h[7] = result.intercepted_water_change_m3_per_h;
     try std.testing.expectApproxEqAbs(-1.0e-4, state.intercepted_water_change_m3_per_h[7], 1.0e-15);
@@ -287,8 +287,8 @@ test "UPTAKE standing-dead TKD Newton-Picard exits before canopy ceiling" {
         .saturation_relative_humidity = 0.61,
         .saturation_temperature_coefficient_k = 5360,
         .saturation_reference_inverse_temperature_per_k = 3.661e-3,
-        .latent_heat_of_vaporization_mj_per_m3 = 2465,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .latent_heat_of_vaporization_megajoules_per_m3 = 2465,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     };
     const solved = try solveSurfaceTemperature(.{
         .exchange_inputs = .{
@@ -302,20 +302,20 @@ test "UPTAKE standing-dead TKD Newton-Picard exits before canopy ceiling" {
             .aerodynamic_resistance_below_standing_dead_h_per_m = 0.01,
             .standing_dead_radiation_fraction = 0.5,
             .latent_boundary_numerator_m2_per_h = 1,
-            .sensible_boundary_numerator_mj_per_m_h_k = 0.00125,
+            .sensible_boundary_numerator_megajoules_per_m_h_k = 0.00125,
             .sensible_surface_resistance_h_per_m = 0.00139,
             .latent_surface_resistance_h_per_m = 0.0278,
             .intercepted_water_volume_m3 = 0,
         },
-        .absorbed_shortwave_mj_per_h = 0,
-        .downward_longwave_mj_per_h = 0,
-        .lateral_longwave_mj_per_h = 0,
+        .absorbed_shortwave_megajoules_per_h = 0,
+        .downward_longwave_megajoules_per_h = 0,
+        .lateral_longwave_megajoules_per_h = 0,
         .ground_surface_temperature_k = temperature_k,
-        .emission_coefficient_mj_per_h_k4 = 0,
-        .dry_and_existing_water_heat_capacity_mj_per_k = 1,
+        .emission_coefficient_megajoules_per_h_k4 = 0,
+        .dry_and_existing_water_heat_capacity_megajoules_per_k = 1,
         .retained_precipitation_water_m3_per_h = 0,
-        .retained_precipitation_heat_mj_per_h = 0,
-        .minimum_effective_heat_capacity_mj_per_k = 1.0e-12,
+        .retained_precipitation_heat_megajoules_per_h = 0,
+        .minimum_effective_heat_capacity_megajoules_per_k = 1.0e-12,
     }, parameters, .{
         .minimum_temperature_k = 200,
         .maximum_temperature_k = 350,

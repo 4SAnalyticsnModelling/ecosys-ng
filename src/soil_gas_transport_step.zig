@@ -79,6 +79,7 @@ pub const State = struct {
     accepted_face_flux_g_per_h: []f64,
     substep_face_flux_g: []f64,
     accepted_faces: []gas.Face,
+    bubble_receiver_cell_by_cell: []?usize,
 
     pub fn init(allocator: std.mem.Allocator, layer_count: usize) !State {
         if (layer_count == 0) return error.ZeroSoilGasLayerCount;
@@ -126,10 +127,14 @@ pub const State = struct {
         @memset(substep_flux, 0);
         @memset(subsurface_flux, 0);
         @memset(substep_subsurface_flux, 0);
-        return .{ .allocator = allocator, .air_filled_porosity_m3_per_m3 = air, .free_air_diffusivity_m2_per_step = diffusivity, .band_water_volume_m3 = band_water, .mass_solubility_ratio = solubility, .gas_water_exchange_rate_per_step = exchange, .band_gas_water_exchange_rate_per_step = band_exchange, .bubbling_enabled = bubbling, .surface_boundaries = boundaries, .subsurface_boundaries = subsurface_boundaries, .atmospheric_flux_g_per_h = atmospheric_flux, .substep_atmospheric_flux_g = substep_flux, .subsurface_flux_g_per_h = subsurface_flux, .substep_subsurface_flux_g = substep_subsurface_flux, .accepted_face_flux_g_per_h = accepted_face_flux, .substep_face_flux_g = substep_face_flux, .accepted_faces = accepted_faces };
+        const bubble_receivers = try allocator.alloc(?usize, layer_count);
+        errdefer allocator.free(bubble_receivers);
+        @memset(bubble_receivers, null);
+        return .{ .allocator = allocator, .air_filled_porosity_m3_per_m3 = air, .free_air_diffusivity_m2_per_step = diffusivity, .band_water_volume_m3 = band_water, .mass_solubility_ratio = solubility, .gas_water_exchange_rate_per_step = exchange, .band_gas_water_exchange_rate_per_step = band_exchange, .bubbling_enabled = bubbling, .surface_boundaries = boundaries, .subsurface_boundaries = subsurface_boundaries, .atmospheric_flux_g_per_h = atmospheric_flux, .substep_atmospheric_flux_g = substep_flux, .subsurface_flux_g_per_h = subsurface_flux, .substep_subsurface_flux_g = substep_subsurface_flux, .accepted_face_flux_g_per_h = accepted_face_flux, .substep_face_flux_g = substep_face_flux, .accepted_faces = accepted_faces, .bubble_receiver_cell_by_cell = bubble_receivers };
     }
 
     pub fn deinit(self: *State) void {
+        self.allocator.free(self.bubble_receiver_cell_by_cell);
         self.allocator.free(self.accepted_faces);
         self.allocator.free(self.substep_face_flux_g);
         self.allocator.free(self.accepted_face_flux_g_per_h);
@@ -177,9 +182,24 @@ pub const State = struct {
             self.air_filled_porosity_m3_per_m3[layer] = air_fraction;
             const temperature_factor = std.math.pow(f64, grid.soil_temperature_k[layer] / parameters.reference_temperature_k, parameters.temperature_exponent);
             const solubility = try gas.surfaceSolubilityWaterToAir(grid.soil_temperature_k[layer], solubility_parameters);
-            const exchange = try surface_precipitation.litterGasExchange(grid.matrix_pore_capacity_m3[layer], grid.matrix_ice_water_m3[layer], grid.matrix_liquid_water_m3[layer], grid.matrix_air_volume_m3[layer], field_capacity_fraction[layer] * matrix_bulk_volume_m3[layer], whole_hour_exchange);
+            const air_volume = grid.matrix_air_volume_m3[layer];
+            const exchange = try surface_precipitation.litterGasExchange(grid.matrix_pore_capacity_m3[layer], grid.matrix_ice_water_m3[layer], grid.matrix_liquid_water_m3[layer], air_volume, field_capacity_fraction[layer] * matrix_bulk_volume_m3[layer], whole_hour_exchange);
             self.band_water_volume_m3[layer] = ammonium_band_fraction * grid.matrix_liquid_water_m3[layer];
-            gas_state.air_volume_m3[layer] = grid.matrix_air_volume_m3[layer];
+            gas_state.air_volume_m3[layer] = air_volume;
+            // Freeze-out: when a layer is completely frozen (air_volume = 0),
+            // ice excludes all dissolved gas. Transfer dissolved mass to the
+            // gaseous phase before the solver runs. The atmospheric boundary
+            // (top layer) drains gaseous mass; interior frozen-layer gaseous
+            // mass remains until thaw enables inter-layer gas diffusion.
+            if (air_volume <= 0) {
+                const start = layer * gas.species_count;
+                const dissolved = gas_state.dissolved_mass_g[start..][0..gas.species_count];
+                const gaseous = gas_state.gaseous_mass_g[start..][0..gas.species_count];
+                for (dissolved, gaseous) |*d, *g| {
+                    g.* += d.*;
+                    d.* = 0;
+                }
+            }
             gas_state.temperature_k[layer] = grid.soil_temperature_k[layer];
             gas_state.water_vapor_mol[layer] = grid.water_vapor_volume_m3[layer] * parameters.water_density_g_per_m3 / parameters.water_molar_mass_g_per_mol;
             for (0..gas.species_count) |species| {
@@ -190,6 +210,7 @@ pub const State = struct {
                 self.band_gas_water_exchange_rate_per_step[component] = if (species == @intFromEnum(gas.Species.ammonia)) exchange.air_water_rate_per_step else 0;
             }
         }
+        try self.refreshBubbleReceivers(grid, gas_state, parameters.minimum_air_filled_porosity_m3_per_m3);
         var face_set = try gas_faces.buildMapped(self.allocator, soil_faces, geometry, self.air_filled_porosity_m3_per_m3, total_porosity_fraction, self.free_air_diffusivity_m2_per_step, parameters.penman_tortuosity, parameters.minimum_air_filled_porosity_m3_per_m3);
         defer face_set.deinit();
         const face_component_count = try std.math.mul(
@@ -228,6 +249,7 @@ pub const State = struct {
             .gas_water_exchange_rate_per_step = self.gas_water_exchange_rate_per_step,
             .band_gas_water_exchange_rate_per_step = self.band_gas_water_exchange_rate_per_step,
             .bubbling_enabled = self.bubbling_enabled,
+            .bubble_receiver_cell_by_cell = self.bubble_receiver_cell_by_cell,
             .atmospheric_flux_g_by_component = self.substep_atmospheric_flux_g,
             .subsurface_flux_g_by_component = self.substep_subsurface_flux_g,
             .face_flux_g_by_component = self.substep_face_flux_g,
@@ -256,6 +278,38 @@ pub const State = struct {
         @memcpy(self.accepted_face_flux_g_per_h, self.substep_face_flux_g);
         @memcpy(self.accepted_faces, face_set.faces);
         return result;
+    }
+
+    /// REDIST 1722-1756 and 6539-6565: select `LG` before transport and map
+    /// each bubbling layer to `LL=MIN(L,LG)`. A column without a viable gas
+    /// layer retains null so the solver publishes bubbling as a boundary loss.
+    fn refreshBubbleReceivers(self: *State, grid: *const grid_module.GridState, gas_state: *const gas.State, minimum_air_fraction: f64) !void {
+        @memset(self.bubble_receiver_cell_by_cell, null);
+        for (0..grid.cell_count) |cell| {
+            const first = cell * grid.soil_layer_capacity;
+            const active = grid.active_soil_layer_count[cell];
+            var barrier = false;
+            var lowest: ?usize = null;
+            for (0..active) |local_layer| {
+                const layer = first + local_layer;
+                // REDIST VTGAS excludes VVPRG: LG selection considers only
+                // the seven tracked dry gases, while atmospheric capacity is
+                // evaluated independently from air volume and temperature.
+                var total_gas_mol: f64 = 0;
+                const masses = try gas_state.gaseousMassesConst(layer);
+                for (masses, gas.g_per_mol_tracked) |mass_g, g_per_mol|
+                    total_gas_mol += mass_g / g_per_mol;
+                const capacity_mol = @max(0, 1.2194e4 * gas_state.air_volume_m3[layer] / gas_state.temperature_k[layer]);
+                if (self.air_filled_porosity_m3_per_m3[layer] < minimum_air_fraction or total_gas_mol > capacity_mol)
+                    barrier = true;
+                if (!barrier and self.air_filled_porosity_m3_per_m3[layer] >= minimum_air_fraction)
+                    lowest = local_layer;
+            }
+            for (0..active) |local_layer| self.bubble_receiver_cell_by_cell[first + local_layer] = if (lowest) |lowest_local|
+                first + @min(local_layer, lowest_local)
+            else
+                null;
+        }
     }
 
     fn refreshSubsurfaceBoundaries(self: *State, grid: *const grid_module.GridState, matrix_bulk_volume_m3: []const f64, total_porosity_fraction: []const f64, inputs: SubsurfaceBoundaryInputs, parameters: RuntimeParameters) ![]const gas_atmosphere.Boundary {
@@ -322,7 +376,7 @@ fn validate(self: *const State, grid: *const grid_module.GridState, hydrology: *
 }
 
 test "mapped soil gas step conserves internal gaseous inventory" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     @memset(grid.active_soil_layer_count, 1);
@@ -379,7 +433,7 @@ test "mapped soil gas step conserves internal gaseous inventory" {
 }
 
 test "surface PARG is coupled in series with runtime top-layer diffusivity" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     @memset(grid.active_soil_layer_count, 1);
@@ -433,7 +487,7 @@ test "solver catch path preserves failure and publishes a readable snapshot" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     const cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 },
     );
@@ -525,7 +579,7 @@ test "solver catch path preserves failure and publishes a readable snapshot" {
 }
 
 test "runtime perimeter face builds source geometry and exchange fraction" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     var state = try State.init(std.testing.allocator, 1);

@@ -14,7 +14,7 @@ pub const EnvironmentInputs = struct {
     total_colonized_carbon_g_c: f64,
     microbial_activity_g_c_per_step: f64,
     biologically_active_water_m3: f64,
-    soil_mass_Mg: f64,
+    soil_mass_megagrams: f64,
     bulk_volume_m3: f64,
     dissolved_carbon_concentration_g_c_per_m3: f64,
     timestep_h: f64,
@@ -24,7 +24,7 @@ pub const EnvironmentInputs = struct {
 pub const Environment = struct {
     activity_concentration_g_c_per_m3_per_h: f64,
     decomposition_half_saturation_g_c_per_m3: f64,
-    effective_colonized_concentration_sqrt_g_c_per_Mg: f64,
+    effective_colonized_concentration_sqrt_g_c_per_megagram: f64,
     microbial_density_response: f64,
     dissolved_carbon_product_response: f64,
 };
@@ -33,17 +33,17 @@ pub fn environment(inputs: EnvironmentInputs, parameters: EnvironmentParameters)
     inline for (@typeInfo(EnvironmentInputs).@"struct".fields) |field| if (field.type == f64 and (!std.math.isFinite(@field(inputs, field.name)) or @field(inputs, field.name) < 0)) return error.InvalidOrganicDecompositionEnvironment;
     inline for (@typeInfo(EnvironmentParameters).@"struct".fields) |field| if (!std.math.isFinite(@field(parameters, field.name)) or @field(parameters, field.name) <= 0) return error.InvalidOrganicDecompositionParameter;
     if (inputs.timestep_h <= 0) return error.InvalidOrganicDecompositionEnvironment;
-    if (inputs.total_colonized_carbon_g_c <= inputs.negligible_carbon_g_c) return .{ .activity_concentration_g_c_per_m3_per_h = 0, .decomposition_half_saturation_g_c_per_m3 = 0, .effective_colonized_concentration_sqrt_g_c_per_Mg = 0, .microbial_density_response = 0, .dissolved_carbon_product_response = 0 };
+    if (inputs.total_colonized_carbon_g_c <= inputs.negligible_carbon_g_c) return .{ .activity_concentration_g_c_per_m3_per_h = 0, .decomposition_half_saturation_g_c_per_m3 = 0, .effective_colonized_concentration_sqrt_g_c_per_megagram = 0, .microbial_density_response = 0, .dissolved_carbon_product_response = 0 };
     const activity_concentration = if (inputs.biologically_active_water_m3 > inputs.negligible_carbon_g_c) @min(1.0e5, inputs.microbial_activity_g_c_per_step / (inputs.biologically_active_water_m3 * inputs.timestep_h)) else 1.0e5;
     const base_half_saturation = if (inputs.is_surface) parameters.surface_activity_half_saturation_g_c_per_m3 else parameters.soil_activity_half_saturation_g_c_per_m3;
     const activity_inhibition = if (inputs.is_surface) parameters.surface_activity_inhibition_g_c_per_m3_per_step else parameters.soil_activity_inhibition_g_c_per_m3_per_step;
     const half_saturation = base_half_saturation * (1 + activity_concentration / activity_inhibition);
-    const denominator = if (inputs.soil_mass_Mg > inputs.negligible_carbon_g_c) inputs.soil_mass_Mg else inputs.bulk_volume_m3;
+    const denominator = if (inputs.soil_mass_megagrams > inputs.negligible_carbon_g_c) inputs.soil_mass_megagrams else inputs.bulk_volume_m3;
     if (denominator <= 0) return error.InvalidOrganicDecompositionEnvironment;
     const effective_concentration = @sqrt(inputs.total_colonized_carbon_g_c / denominator);
     const density_response = effective_concentration / (effective_concentration + half_saturation);
     const product_response = 1 / (1 + inputs.dissolved_carbon_concentration_g_c_per_m3 / parameters.dissolved_carbon_product_inhibition_g_c_per_m3);
-    const result: Environment = .{ .activity_concentration_g_c_per_m3_per_h = activity_concentration, .decomposition_half_saturation_g_c_per_m3 = half_saturation, .effective_colonized_concentration_sqrt_g_c_per_Mg = effective_concentration, .microbial_density_response = density_response, .dissolved_carbon_product_response = product_response };
+    const result: Environment = .{ .activity_concentration_g_c_per_m3_per_h = activity_concentration, .decomposition_half_saturation_g_c_per_m3 = half_saturation, .effective_colonized_concentration_sqrt_g_c_per_megagram = effective_concentration, .microbial_density_response = density_response, .dissolved_carbon_product_response = product_response };
     inline for (@typeInfo(Environment).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name)) or @field(result, field.name) < 0) return error.NonFiniteOrganicDecompositionEnvironment;
     return result;
 }
@@ -145,7 +145,7 @@ fn validatePool(pool: organic.ElementPool) !void {
 }
 
 test "NITRO substrate decomposition reproduces density product and nutrient limitations" {
-    const response = try environment(.{ .is_surface = true, .total_colonized_carbon_g_c = 100, .microbial_activity_g_c_per_step = 2, .biologically_active_water_m3 = 1, .soil_mass_Mg = 0, .bulk_volume_m3 = 2, .dissolved_carbon_concentration_g_c_per_m3 = 50, .timestep_h = 1, .negligible_carbon_g_c = 1e-12 }, .{ .surface_activity_half_saturation_g_c_per_m3 = 12, .soil_activity_half_saturation_g_c_per_m3 = 8, .surface_activity_inhibition_g_c_per_m3_per_step = 50, .soil_activity_inhibition_g_c_per_m3_per_step = 50, .dissolved_carbon_product_inhibition_g_c_per_m3 = 100 });
+    const response = try environment(.{ .is_surface = true, .total_colonized_carbon_g_c = 100, .microbial_activity_g_c_per_step = 2, .biologically_active_water_m3 = 1, .soil_mass_megagrams = 0, .bulk_volume_m3 = 2, .dissolved_carbon_concentration_g_c_per_m3 = 50, .timestep_h = 1, .negligible_carbon_g_c = 1e-12 }, .{ .surface_activity_half_saturation_g_c_per_m3 = 12, .soil_activity_half_saturation_g_c_per_m3 = 8, .surface_activity_inhibition_g_c_per_m3_per_step = 50, .soil_activity_inhibition_g_c_per_m3_per_step = 50, .dissolved_carbon_product_inhibition_g_c_per_m3 = 100 });
     const nutrients = try nutrientLimitation(10, 0.2, 1, 0.02, 0.1, 1e-12);
     try std.testing.expectEqual(@as(f64, 0.5), nutrients.nitrogen);
     const result = try decompose(.{ .pool = .{ .carbon_g_c = 20, .nitrogen_g_n = 2, .phosphorus_g_p = 0.2 }, .active_carbon_g_c = 10, .total_colonized_carbon_g_c = 100, .specific_decomposition_rate_g_c_per_g_activity_h = 7.5, .microbial_activity_g_c_per_step = 2, .microbial_density_response = response.microbial_density_response, .dissolved_carbon_product_response = response.dissolved_carbon_product_response, .growth_temperature_response = 1, .nutrient_limitation = nutrients, .timestep_h = 1, .negligible_carbon_g_c = 1e-12 });

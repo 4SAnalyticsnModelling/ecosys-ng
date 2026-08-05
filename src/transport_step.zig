@@ -448,8 +448,8 @@ test "soil solute transaction publishes both accepted runtime-species face ledge
     const runtime_species_count: usize = 9;
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -545,7 +545,7 @@ test "soil solute transaction publishes both accepted runtime-species face ledge
 }
 
 test "hourly transport coupling advances pore domains and snow atomically" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     @memset(grid.active_soil_layer_count, 1);
@@ -603,7 +603,7 @@ test "hourly transport coupling advances pore domains and snow atomically" {
 }
 
 test "late transport failure rolls back earlier pore solve" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     @memset(grid.active_soil_layer_count, 1);

@@ -110,8 +110,8 @@ test "rotating stream closes yearly files with bounded memory" {
     var rotation = try RotatingStream.init(std.testing.allocator, std.testing.io, temporary.dir, 48, .comma);
     defer rotation.deinit();
     const variables = [_]output_record.Variable{.{ .name = "runoff", .unit = "mm" }};
-    try std.testing.expect(try rotation.write("2001.csv", &variables, selection, &.{true}, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 1 }, .grid_column = 1, .grid_row = 1, .values = &.{2} }));
-    try std.testing.expect(try rotation.write("2002.csv", &variables, selection, &.{true}, .{ .timestamp = .{ .year = 2002, .day_of_year = 1, .month = 1, .day = 1, .hour = 1 }, .grid_column = 1, .grid_row = 1, .values = &.{3} }));
+    try std.testing.expect(try rotation.write("2001.csv", &variables, selection, &.{true}, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 1 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{2} }));
+    try std.testing.expect(try rotation.write("2002.csv", &variables, selection, &.{true}, .{ .timestamp = .{ .year = 2002, .day_of_year = 1, .month = 1, .day = 1, .hour = 1 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{3} }));
     try rotation.finish();
     const first = try temporary.dir.readFileAlloc(std.testing.io, "2001.csv", std.testing.allocator, .limited(1024));
     defer std.testing.allocator.free(first);
@@ -148,8 +148,8 @@ test "invalid rotation name fails before closing active output" {
             .day = 1,
             .hour = 1,
         },
-        .grid_column = 1,
-        .grid_row = 1,
+        .longitude_degrees_east = -75.7,
+        .latitude_degrees_north = 45.3,
         .values = &.{2},
     };
     try std.testing.expect(try rotation.write(
@@ -184,8 +184,8 @@ test "invalid rotation name fails before closing active output" {
             .day = 31,
             .hour = 1,
         },
-        .grid_column = 1,
-        .grid_row = 1,
+        .longitude_degrees_east = -75.7,
+        .latitude_degrees_north = 45.3,
         .values = &.{2},
     };
     try std.testing.expectError(

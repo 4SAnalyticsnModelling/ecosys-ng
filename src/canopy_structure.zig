@@ -194,7 +194,7 @@ test "HOUR1 equal-area canopy redistribution supports runtime layer counts" {
 
 test "negative density correction fails instead of silently propagating" {
     const allocator = std.testing.allocator;
-    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
+    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
     defer plants.deinit();
     plants.leaf_area_index_m2_m2[0] = 41;
     var structure: State = .{ .allocator = allocator, .cell_count = 1, .species_count = 1, .inclination_class_count = 1, .species_is_active = try allocator.alloc(bool, 1), .initial_clumping_factor = try allocator.alloc(f64, 1), .effective_clumping_factor = try allocator.alloc(f64, 1), .leaf_inclination_fraction = try allocator.alloc(f64, 1), .leaf_area_index_by_inclination_m2_m2 = try allocator.alloc(f64, 1) };

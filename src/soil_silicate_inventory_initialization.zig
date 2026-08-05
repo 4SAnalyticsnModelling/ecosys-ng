@@ -1,25 +1,15 @@
 const std = @import("std");
 
+pub const ProfileSource = enum { atmospheric_equilibrium, supplied_profile };
+pub const Control = struct { profile_source: ProfileSource, gas_initialization_index: usize };
+
 pub const Texture = struct {
-    sand_g_per_Mg: f64,
-    silt_g_per_Mg: f64,
-    clay_g_per_Mg: f64,
+    sand_g_per_megagram: f64, // CSAND
+    silt_g_per_megagram: f64, // CSILT
+    clay_g_per_megagram: f64, // CCLAY
 };
 
-pub const SurfaceAreaCoefficients = struct {
-    sand_m2_per_g: f64,
-    silt_m2_per_g: f64,
-    clay_m2_per_g: f64,
-};
-
-pub const Parameters = struct {
-    surface_area: SurfaceAreaCoefficients,
-    elemental_inventory_fraction: f64,
-    silicate_inventory_mol_per_m2: f64,
-    base_cation_activation_ph: f64,
-};
-
-pub const ElementalSilicates = struct {
+pub const ElementInventories = struct {
     aluminum_mol: f64,
     iron_mol: f64,
     calcium_mol: f64,
@@ -28,134 +18,73 @@ pub const ElementalSilicates = struct {
     potassium_mol: f64,
 };
 
-pub const Result = struct {
-    natural_silicate_surface_area_m2: f64,
-    natural: ElementalSilicates,
-    ground: ElementalSilicates,
+pub const Inventories = struct {
+    mineral_surface_area_m2: f64, // SSAL
+    soil_silicates: ElementInventories, // Q*SI
+    ground_rock_silicates: ElementInventories, // Q*SIF
 };
 
-/// Direct translation of STARTE lines 1642--1662. Natural Al and Fe
-/// inventories are always initialized; Ca, Mg, Na, and K use the strict
-/// source pH gate. Ground-rock inventories start at zero.
-pub fn calculate(
-    texture: Texture,
-    soil_mass_Mg: f64,
-    soil_ph: f64,
-    parameters: Parameters,
-) !Result {
+fn zeroElements() ElementInventories {
+    return .{ .aluminum_mol = 0, .iron_mol = 0, .calcium_mol = 0, .magnesium_mol = 0, .sodium_mol = 0, .potassium_mol = 0 };
+}
+
+/// Direct translation of STARTE.F lines 1642--1662 inside the enclosing
+/// `DATA(20) == 'NO' .AND. IGO == 0` branch.
+pub fn initialize(control: Control, texture: Texture, soil_mass_megagrams: f64, ph: f64) !?Inventories {
+    if (control.profile_source != .atmospheric_equilibrium or
+        control.gas_initialization_index != 0) return null;
     inline for (@typeInfo(Texture).@"struct".fields) |field| {
         const value = @field(texture, field.name);
-        if (!std.math.isFinite(value))
-            return error.NonFiniteSilicateInventoryInput;
-        if (value < 0) return error.InvalidSilicateInventoryInput;
+        if (!std.math.isFinite(value) or value < 0) return error.InvalidSoilTexture;
     }
-    inline for (@typeInfo(SurfaceAreaCoefficients).@"struct".fields) |field| {
-        const value = @field(parameters.surface_area, field.name);
-        if (!std.math.isFinite(value))
-            return error.NonFiniteSilicateInventoryParameter;
-        if (value < 0) return error.InvalidSilicateInventoryParameter;
-    }
-    inline for (.{
-        soil_mass_Mg,
-        soil_ph,
-        parameters.elemental_inventory_fraction,
-        parameters.silicate_inventory_mol_per_m2,
-        parameters.base_cation_activation_ph,
-    }) |value| if (!std.math.isFinite(value))
-        return error.NonFiniteSilicateInventoryInput;
-    if (soil_mass_Mg < 0 or
-        parameters.elemental_inventory_fraction < 0 or
-        parameters.silicate_inventory_mol_per_m2 < 0)
-        return error.InvalidSilicateInventoryInput;
+    if (!std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams < 0) return error.InvalidSoilMass;
+    if (!std.math.isFinite(ph) or ph < 0 or ph > 14) return error.InvalidSoilPh;
 
-    const surface_area_m2 =
-        (parameters.surface_area.sand_m2_per_g * texture.sand_g_per_Mg +
-            parameters.surface_area.silt_m2_per_g * texture.silt_g_per_Mg +
-            parameters.surface_area.clay_m2_per_g * texture.clay_g_per_Mg) *
-        soil_mass_Mg;
-    const elemental_inventory_mol =
-        parameters.elemental_inventory_fraction *
-        surface_area_m2 *
-        parameters.silicate_inventory_mol_per_m2;
-    const base_cation_inventory_mol =
-        if (soil_ph > parameters.base_cation_activation_ph)
-            elemental_inventory_mol
-        else
-            0;
-    const result: Result = .{
-        .natural_silicate_surface_area_m2 = surface_area_m2,
-        .natural = .{
-            .aluminum_mol = elemental_inventory_mol,
-            .iron_mol = elemental_inventory_mol,
-            .calcium_mol = base_cation_inventory_mol,
-            .magnesium_mol = base_cation_inventory_mol,
-            .sodium_mol = base_cation_inventory_mol,
-            .potassium_mol = base_cation_inventory_mol,
-        },
-        .ground = std.mem.zeroes(ElementalSilicates),
-    };
-    if (!std.math.isFinite(result.natural_silicate_surface_area_m2))
-        return error.NonFiniteSilicateInventoryResult;
-    inline for (.{ result.natural, result.ground }) |silicates|
-        inline for (@typeInfo(ElementalSilicates).@"struct".fields) |field|
-            if (!std.math.isFinite(@field(silicates, field.name)))
-                return error.NonFiniteSilicateInventoryResult;
-    return result;
-}
-
-fn sourceParameters() Parameters {
+    const surface_area_m2 = (0.3 * texture.sand_g_per_megagram + 2.2 * texture.silt_g_per_megagram +
+        8.0 * texture.clay_g_per_megagram) * soil_mass_megagrams;
+    const acid_insensitive_mol = 0.167 * surface_area_m2 * 5.0e3;
+    if (!std.math.isFinite(surface_area_m2) or !std.math.isFinite(acid_insensitive_mol))
+        return error.InvalidSilicateInventory;
+    const base_silicate_mol = if (ph > 4.5) acid_insensitive_mol else 0.0;
     return .{
-        .surface_area = .{
-            .sand_m2_per_g = 0.3,
-            .silt_m2_per_g = 2.2,
-            .clay_m2_per_g = 8.0,
+        .mineral_surface_area_m2 = surface_area_m2,
+        .soil_silicates = .{
+            .aluminum_mol = acid_insensitive_mol,
+            .iron_mol = acid_insensitive_mol,
+            .calcium_mol = base_silicate_mol,
+            .magnesium_mol = base_silicate_mol,
+            .sodium_mol = base_silicate_mol,
+            .potassium_mol = base_silicate_mol,
         },
-        .elemental_inventory_fraction = 0.167,
-        .silicate_inventory_mol_per_m2 = 5.0e3,
-        .base_cation_activation_ph = 4.5,
+        .ground_rock_silicates = zeroElements(),
     };
 }
 
-test "STARTE silicate inventories preserve texture and pH source order" {
-    const result = try calculate(.{
-        .sand_g_per_Mg = 10,
-        .silt_g_per_Mg = 20,
-        .clay_g_per_Mg = 30,
-    }, 2, 6, sourceParameters());
-    const expected_area = (0.3 * 10 + 2.2 * 20 + 8.0 * 30) * 2;
-    const expected_inventory = 0.167 * expected_area * 5.0e3;
-    try std.testing.expectEqual(
-        expected_area,
-        result.natural_silicate_surface_area_m2,
-    );
-    inline for (@typeInfo(ElementalSilicates).@"struct".fields) |field| {
-        try std.testing.expectEqual(
-            expected_inventory,
-            @field(result.natural, field.name),
-        );
-        try std.testing.expectEqual(@as(f64, 0), @field(result.ground, field.name));
-    }
+test "STARTE silicate initialization preserves texture operation order and alkaline branch" {
+    const result = (try initialize(.{ .profile_source = .atmospheric_equilibrium, .gas_initialization_index = 0 }, .{
+        .sand_g_per_megagram = 10,
+        .silt_g_per_megagram = 20,
+        .clay_g_per_megagram = 30,
+    }, 2, 4.6)).?;
+    const expected_area = (0.3 * 10.0 + 2.2 * 20.0 + 8.0 * 30.0) * 2.0;
+    const expected_mol = 0.167 * expected_area * 5.0e3;
+    try std.testing.expectEqual(expected_area, result.mineral_surface_area_m2);
+    try std.testing.expectEqual(expected_mol, result.soil_silicates.aluminum_mol);
+    try std.testing.expectEqual(expected_mol, result.soil_silicates.potassium_mol);
+    try std.testing.expectEqual(@as(f64, 0), result.ground_rock_silicates.aluminum_mol);
 }
 
-test "STARTE silicate base-cation gate is strict at threshold pH" {
-    const result = try calculate(.{
-        .sand_g_per_Mg = 1,
-        .silt_g_per_Mg = 1,
-        .clay_g_per_Mg = 1,
-    }, 1, 4.5, sourceParameters());
-    try std.testing.expect(result.natural.aluminum_mol > 0);
-    try std.testing.expect(result.natural.iron_mol > 0);
-    try std.testing.expectEqual(@as(f64, 0), result.natural.calcium_mol);
-    try std.testing.expectEqual(@as(f64, 0), result.natural.potassium_mol);
+test "STARTE pH threshold is strict and suppresses four base silicates" {
+    const result = (try initialize(.{ .profile_source = .atmospheric_equilibrium, .gas_initialization_index = 0 }, .{ .sand_g_per_megagram = 1, .silt_g_per_megagram = 1, .clay_g_per_megagram = 1 }, 1, 4.5)).?;
+    try std.testing.expect(result.soil_silicates.aluminum_mol > 0);
+    try std.testing.expect(result.soil_silicates.iron_mol > 0);
+    try std.testing.expectEqual(@as(f64, 0), result.soil_silicates.calcium_mol);
+    try std.testing.expectEqual(@as(f64, 0), result.soil_silicates.magnesium_mol);
+    try std.testing.expectEqual(@as(f64, 0), result.soil_silicates.sodium_mol);
+    try std.testing.expectEqual(@as(f64, 0), result.soil_silicates.potassium_mol);
 }
 
-test "STARTE silicate initialization rejects invalid texture" {
-    try std.testing.expectError(
-        error.InvalidSilicateInventoryInput,
-        calculate(.{
-            .sand_g_per_Mg = -1,
-            .silt_g_per_Mg = 1,
-            .clay_g_per_Mg = 1,
-        }, 1, 7, sourceParameters()),
-    );
+test "STARTE inactive silicate initialization ignores invalid dormant input" {
+    const nan = std.math.nan(f64);
+    try std.testing.expectEqual(@as(?Inventories, null), try initialize(.{ .profile_source = .supplied_profile, .gas_initialization_index = 0 }, .{ .sand_g_per_megagram = nan, .silt_g_per_megagram = nan, .clay_g_per_megagram = nan }, nan, nan));
 }

@@ -1,3 +1,29 @@
+//! **A5 DISPOSITION: this module is the intentional replacement, not a
+//! superseded kernel.** Recorded here because the other class C entries in
+//! `docs/traceability/hour1_2039_5200_binding_survey.md` carry the mirror-image
+//! note and a reader arriving from that survey needs to know which side of the
+//! replacement this file is on.
+//!
+//! Legacy source replaced: `ecosys_f77/hour1.f` lines 4107--4170, the
+//! three-branch log-log matric water potential, and lines 4225--4227, the
+//! lookup hydraulic conductivity. The deviation is recorded in
+//! `docs/model_changes.md`, "Improved hydrology and freeze-thaw".
+//!
+//! Because this is an intentional replacement, legacy agreement can never
+//! validate it: the two constitutive relations are different and are expected
+//! to disagree. The independent evidence required by `docs/validation.md`
+//! instead lives in `src/soil_water_retention_validation.zig`, which covers
+//! tiers 1, 2, 3, 4, and 6 and reports the measured reason to prefer the
+//! replacement: the legacy curve's water capacity is discontinuous at both
+//! branch joints, so quadrature crossing a joint converges at a fitted rate of
+//! 1.45 and then stalls, while this curve holds 2.00.
+//!
+//! The legacy coefficients survive in `compatibilityParameters` and in the
+//! `Parameters`/`ResolvedCurve` pair below, which are still needed for the
+//! field-capacity and wilting-point anchors the van Genuchten fit consumes and
+//! for the NITRO hygroscopic-water inverse. They are not the production
+//! potential evaluation.
+
 const std = @import("std");
 
 /// Original van Genuchten (1980) retention curve coupled to the Mualem

@@ -14,7 +14,7 @@ pub const PhaseInitialization = enum {
 };
 
 pub const MaterialInputs = struct {
-    bulk_density_Mg_per_m3: f64,
+    bulk_density_megagrams_per_m3: f64,
     matrix_bulk_volume_m3: f64,
     initial_total_volume_m3: f64,
     matrix_fraction: f64,
@@ -23,7 +23,7 @@ pub const MaterialInputs = struct {
     sand_mass_fraction: f64,
     silt_mass_fraction: f64,
     clay_mass_fraction: f64,
-    humus_carbon_concentration_g_c_per_Mg: []const f64,
+    humus_carbon_concentration_g_c_per_megagram: []const f64,
 };
 
 pub const PhaseInputs = struct {
@@ -38,13 +38,13 @@ pub const Parameters = struct {
     saturated_matric_potential_mpa: f64,
     calculation_floor: f64,
     humus_carbon_fraction_g_c_per_g_organic_matter: f64,
-    organic_particle_density_Mg_per_m3: f64,
-    mineral_particle_density_Mg_per_m3: f64,
-    organic_heat_capacity_mj_per_m3_k: f64,
-    nonsand_mineral_heat_capacity_mj_per_m3_k: f64,
-    sand_and_rock_heat_capacity_mj_per_m3_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_heat_capacity_mj_per_m3_k: f64,
+    organic_particle_density_megagrams_per_m3: f64,
+    mineral_particle_density_megagrams_per_m3: f64,
+    organic_heat_capacity_megajoules_per_m3_k: f64,
+    nonsand_mineral_heat_capacity_megajoules_per_m3_k: f64,
+    sand_and_rock_heat_capacity_megajoules_per_m3_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
     minimum_liquid_fraction_m3_per_m3: f64,
 };
 
@@ -59,16 +59,16 @@ pub const DiagnosticState = struct {
 };
 
 pub const MaterialState = struct {
-    particle_density_Mg_per_m3: *f64,
+    particle_density_megagrams_per_m3: *f64,
     porosity_fraction: *f64,
     initial_matrix_porosity_fraction: *f64,
     matrix_pore_volume_m3: *f64,
     initial_matrix_pore_volume_m3: *f64,
     macropore_volume_m3: *f64,
-    sand_mass_Mg: *f64,
-    silt_mass_Mg: *f64,
-    clay_mass_Mg: *f64,
-    dry_solid_heat_capacity_mj_per_k: *f64,
+    sand_mass_megagrams: *f64,
+    silt_mass_megagrams: *f64,
+    clay_mass_megagrams: *f64,
+    dry_solid_heat_capacity_megajoules_per_k: *f64,
 };
 
 pub const PhaseState = struct {
@@ -80,21 +80,21 @@ pub const PhaseState = struct {
     matrix_ice_m3: *f64,
     macropore_ice_m3: *f64,
     total_air_volume_m3: *f64,
-    wet_heat_capacity_mj_per_k: *f64,
+    wet_heat_capacity_megajoules_per_k: *f64,
     previous_liquid_fraction_m3_per_m3: *f64,
     previous_ice_fraction_m3_per_m3: *f64,
 };
 
 const MaterialCandidate = struct {
-    particle_density_Mg_per_m3: f64,
+    particle_density_megagrams_per_m3: f64,
     porosity_fraction: f64,
     initial_matrix_porosity_fraction: f64,
     matrix_pore_volume_m3: f64,
     macropore_volume_m3: f64,
-    sand_mass_Mg: f64,
-    silt_mass_Mg: f64,
-    clay_mass_Mg: f64,
-    dry_solid_heat_capacity_mj_per_k: f64,
+    sand_mass_megagrams: f64,
+    silt_mass_megagrams: f64,
+    clay_mass_megagrams: f64,
+    dry_solid_heat_capacity_megajoules_per_k: f64,
 };
 
 const PhaseCandidate = struct {
@@ -105,7 +105,7 @@ const PhaseCandidate = struct {
     matrix_ice_m3: f64,
     macropore_ice_m3: f64,
     total_air_volume_m3: f64,
-    wet_heat_capacity_mj_per_k: f64,
+    wet_heat_capacity_megajoules_per_k: f64,
 };
 
 fn validateScalarInputs(
@@ -146,7 +146,7 @@ fn validateDomains(
     phase: PhaseInputs,
     parameters: Parameters,
 ) !void {
-    if (material.bulk_density_Mg_per_m3 < 0.0 or
+    if (material.bulk_density_megagrams_per_m3 < 0.0 or
         material.matrix_bulk_volume_m3 < 0.0 or
         material.initial_total_volume_m3 < 0.0 or
         material.matrix_fraction < 0.0 or material.matrix_fraction > 1.0 or
@@ -163,16 +163,16 @@ fn validateDomains(
         phase.wilting_point_fraction_m3_per_m3 > 1.0 or
         parameters.calculation_floor < 0.0 or
         parameters.humus_carbon_fraction_g_c_per_g_organic_matter <= 0.0 or
-        parameters.organic_particle_density_Mg_per_m3 <= 0.0 or
-        parameters.mineral_particle_density_Mg_per_m3 <= 0.0 or
-        parameters.organic_heat_capacity_mj_per_m3_k < 0.0 or
-        parameters.nonsand_mineral_heat_capacity_mj_per_m3_k < 0.0 or
-        parameters.sand_and_rock_heat_capacity_mj_per_m3_k < 0.0 or
-        parameters.liquid_water_heat_capacity_mj_per_m3_k < 0.0 or
-        parameters.ice_heat_capacity_mj_per_m3_k < 0.0 or
+        parameters.organic_particle_density_megagrams_per_m3 <= 0.0 or
+        parameters.mineral_particle_density_megagrams_per_m3 <= 0.0 or
+        parameters.organic_heat_capacity_megajoules_per_m3_k < 0.0 or
+        parameters.nonsand_mineral_heat_capacity_megajoules_per_m3_k < 0.0 or
+        parameters.sand_and_rock_heat_capacity_megajoules_per_m3_k < 0.0 or
+        parameters.liquid_water_heat_capacity_megajoules_per_m3_k < 0.0 or
+        parameters.ice_heat_capacity_megajoules_per_m3_k < 0.0 or
         parameters.minimum_liquid_fraction_m3_per_m3 < 0.0)
         return error.InvalidMineralLayerInitialInput;
-    for (material.humus_carbon_concentration_g_c_per_Mg) |value| {
+    for (material.humus_carbon_concentration_g_c_per_megagram) |value| {
         if (!std.math.isFinite(value))
             return error.NonFiniteMineralLayerInitialInput;
         if (value < 0.0) return error.InvalidMineralLayerInitialInput;
@@ -183,62 +183,62 @@ fn calculateMaterial(
     material: MaterialInputs,
     parameters: Parameters,
 ) MaterialCandidate {
-    var humus_carbon_g_c_per_Mg: f64 = 0.0;
-    for (material.humus_carbon_concentration_g_c_per_Mg) |value|
-        humus_carbon_g_c_per_Mg += value;
-    const organic_matter_g_per_Mg = @min(
+    var humus_carbon_g_c_per_megagram: f64 = 0.0;
+    for (material.humus_carbon_concentration_g_c_per_megagram) |value|
+        humus_carbon_g_c_per_megagram += value;
+    const organic_matter_g_per_megagram = @min(
         1.0e6,
-        humus_carbon_g_c_per_Mg /
+        humus_carbon_g_c_per_megagram /
             parameters.humus_carbon_fraction_g_c_per_g_organic_matter,
     );
 
-    if (material.bulk_density_Mg_per_m3 > parameters.calculation_floor) {
-        const particle_density_Mg_per_m3 = 1.0e-6 *
-            (parameters.organic_particle_density_Mg_per_m3 *
-                organic_matter_g_per_Mg +
-                parameters.mineral_particle_density_Mg_per_m3 *
-                    (1.0e6 - organic_matter_g_per_Mg));
+    if (material.bulk_density_megagrams_per_m3 > parameters.calculation_floor) {
+        const particle_density_megagrams_per_m3 = 1.0e-6 *
+            (parameters.organic_particle_density_megagrams_per_m3 *
+                organic_matter_g_per_megagram +
+                parameters.mineral_particle_density_megagrams_per_m3 *
+                    (1.0e6 - organic_matter_g_per_megagram));
         const porosity_fraction =
-            1.0 - material.bulk_density_Mg_per_m3 /
-                particle_density_Mg_per_m3;
-        const organic_volume_fraction = organic_matter_g_per_Mg * 1.0e-6 *
-            material.bulk_density_Mg_per_m3 / particle_density_Mg_per_m3;
+            1.0 - material.bulk_density_megagrams_per_m3 /
+                particle_density_megagrams_per_m3;
+        const organic_volume_fraction = organic_matter_g_per_megagram * 1.0e-6 *
+            material.bulk_density_megagrams_per_m3 / particle_density_megagrams_per_m3;
         const nonsand_volume_fraction =
             (material.silt_mass_fraction + material.clay_mass_fraction) *
-            material.bulk_density_Mg_per_m3 / particle_density_Mg_per_m3;
+            material.bulk_density_megagrams_per_m3 / particle_density_megagrams_per_m3;
         const sand_volume_fraction = material.sand_mass_fraction *
-            material.bulk_density_Mg_per_m3 / particle_density_Mg_per_m3;
+            material.bulk_density_megagrams_per_m3 / particle_density_megagrams_per_m3;
         return .{
-            .particle_density_Mg_per_m3 = particle_density_Mg_per_m3,
+            .particle_density_megagrams_per_m3 = particle_density_megagrams_per_m3,
             .porosity_fraction = porosity_fraction,
             .initial_matrix_porosity_fraction = porosity_fraction * material.matrix_fraction,
             .matrix_pore_volume_m3 = porosity_fraction * material.matrix_bulk_volume_m3,
             .macropore_volume_m3 = material.macropore_fraction * material.initial_total_volume_m3,
-            .sand_mass_Mg = material.sand_mass_fraction * material.matrix_bulk_volume_m3,
-            .silt_mass_Mg = material.silt_mass_fraction * material.matrix_bulk_volume_m3,
-            .clay_mass_Mg = material.clay_mass_fraction * material.matrix_bulk_volume_m3,
-            .dry_solid_heat_capacity_mj_per_k = ((parameters.organic_heat_capacity_mj_per_m3_k *
+            .sand_mass_megagrams = material.sand_mass_fraction * material.matrix_bulk_volume_m3,
+            .silt_mass_megagrams = material.silt_mass_fraction * material.matrix_bulk_volume_m3,
+            .clay_mass_megagrams = material.clay_mass_fraction * material.matrix_bulk_volume_m3,
+            .dry_solid_heat_capacity_megajoules_per_k = ((parameters.organic_heat_capacity_megajoules_per_m3_k *
                 organic_volume_fraction +
-                parameters.nonsand_mineral_heat_capacity_mj_per_m3_k *
+                parameters.nonsand_mineral_heat_capacity_megajoules_per_m3_k *
                     nonsand_volume_fraction +
-                parameters.sand_and_rock_heat_capacity_mj_per_m3_k *
+                parameters.sand_and_rock_heat_capacity_megajoules_per_m3_k *
                     sand_volume_fraction) *
                 material.matrix_fraction +
-                parameters.sand_and_rock_heat_capacity_mj_per_m3_k *
+                parameters.sand_and_rock_heat_capacity_megajoules_per_m3_k *
                     material.rock_volume_fraction) *
                 material.initial_total_volume_m3,
         };
     }
     return .{
-        .particle_density_Mg_per_m3 = 0.0,
+        .particle_density_megagrams_per_m3 = 0.0,
         .porosity_fraction = 1.0,
         .initial_matrix_porosity_fraction = material.matrix_fraction,
         .matrix_pore_volume_m3 = material.matrix_bulk_volume_m3,
         .macropore_volume_m3 = material.macropore_fraction * material.initial_total_volume_m3,
-        .sand_mass_Mg = material.sand_mass_fraction * material.matrix_bulk_volume_m3,
-        .silt_mass_Mg = material.silt_mass_fraction * material.matrix_bulk_volume_m3,
-        .clay_mass_Mg = material.clay_mass_fraction * material.matrix_bulk_volume_m3,
-        .dry_solid_heat_capacity_mj_per_k = 0.0,
+        .sand_mass_megagrams = material.sand_mass_fraction * material.matrix_bulk_volume_m3,
+        .silt_mass_megagrams = material.silt_mass_fraction * material.matrix_bulk_volume_m3,
+        .clay_mass_megagrams = material.clay_mass_fraction * material.matrix_bulk_volume_m3,
+        .dry_solid_heat_capacity_megajoules_per_k = 0.0,
     };
 }
 
@@ -328,10 +328,10 @@ fn calculatePhase(
         .matrix_ice_m3 = matrix_ice_m3,
         .macropore_ice_m3 = macropore_ice_m3,
         .total_air_volume_m3 = total_air_m3,
-        .wet_heat_capacity_mj_per_k = material.dry_solid_heat_capacity_mj_per_k +
-            parameters.liquid_water_heat_capacity_mj_per_m3_k *
+        .wet_heat_capacity_megajoules_per_k = material.dry_solid_heat_capacity_megajoules_per_k +
+            parameters.liquid_water_heat_capacity_megajoules_per_m3_k *
                 (matrix_liquid_m3 + macropore_liquid_m3) +
-            parameters.ice_heat_capacity_mj_per_m3_k *
+            parameters.ice_heat_capacity_megajoules_per_m3_k *
                 (matrix_ice_m3 + macropore_ice_m3),
     };
 }
@@ -392,8 +392,8 @@ pub fn initialize(
     diagnostics.methane_litter_rate.* = 0.0;
     diagnostics.organic_carbon_transfer_rate.* = 0.0;
 
-    material_state.particle_density_Mg_per_m3.* =
-        material.particle_density_Mg_per_m3;
+    material_state.particle_density_megagrams_per_m3.* =
+        material.particle_density_megagrams_per_m3;
     material_state.porosity_fraction.* = material.porosity_fraction;
     material_state.initial_matrix_porosity_fraction.* =
         material.initial_matrix_porosity_fraction;
@@ -401,11 +401,11 @@ pub fn initialize(
     material_state.initial_matrix_pore_volume_m3.* =
         material.matrix_pore_volume_m3;
     material_state.macropore_volume_m3.* = material.macropore_volume_m3;
-    material_state.sand_mass_Mg.* = material.sand_mass_Mg;
-    material_state.silt_mass_Mg.* = material.silt_mass_Mg;
-    material_state.clay_mass_Mg.* = material.clay_mass_Mg;
-    material_state.dry_solid_heat_capacity_mj_per_k.* =
-        material.dry_solid_heat_capacity_mj_per_k;
+    material_state.sand_mass_megagrams.* = material.sand_mass_megagrams;
+    material_state.silt_mass_megagrams.* = material.silt_mass_megagrams;
+    material_state.clay_mass_megagrams.* = material.clay_mass_megagrams;
+    material_state.dry_solid_heat_capacity_megajoules_per_k.* =
+        material.dry_solid_heat_capacity_megajoules_per_k;
 
     if (phase) |candidate| {
         phase_state.liquid_fraction_m3_per_m3.* =
@@ -421,8 +421,8 @@ pub fn initialize(
         phase_state.matrix_ice_m3.* = candidate.matrix_ice_m3;
         phase_state.macropore_ice_m3.* = candidate.macropore_ice_m3;
         phase_state.total_air_volume_m3.* = candidate.total_air_volume_m3;
-        phase_state.wet_heat_capacity_mj_per_k.* =
-            candidate.wet_heat_capacity_mj_per_k;
+        phase_state.wet_heat_capacity_megajoules_per_k.* =
+            candidate.wet_heat_capacity_megajoules_per_k;
         phase_state.previous_liquid_fraction_m3_per_m3.* =
             candidate.liquid_fraction_m3_per_m3;
         phase_state.previous_ice_fraction_m3_per_m3.* =
@@ -446,16 +446,16 @@ fn testStates(values: []f64) struct {
             .organic_carbon_transfer_rate = &values[6],
         },
         .material = .{
-            .particle_density_Mg_per_m3 = &values[7],
+            .particle_density_megagrams_per_m3 = &values[7],
             .porosity_fraction = &values[8],
             .initial_matrix_porosity_fraction = &values[9],
             .matrix_pore_volume_m3 = &values[10],
             .initial_matrix_pore_volume_m3 = &values[11],
             .macropore_volume_m3 = &values[12],
-            .sand_mass_Mg = &values[13],
-            .silt_mass_Mg = &values[14],
-            .clay_mass_Mg = &values[15],
-            .dry_solid_heat_capacity_mj_per_k = &values[16],
+            .sand_mass_megagrams = &values[13],
+            .silt_mass_megagrams = &values[14],
+            .clay_mass_megagrams = &values[15],
+            .dry_solid_heat_capacity_megajoules_per_k = &values[16],
         },
         .phase = .{
             .liquid_fraction_m3_per_m3 = &values[17],
@@ -466,7 +466,7 @@ fn testStates(values: []f64) struct {
             .matrix_ice_m3 = &values[22],
             .macropore_ice_m3 = &values[23],
             .total_air_volume_m3 = &values[24],
-            .wet_heat_capacity_mj_per_k = &values[25],
+            .wet_heat_capacity_megajoules_per_k = &values[25],
             .previous_liquid_fraction_m3_per_m3 = &values[26],
             .previous_ice_fraction_m3_per_m3 = &values[27],
         },
@@ -477,13 +477,13 @@ const test_parameters: Parameters = .{
     .saturated_matric_potential_mpa = -0.001,
     .calculation_floor = 1.0e-12,
     .humus_carbon_fraction_g_c_per_g_organic_matter = 0.55,
-    .organic_particle_density_Mg_per_m3 = 1.30,
-    .mineral_particle_density_Mg_per_m3 = 2.66,
-    .organic_heat_capacity_mj_per_m3_k = 2.496,
-    .nonsand_mineral_heat_capacity_mj_per_m3_k = 2.385,
-    .sand_and_rock_heat_capacity_mj_per_m3_k = 2.128,
-    .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-    .ice_heat_capacity_mj_per_m3_k = 1.9274,
+    .organic_particle_density_megagrams_per_m3 = 1.30,
+    .mineral_particle_density_megagrams_per_m3 = 2.66,
+    .organic_heat_capacity_megajoules_per_m3_k = 2.496,
+    .nonsand_mineral_heat_capacity_megajoules_per_m3_k = 2.385,
+    .sand_and_rock_heat_capacity_megajoules_per_m3_k = 2.128,
+    .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+    .ice_heat_capacity_megajoules_per_m3_k = 1.9274,
     .minimum_liquid_fraction_m3_per_m3 = 1.0e-3,
 };
 
@@ -495,7 +495,7 @@ test "STARTS initializes mineral pore water ice air and heat state" {
         state.material,
         state.phase,
         .{
-            .bulk_density_Mg_per_m3 = 1.2,
+            .bulk_density_megagrams_per_m3 = 1.2,
             .matrix_bulk_volume_m3 = 10.0,
             .initial_total_volume_m3 = 12.0,
             .matrix_fraction = 0.9,
@@ -504,7 +504,7 @@ test "STARTS initializes mineral pore water ice air and heat state" {
             .sand_mass_fraction = 0.5,
             .silt_mass_fraction = 0.3,
             .clay_mass_fraction = 0.2,
-            .humus_carbon_concentration_g_c_per_Mg = &.{
+            .humus_carbon_concentration_g_c_per_megagram = &.{
                 10_000,
                 20_000,
                 5_000,
@@ -538,7 +538,7 @@ test "phase preservation retains existing phase values" {
         state.material,
         state.phase,
         .{
-            .bulk_density_Mg_per_m3 = 0.0,
+            .bulk_density_megagrams_per_m3 = 0.0,
             .matrix_bulk_volume_m3 = 2.0,
             .initial_total_volume_m3 = 3.0,
             .matrix_fraction = 0.8,
@@ -547,7 +547,7 @@ test "phase preservation retains existing phase values" {
             .sand_mass_fraction = 0.5,
             .silt_mass_fraction = 0.3,
             .clay_mass_fraction = 0.2,
-            .humus_carbon_concentration_g_c_per_Mg = &.{0},
+            .humus_carbon_concentration_g_c_per_megagram = &.{0},
         },
         .{
             .mode = .preserve_existing,
@@ -574,7 +574,7 @@ test "invalid explicit fraction fails before mutation" {
             state.material,
             state.phase,
             .{
-                .bulk_density_Mg_per_m3 = 1.2,
+                .bulk_density_megagrams_per_m3 = 1.2,
                 .matrix_bulk_volume_m3 = 10.0,
                 .initial_total_volume_m3 = 12.0,
                 .matrix_fraction = 0.9,
@@ -583,7 +583,7 @@ test "invalid explicit fraction fails before mutation" {
                 .sand_mass_fraction = 0.5,
                 .silt_mass_fraction = 0.3,
                 .clay_mass_fraction = 0.2,
-                .humus_carbon_concentration_g_c_per_Mg = &.{100},
+                .humus_carbon_concentration_g_c_per_megagram = &.{100},
             },
             .{
                 .mode = .initialize,

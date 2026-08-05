@@ -305,8 +305,8 @@ fn validateCalendarDate(calendar: Calendar) !void {
 test "HFUNC soil stress receives landscape total potential for every runtime plant" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 3,
             .plant_populations = 2,
         },

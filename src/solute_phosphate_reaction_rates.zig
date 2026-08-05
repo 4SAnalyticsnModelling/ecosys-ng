@@ -39,6 +39,11 @@ pub const ZoneIdentity = enum {
     band,
 };
 
+pub const ZoneWaterAdmission = struct {
+    water_volume_m3: f64,
+    minimum_water_volume_m3: f64,
+};
+
 pub const SourceMineralInputs = struct {
     shared: aqueous_network.State,
     zone: phosphate_network.State,
@@ -49,8 +54,273 @@ pub const SourceMineralInputs = struct {
     substrate_limit_fraction: f64,
 };
 
-pub fn calculate(shared: aqueous_network.State, zone: phosphate_network.State, coefficients: activity_coefficients.Result, soil_mass_per_water_volume_Mg_per_m3: f64, constants: EquilibriumConstants, surface_parameters: phosphate_exchange.Parameters, mineral_parameters: ?MineralParameters, kinetics: Kinetics) !phosphate_network.Fluxes {
-    try validate(shared, zone, coefficients, soil_mass_per_water_volume_Mg_per_m3, constants, kinetics);
+pub const RestrictedMineralInputs = struct {
+    aluminum_concentration_mol_per_m3: f64,
+    iron_concentration_mol_per_m3: f64,
+    h2po4_concentration_mol_p_per_m3: f64,
+    hpo4_concentration_mol_p_per_m3: f64,
+    h2po4_activity_mol_p_per_m3: f64,
+    hpo4_activity_mol_p_per_m3: f64,
+    hydrogen_activity_mol_per_m3: f64,
+    hydroxide_activity_mol_per_m3: f64,
+    calcium_activity_mol_per_m3: f64,
+    monovalent_activity_coefficient: f64,
+    divalent_activity_coefficient: f64,
+    solids: phosphate_network.MineralFluxes,
+    gibbsite_solubility_product: f64,
+    iron_hydroxide_solubility_product: f64,
+    aluminum_phosphate_composite_product: f64,
+    iron_phosphate_composite_product: f64,
+    dicalcium_phosphate_solubility_product: f64,
+    hydroxyapatite_composite_product: f64,
+    monocalcium_phosphate_solubility_product: f64,
+    substrate_limit_fraction: f64,
+    phosphate_maximum_mol_per_m3_step: f64,
+    apatite_maximum_mol_per_m3_step: f64,
+    hydroxide_mineral_maximum_mol_per_m3_step: f64,
+    general_reaction_maximum_mol_per_m3_step: f64,
+};
+
+pub const RestrictedH2po4DissociationInputs = struct {
+    h2po4_concentration_mol_p_per_m3: f64,
+    hpo4_concentration_mol_p_per_m3: f64,
+    h2po4_activity_mol_p_per_m3: f64,
+    hpo4_activity_mol_p_per_m3: f64,
+    hydrogen_activity_mol_per_m3: f64,
+    divalent_activity_coefficient: f64,
+    h2po4_dissociation_constant: f64,
+    substrate_limit_fraction: f64,
+    maximum_reaction_mol_p_per_m3_step: f64,
+};
+
+/// Exact restricted H2PO4-H+HPO4 equation shared verbatim by SOLUTE.F
+/// non-band lines 3154--3158 and band lines 3331--3335. The caller owns the
+/// corresponding enclosing strict water-volume gate.
+pub fn calculateRestrictedH2po4DissociationSourceOrder(
+    input: RestrictedH2po4DissociationInputs,
+) !f64 {
+    inline for (@typeInfo(RestrictedH2po4DissociationInputs).@"struct".fields) |field| {
+        const value = @field(input, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedPhosphateDissociationInput;
+    }
+    if (input.hydrogen_activity_mol_per_m3 <= 0 or
+        input.divalent_activity_coefficient <= 0 or
+        input.h2po4_dissociation_constant <= 0 or
+        input.substrate_limit_fraction > 1)
+        return error.InvalidRestrictedPhosphateDissociationInput;
+
+    const dissociation_limit = input.substrate_limit_fraction *
+        input.h2po4_concentration_mol_p_per_m3;
+    const association_limit = input.substrate_limit_fraction *
+        input.hpo4_concentration_mol_p_per_m3;
+    const hpo4_equilibrium_activity = input.h2po4_dissociation_constant *
+        input.h2po4_activity_mol_p_per_m3 /
+        input.hydrogen_activity_mol_per_m3;
+    const result = @max(
+        -input.maximum_reaction_mol_p_per_m3_step,
+        -dissociation_limit,
+        @min(
+            input.maximum_reaction_mol_p_per_m3_step,
+            association_limit,
+            (input.hpo4_activity_mol_p_per_m3 - hpo4_equilibrium_activity) /
+                input.divalent_activity_coefficient,
+        ),
+    );
+    if (!std.math.isFinite(result))
+        return error.NonFiniteRestrictedPhosphateDissociationResult;
+    return result;
+}
+
+/// Exact restricted-network mineral equations in SOLUTE.F 2991--3041.
+/// The caller owns the strict `VOLWPO > ZEROS2` admission at line 2987.
+pub fn calculateRestrictedMineralsSourceOrder(
+    input: RestrictedMineralInputs,
+) !phosphate_network.MineralFluxes {
+    inline for (@typeInfo(RestrictedMineralInputs).@"struct".fields) |field| {
+        if (field.type == phosphate_network.MineralFluxes) continue;
+        const value = @field(input, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedPhosphateMineralInput;
+    }
+    inline for (@typeInfo(phosphate_network.MineralFluxes).@"struct".fields) |field| {
+        const value = @field(input.solids, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedPhosphateMineralInput;
+    }
+    if (input.hydrogen_activity_mol_per_m3 <= 0 or
+        input.hydroxide_activity_mol_per_m3 <= 0 or
+        input.calcium_activity_mol_per_m3 <= 0 or
+        input.monovalent_activity_coefficient <= 0 or
+        input.divalent_activity_coefficient <= 0 or
+        input.substrate_limit_fraction > 1)
+        return error.InvalidRestrictedPhosphateMineralInput;
+
+    const aluminum_equilibrium = input.gibbsite_solubility_product /
+        std.math.pow(f64, input.hydroxide_activity_mol_per_m3, 3);
+    const aluminum_h2po4_target = input.aluminum_phosphate_composite_product *
+        std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 2) /
+        aluminum_equilibrium;
+    const aluminum = sourceRestrictedExtent(
+        input.solids.aluminum_phosphate_mol_per_m3,
+        input.h2po4_activity_mol_p_per_m3,
+        aluminum_h2po4_target,
+        input.monovalent_activity_coefficient,
+        input.substrate_limit_fraction * input.h2po4_concentration_mol_p_per_m3,
+        input.phosphate_maximum_mol_per_m3_step,
+        input.phosphate_maximum_mol_per_m3_step,
+    );
+    const iron_equilibrium = input.iron_hydroxide_solubility_product /
+        std.math.pow(f64, input.hydroxide_activity_mol_per_m3, 3);
+    const iron_h2po4_target = input.iron_phosphate_composite_product *
+        std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 2) /
+        iron_equilibrium;
+    const iron = sourceRestrictedExtent(
+        input.solids.iron_phosphate_mol_per_m3,
+        input.h2po4_activity_mol_p_per_m3,
+        iron_h2po4_target,
+        input.monovalent_activity_coefficient,
+        input.substrate_limit_fraction * input.h2po4_concentration_mol_p_per_m3,
+        input.phosphate_maximum_mol_per_m3_step,
+        input.phosphate_maximum_mol_per_m3_step,
+    );
+    const dicalcium_target = input.dicalcium_phosphate_solubility_product /
+        input.calcium_activity_mol_per_m3;
+    const dicalcium = sourceRestrictedExtent(
+        input.solids.dicalcium_phosphate_mol_per_m3,
+        input.hpo4_activity_mol_p_per_m3,
+        dicalcium_target,
+        input.divalent_activity_coefficient,
+        input.substrate_limit_fraction * input.hpo4_concentration_mol_p_per_m3,
+        input.phosphate_maximum_mol_per_m3_step,
+        input.general_reaction_maximum_mol_per_m3_step,
+    );
+    const apatite_target = std.math.pow(
+        f64,
+        input.hydroxyapatite_composite_product *
+            std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 7) /
+            std.math.pow(f64, input.calcium_activity_mol_per_m3, 5),
+        0.333,
+    );
+    const apatite = sourceRestrictedExtent(
+        input.solids.hydroxyapatite_mol_per_m3,
+        input.h2po4_activity_mol_p_per_m3,
+        apatite_target,
+        input.monovalent_activity_coefficient,
+        input.substrate_limit_fraction * input.h2po4_concentration_mol_p_per_m3,
+        input.apatite_maximum_mol_per_m3_step,
+        input.apatite_maximum_mol_per_m3_step,
+    );
+    const monocalcium_target = @sqrt(
+        input.monocalcium_phosphate_solubility_product /
+            input.calcium_activity_mol_per_m3,
+    );
+    const monocalcium = sourceRestrictedExtent(
+        input.solids.monocalcium_phosphate_mol_per_m3,
+        input.h2po4_activity_mol_p_per_m3,
+        monocalcium_target,
+        input.monovalent_activity_coefficient,
+        input.substrate_limit_fraction * input.h2po4_concentration_mol_p_per_m3,
+        input.phosphate_maximum_mol_per_m3_step,
+        input.hydroxide_mineral_maximum_mol_per_m3_step,
+    );
+    const result = phosphate_network.MineralFluxes{
+        .aluminum_phosphate_mol_per_m3 = aluminum,
+        .iron_phosphate_mol_per_m3 = iron,
+        .dicalcium_phosphate_mol_per_m3 = dicalcium,
+        .hydroxyapatite_mol_per_m3 = apatite,
+        .monocalcium_phosphate_mol_per_m3 = monocalcium,
+    };
+    inline for (@typeInfo(phosphate_network.MineralFluxes).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(result, field.name)))
+            return error.NonFiniteRestrictedPhosphateMineralResult;
+    return result;
+}
+
+/// Exact restricted band-zone mineral equations from SOLUTE.F lines
+/// 3198--3235. Unlike the preceding restricted non-band equations, every
+/// precipitation substrate bound includes the corresponding dissolved cation.
+pub fn calculateRestrictedBandMineralsSourceOrder(
+    input: RestrictedMineralInputs,
+) !phosphate_network.MineralFluxes {
+    inline for (@typeInfo(RestrictedMineralInputs).@"struct".fields) |field| {
+        if (field.type == phosphate_network.MineralFluxes) continue;
+        const value = @field(input, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedPhosphateMineralInput;
+    }
+    inline for (@typeInfo(phosphate_network.MineralFluxes).@"struct".fields) |field| {
+        const value = @field(input.solids, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedPhosphateMineralInput;
+    }
+    if (input.hydrogen_activity_mol_per_m3 <= 0 or
+        input.hydroxide_activity_mol_per_m3 <= 0 or
+        input.calcium_activity_mol_per_m3 <= 0 or
+        input.monovalent_activity_coefficient <= 0 or
+        input.divalent_activity_coefficient <= 0 or
+        input.substrate_limit_fraction > 1)
+        return error.InvalidRestrictedPhosphateMineralInput;
+
+    const aluminum_equilibrium = input.gibbsite_solubility_product /
+        std.math.pow(f64, input.hydroxide_activity_mol_per_m3, 3);
+    const aluminum_target = input.aluminum_phosphate_composite_product *
+        std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 2) /
+        aluminum_equilibrium;
+    const iron_equilibrium = input.iron_hydroxide_solubility_product /
+        std.math.pow(f64, input.hydroxide_activity_mol_per_m3, 3);
+    const iron_target = input.iron_phosphate_composite_product *
+        std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 2) /
+        iron_equilibrium;
+    const dicalcium_target = input.dicalcium_phosphate_solubility_product /
+        input.calcium_activity_mol_per_m3;
+    const apatite_target = std.math.pow(
+        f64,
+        input.hydroxyapatite_composite_product *
+            std.math.pow(f64, input.hydrogen_activity_mol_per_m3, 7) /
+            std.math.pow(f64, input.calcium_activity_mol_per_m3, 5),
+        0.333,
+    );
+    const monocalcium_target = @sqrt(
+        input.monocalcium_phosphate_solubility_product /
+            input.calcium_activity_mol_per_m3,
+    );
+    const fraction = input.substrate_limit_fraction;
+    const result = phosphate_network.MineralFluxes{
+        .aluminum_phosphate_mol_per_m3 = sourceRestrictedExtent(input.solids.aluminum_phosphate_mol_per_m3, input.h2po4_activity_mol_p_per_m3, aluminum_target, input.monovalent_activity_coefficient, fraction * @min(input.aluminum_concentration_mol_per_m3, input.h2po4_concentration_mol_p_per_m3), input.phosphate_maximum_mol_per_m3_step, input.phosphate_maximum_mol_per_m3_step),
+        .iron_phosphate_mol_per_m3 = sourceRestrictedExtent(input.solids.iron_phosphate_mol_per_m3, input.h2po4_activity_mol_p_per_m3, iron_target, input.monovalent_activity_coefficient, fraction * @min(input.iron_concentration_mol_per_m3, input.h2po4_concentration_mol_p_per_m3), input.phosphate_maximum_mol_per_m3_step, input.phosphate_maximum_mol_per_m3_step),
+        .dicalcium_phosphate_mol_per_m3 = sourceRestrictedExtent(input.solids.dicalcium_phosphate_mol_per_m3, input.hpo4_activity_mol_p_per_m3, dicalcium_target, input.divalent_activity_coefficient, fraction * @min(input.calcium_activity_mol_per_m3, input.hpo4_concentration_mol_p_per_m3), input.phosphate_maximum_mol_per_m3_step, input.general_reaction_maximum_mol_per_m3_step),
+        .hydroxyapatite_mol_per_m3 = sourceRestrictedExtent(input.solids.hydroxyapatite_mol_per_m3, input.h2po4_activity_mol_p_per_m3, apatite_target, input.monovalent_activity_coefficient, fraction * @min(input.calcium_activity_mol_per_m3, input.h2po4_concentration_mol_p_per_m3), input.apatite_maximum_mol_per_m3_step, input.apatite_maximum_mol_per_m3_step),
+        .monocalcium_phosphate_mol_per_m3 = sourceRestrictedExtent(input.solids.monocalcium_phosphate_mol_per_m3, input.h2po4_activity_mol_p_per_m3, monocalcium_target, input.monovalent_activity_coefficient, fraction * @min(input.calcium_activity_mol_per_m3, input.h2po4_concentration_mol_p_per_m3), input.phosphate_maximum_mol_per_m3_step, input.hydroxide_mineral_maximum_mol_per_m3_step),
+    };
+    inline for (@typeInfo(phosphate_network.MineralFluxes).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(result, field.name)))
+            return error.NonFiniteRestrictedPhosphateMineralResult;
+    return result;
+}
+
+fn sourceRestrictedExtent(
+    solid: f64,
+    activity: f64,
+    target: f64,
+    coefficient: f64,
+    substrate_limit: f64,
+    precipitation_maximum: f64,
+    dissolution_maximum: f64,
+) f64 {
+    return @max(
+        -@max(0, solid),
+        -dissolution_maximum,
+        @min(
+            precipitation_maximum,
+            substrate_limit,
+            (activity - target) / coefficient,
+        ),
+    );
+}
+
+pub fn calculate(shared: aqueous_network.State, zone: phosphate_network.State, coefficients: activity_coefficients.Result, soil_mass_per_water_volume_megagrams_per_m3: f64, constants: EquilibriumConstants, surface_parameters: phosphate_exchange.Parameters, mineral_parameters: ?MineralParameters, kinetics: Kinetics) !phosphate_network.Fluxes {
+    try validate(shared, zone, coefficients, soil_mass_per_water_volume_megagrams_per_m3, constants, kinetics);
     const g1 = coefficients.monovalent_activity_coefficient;
     const g2 = coefficients.divalent_activity_coefficient;
     const g3 = coefficients.trivalent_activity_coefficient;
@@ -78,11 +348,11 @@ pub fn calculate(shared: aqueous_network.State, zone: phosphate_network.State, c
         .h2po4_activity_mol_p_per_m3 = zone.dissolved_h2po4_mol_p_per_m3 * g1,
         .hpo4_concentration_mol_p_per_m3 = zone.dissolved_hpo4_mol_p_per_m3,
         .hpo4_activity_mol_p_per_m3 = zone.dissolved_hpo4_mol_p_per_m3 * g2,
-        .deprotonated_site_mol_per_Mg = zone.deprotonated_site_mol_per_Mg,
-        .hydroxyl_site_mol_per_Mg = zone.hydroxyl_site_mol_per_Mg,
-        .protonated_site_mol_per_Mg = zone.protonated_site_mol_per_Mg,
-        .adsorbed_h2po4_mol_p_per_Mg = zone.adsorbed_h2po4_mol_p_per_Mg,
-        .adsorbed_hpo4_mol_p_per_Mg = zone.adsorbed_hpo4_mol_p_per_Mg,
+        .deprotonated_site_mol_per_megagram = zone.deprotonated_site_mol_per_megagram,
+        .hydroxyl_site_mol_per_megagram = zone.hydroxyl_site_mol_per_megagram,
+        .protonated_site_mol_per_megagram = zone.protonated_site_mol_per_megagram,
+        .adsorbed_h2po4_mol_p_per_megagram = zone.adsorbed_h2po4_mol_p_per_megagram,
+        .adsorbed_hpo4_mol_p_per_megagram = zone.adsorbed_hpo4_mol_p_per_megagram,
         .monovalent_activity_coefficient = g1,
         .divalent_activity_coefficient = g2,
     }, surface_parameters);
@@ -91,8 +361,45 @@ pub fn calculate(shared: aqueous_network.State, zone: phosphate_network.State, c
         .minerals = minerals,
         .surface = surface,
         .aqueous = aqueous,
-        .soil_mass_per_water_volume_Mg_per_m3 = soil_mass_per_water_volume_Mg_per_m3,
+        .soil_mass_per_water_volume_megagrams_per_m3 = soil_mass_per_water_volume_megagrams_per_m3,
     };
+}
+
+/// Applies the strict `VOLWPO/VOLWPB .GT. ZEROS2` admission in SOLUTE.F
+/// 1711 and 1814. Only dissociation/pairing rates are cleared by these gates;
+/// surface exchange and minerals retain their independently gated values.
+pub fn calculateSourceOrderForWaterVolume(
+    shared: aqueous_network.State,
+    zone: phosphate_network.State,
+    coefficients: activity_coefficients.Result,
+    soil_mass_per_water_volume_megagrams_per_m3: f64,
+    constants: EquilibriumConstants,
+    surface_parameters: phosphate_exchange.Parameters,
+    mineral_parameters: ?MineralParameters,
+    kinetics: Kinetics,
+    admission: ZoneWaterAdmission,
+) !phosphate_network.Fluxes {
+    if (!std.math.isFinite(admission.water_volume_m3) or
+        admission.water_volume_m3 < 0 or
+        !std.math.isFinite(admission.minimum_water_volume_m3) or
+        admission.minimum_water_volume_m3 < 0)
+        return error.InvalidPhosphateZoneWaterAdmission;
+    var result = try calculate(
+        shared,
+        zone,
+        coefficients,
+        soil_mass_per_water_volume_megagrams_per_m3,
+        constants,
+        surface_parameters,
+        mineral_parameters,
+        kinetics,
+    );
+    if (admission.water_volume_m3 <= admission.minimum_water_volume_m3)
+        result.aqueous = filled(
+            phosphate_network.DissociationAndPairingFluxes,
+            0,
+        );
+    return result;
 }
 
 fn calculateMinerals(shared: aqueous_network.State, zone: phosphate_network.State, coefficients: activity_coefficients.Result, constants: EquilibriumConstants, parameters: MineralParameters, substrate_limit_fraction: f64) !phosphate_network.MineralFluxes {
@@ -254,12 +561,119 @@ test "phosphate aqueous equilibria feed a phosphorus-conserving ledger" {
     const shared = filled(aqueous_network.State, 1);
     const zone = filled(phosphate_network.State, 1);
     const coefficients = activity_coefficients.Result{ .ionic_strength_mol_per_l = 0, .monovalent_activity_coefficient = 1, .divalent_activity_coefficient = 1, .trivalent_activity_coefficient = 1, .total_ion_activity_mol_per_m3 = 1, .electrical_conductivity_dS_per_m = 0 };
-    const fluxes = try calculate(shared, zone, coefficients, 1, filled(EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_Mg_step = 0.1, .substrate_limit_fraction = 0.2 }, null, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
+    const fluxes = try calculate(shared, zone, coefficients, 1, filled(EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_megagram_step = 0.1, .substrate_limit_fraction = 0.2 }, null, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
     const changes = try phosphate_network.assemble(fluxes);
     const dissolved = changes.dissolved_po4_mol_p_per_m3 + changes.dissolved_hpo4_mol_p_per_m3 + changes.dissolved_h2po4_mol_p_per_m3 + changes.dissolved_h3po4_mol_p_per_m3;
-    const adsorbed = changes.adsorbed_hpo4_mol_p_per_Mg + changes.adsorbed_h2po4_mol_p_per_Mg;
+    const adsorbed = changes.adsorbed_hpo4_mol_p_per_megagram + changes.adsorbed_h2po4_mol_p_per_megagram;
     const paired = changes.iron_hpo4_pair_mol_per_m3 + changes.iron_h2po4_pair_mol_per_m3 + changes.calcium_po4_pair_mol_per_m3 + changes.calcium_hpo4_pair_mol_per_m3 + changes.calcium_h2po4_pair_mol_per_m3 + changes.magnesium_hpo4_pair_mol_per_m3;
     try std.testing.expectApproxEqAbs(@as(f64, 0), dissolved + adsorbed + paired, 1e-14);
+}
+
+test "restricted phosphate minerals preserve five distinct source ceilings" {
+    const inputs = RestrictedMineralInputs{
+        .aluminum_concentration_mol_per_m3 = 0.1,
+        .iron_concentration_mol_per_m3 = 0.1,
+        .h2po4_concentration_mol_p_per_m3 = 2,
+        .hpo4_concentration_mol_p_per_m3 = 2,
+        .h2po4_activity_mol_p_per_m3 = 2,
+        .hpo4_activity_mol_p_per_m3 = 2,
+        .hydrogen_activity_mol_per_m3 = 1,
+        .hydroxide_activity_mol_per_m3 = 1,
+        .calcium_activity_mol_per_m3 = 1,
+        .monovalent_activity_coefficient = 1,
+        .divalent_activity_coefficient = 1,
+        .solids = .{
+            .aluminum_phosphate_mol_per_m3 = 1,
+            .iron_phosphate_mol_per_m3 = 1,
+            .dicalcium_phosphate_mol_per_m3 = 1,
+            .hydroxyapatite_mol_per_m3 = 1,
+            .monocalcium_phosphate_mol_per_m3 = 1,
+        },
+        .gibbsite_solubility_product = 1,
+        .iron_hydroxide_solubility_product = 1,
+        .aluminum_phosphate_composite_product = 1,
+        .iron_phosphate_composite_product = 1,
+        .dicalcium_phosphate_solubility_product = 1,
+        .hydroxyapatite_composite_product = 1,
+        .monocalcium_phosphate_solubility_product = 1,
+        .substrate_limit_fraction = 1,
+        .phosphate_maximum_mol_per_m3_step = 0.5,
+        .apatite_maximum_mol_per_m3_step = 0.4,
+        .hydroxide_mineral_maximum_mol_per_m3_step = 0.3,
+        .general_reaction_maximum_mol_per_m3_step = 0.2,
+    };
+    const result = try calculateRestrictedMineralsSourceOrder(inputs);
+    try std.testing.expectEqual(@as(f64, 0.5), result.aluminum_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.5), result.iron_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.5), result.dicalcium_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.4), result.hydroxyapatite_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.5), result.monocalcium_phosphate_mol_per_m3);
+
+    const band = try calculateRestrictedBandMineralsSourceOrder(inputs);
+    try std.testing.expectEqual(@as(f64, 0.1), band.aluminum_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.1), band.iron_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.5), band.dicalcium_phosphate_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.4), band.hydroxyapatite_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 0.5), band.monocalcium_phosphate_mol_per_m3);
+}
+
+test "runtime phosphate water gate clears only aqueous reaction rates" {
+    const shared = filled(aqueous_network.State, 1);
+    const zone = filled(phosphate_network.State, 1);
+    const coefficients = activity_coefficients.Result{
+        .ionic_strength_mol_per_l = 0,
+        .monovalent_activity_coefficient = 1,
+        .divalent_activity_coefficient = 1,
+        .trivalent_activity_coefficient = 1,
+        .total_ion_activity_mol_per_m3 = 1,
+        .electrical_conductivity_dS_per_m = 0,
+    };
+    var constants = filled(EquilibriumConstants, 1);
+    constants.hpo4 = 0.5;
+    const surface = phosphate_exchange.Parameters{
+        .protonated_site_equilibrium_constant = 1,
+        .hydroxyl_site_equilibrium_constant = 1,
+        .h2po4_exchange_equilibrium_constant = 1,
+        .hpo4_exchange_equilibrium_constant = 1,
+        .water_activity_product_mol2_per_m6 = 1,
+        .h2po4_dissociation_constant = 1,
+        .maximum_exchange_mol_per_megagram_step = 0.1,
+        .substrate_limit_fraction = 0.2,
+    };
+    const result = try calculateSourceOrderForWaterVolume(
+        shared,
+        zone,
+        coefficients,
+        1,
+        constants,
+        surface,
+        null,
+        .{
+            .substrate_limit_fraction = 0.2,
+            .maximum_pairing_mol_per_m3_step = 0.1,
+        },
+        .{
+            .water_volume_m3 = 1.0e-12,
+            .minimum_water_volume_m3 = 1.0e-12,
+        },
+    );
+    inline for (@typeInfo(phosphate_network.DissociationAndPairingFluxes).@"struct".fields) |field|
+        try std.testing.expectEqual(@as(f64, 0), @field(result.aqueous, field.name));
+    const ungated = try calculate(
+        shared,
+        zone,
+        coefficients,
+        1,
+        constants,
+        surface,
+        null,
+        .{
+            .substrate_limit_fraction = 0.2,
+            .maximum_pairing_mol_per_m3_step = 0.1,
+        },
+    );
+    try std.testing.expectEqualDeep(ungated.surface, result.surface);
+    try std.testing.expectEqualDeep(ungated.minerals, result.minerals);
 }
 
 test "five phosphate minerals are evaluated with distinct stoichiometry and ceilings" {
@@ -272,7 +686,7 @@ test "five phosphate minerals are evaluated with distinct stoichiometry and ceil
     zone.dissolved_hpo4_mol_p_per_m3 = 2;
     const coefficients = activity_coefficients.Result{ .ionic_strength_mol_per_l = 0, .monovalent_activity_coefficient = 1, .divalent_activity_coefficient = 1, .trivalent_activity_coefficient = 1, .total_ion_activity_mol_per_m3 = 1, .electrical_conductivity_dS_per_m = 0 };
     const mineral_parameters = filled(MineralParameters, 1);
-    const fluxes = try calculate(shared, zone, coefficients, 1, filled(EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_Mg_step = 0.1, .substrate_limit_fraction = 0.2 }, mineral_parameters, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
+    const fluxes = try calculate(shared, zone, coefficients, 1, filled(EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_megagram_step = 0.1, .substrate_limit_fraction = 0.2 }, mineral_parameters, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
     try std.testing.expect(fluxes.minerals.aluminum_phosphate_mol_per_m3 > 0);
     try std.testing.expect(fluxes.minerals.iron_phosphate_mol_per_m3 > 0);
     try std.testing.expect(fluxes.minerals.dicalcium_phosphate_mol_per_m3 > 0);
@@ -324,7 +738,7 @@ test "phosphate aqueous rates match every SOLUTE source equation" {
             .hpo4_exchange_equilibrium_constant = 1,
             .water_activity_product_mol2_per_m6 = 1,
             .h2po4_dissociation_constant = 1,
-            .maximum_exchange_mol_per_Mg_step = 0.1,
+            .maximum_exchange_mol_per_megagram_step = 0.1,
             .substrate_limit_fraction = 0.2,
         },
         null,
@@ -427,6 +841,34 @@ test "source-order phosphate mineral limiters remain explicit" {
     );
     try std.testing.expectApproxEqAbs(@as(f64, 0.4), production.dicalcium_phosphate_mol_per_m3, 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0.05), production.monocalcium_phosphate_mol_per_m3, 1e-15);
+}
+
+test "SOLUTE 3154-3158 and 3331-3335 restricted H2PO4 dissociation preserves source bounds" {
+    const common = RestrictedH2po4DissociationInputs{
+        .h2po4_concentration_mol_p_per_m3 = 4,
+        .hpo4_concentration_mol_p_per_m3 = 6,
+        .h2po4_activity_mol_p_per_m3 = 8,
+        .hpo4_activity_mol_p_per_m3 = 9,
+        .hydrogen_activity_mol_per_m3 = 2,
+        .divalent_activity_coefficient = 0.5,
+        .h2po4_dissociation_constant = 1,
+        .substrate_limit_fraction = 0.25,
+        .maximum_reaction_mol_p_per_m3_step = 10,
+    };
+    // AH1P1Q = 4 and the unbounded driving force is (9 - 4) / 0.5 = 10;
+    // source XMINP = 1.5 is therefore the active upper bound.
+    try std.testing.expectEqual(
+        @as(f64, 1.5),
+        try calculateRestrictedH2po4DissociationSourceOrder(common),
+    );
+
+    var dissociation = common;
+    dissociation.hpo4_activity_mol_p_per_m3 = 0;
+    // The negative source limit is FIONN * CH2P1 = 1.
+    try std.testing.expectEqual(
+        @as(f64, -1),
+        try calculateRestrictedH2po4DissociationSourceOrder(dissociation),
+    );
 }
 
 test "source-order phosphate minerals retain distinct dissolution ceilings" {

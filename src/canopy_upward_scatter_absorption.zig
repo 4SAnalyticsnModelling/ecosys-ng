@@ -5,7 +5,7 @@ pub const Inputs = struct {
     inclination_count: usize,
     azimuth_count: usize,
     sky_zone_count: usize,
-    working_shortwave_mj_per_m2_h: f64,
+    working_shortwave_megajoules_per_m2_h: f64,
     working_par_umol_per_m2_s: f64,
     leaf_area_m2_per_m2: []const f64,
     stalk_area_m2_per_m2: []const f64,
@@ -27,13 +27,13 @@ pub const Inputs = struct {
 pub const Outputs = struct {
     diffuse_par_umol_per_m2_s: []f64,
     total_par_umol_per_m2_s: []f64,
-    forward_shortwave_mj_per_m2_h: *f64,
+    forward_shortwave_megajoules_per_m2_h: *f64,
     forward_par_umol_per_m2_s: *f64,
-    species_live_shortwave_mj_h: []f64,
-    species_dead_shortwave_mj_h: []f64,
+    species_live_shortwave_megajoules_h: []f64,
+    species_dead_shortwave_megajoules_h: []f64,
     species_live_par_umol_s: []f64,
     species_dead_par_umol_s: []f64,
-    cell_shortwave_mj_h: *f64,
+    cell_shortwave_megajoules_h: *f64,
     cell_par_umol_s: *f64,
 };
 
@@ -64,11 +64,11 @@ pub fn apply(inputs: Inputs, outputs: Outputs) !void {
                         (inclination * inputs.azimuth_count + azimuth) *
                             inputs.sky_zone_count + sky
                     ];
-                    const leaf_sw_flux = inputs.working_shortwave_mj_per_m2_h *
+                    const leaf_sw_flux = inputs.working_shortwave_megajoules_per_m2_h *
                         incidence * inputs.leaf_shortwave_absorptivity[species];
-                    const stalk_sw_flux = inputs.working_shortwave_mj_per_m2_h *
+                    const stalk_sw_flux = inputs.working_shortwave_megajoules_per_m2_h *
                         incidence * inputs.stalk_shortwave_absorptivity;
-                    const dead_sw_flux = inputs.working_shortwave_mj_per_m2_h *
+                    const dead_sw_flux = inputs.working_shortwave_megajoules_per_m2_h *
                         incidence * inputs.dead_shortwave_absorptivity;
                     const leaf_par_flux = inputs.working_par_umol_per_m2_s *
                         incidence * inputs.leaf_par_absorptivity[species];
@@ -87,17 +87,17 @@ pub fn apply(inputs: Inputs, outputs: Outputs) !void {
                 }
             }
         }
-        outputs.forward_shortwave_mj_per_m2_h.* += leaf_sw *
+        outputs.forward_shortwave_megajoules_per_m2_h.* += leaf_sw *
             inputs.leaf_shortwave_transmittance[species] *
             inputs.inverse_azimuth_area_per_m2;
         outputs.forward_par_umol_per_m2_s.* += leaf_par *
             inputs.leaf_par_transmittance[species] *
             inputs.inverse_azimuth_area_per_m2;
-        outputs.species_live_shortwave_mj_h[species] += leaf_sw + stalk_sw;
-        outputs.species_dead_shortwave_mj_h[species] += dead_sw;
+        outputs.species_live_shortwave_megajoules_h[species] += leaf_sw + stalk_sw;
+        outputs.species_dead_shortwave_megajoules_h[species] += dead_sw;
         outputs.species_live_par_umol_s[species] += leaf_par + stalk_par;
         outputs.species_dead_par_umol_s[species] += dead_par;
-        outputs.cell_shortwave_mj_h.* += leaf_sw + stalk_sw + dead_sw;
+        outputs.cell_shortwave_megajoules_h.* += leaf_sw + stalk_sw + dead_sw;
         outputs.cell_par_umol_s.* += leaf_par + stalk_par + dead_par;
     }
 }
@@ -128,8 +128,8 @@ fn validate(inputs: Inputs, outputs: Outputs) !void {
         inputs.leaf_par_absorptivity,
         inputs.leaf_shortwave_transmittance,
         inputs.leaf_par_transmittance,
-        outputs.species_live_shortwave_mj_h,
-        outputs.species_dead_shortwave_mj_h,
+        outputs.species_live_shortwave_megajoules_h,
+        outputs.species_dead_shortwave_megajoules_h,
         outputs.species_live_par_umol_s,
         outputs.species_dead_par_umol_s,
     }) |values| if (values.len != inputs.species_count)
@@ -155,17 +155,17 @@ fn validate(inputs: Inputs, outputs: Outputs) !void {
         inputs.leaf_par_transmittance,
         outputs.diffuse_par_umol_per_m2_s,
         outputs.total_par_umol_per_m2_s,
-        outputs.species_live_shortwave_mj_h,
-        outputs.species_dead_shortwave_mj_h,
+        outputs.species_live_shortwave_megajoules_h,
+        outputs.species_dead_shortwave_megajoules_h,
         outputs.species_live_par_umol_s,
         outputs.species_dead_par_umol_s,
     }) |values| for (values) |value|
         if (!std.math.isFinite(value) or value < 0)
             return error.InvalidUpwardScatterInput;
     inline for (.{
-        outputs.forward_shortwave_mj_per_m2_h.*,
+        outputs.forward_shortwave_megajoules_per_m2_h.*,
         outputs.forward_par_umol_per_m2_s.*,
-        outputs.cell_shortwave_mj_h.*,
+        outputs.cell_shortwave_megajoules_h.*,
         outputs.cell_par_umol_s.*,
     }) |value| if (!std.math.isFinite(value) or value < 0)
         return error.InvalidUpwardScatterInput;
@@ -187,7 +187,7 @@ test "upward scatter absorbs and publishes one runtime species" {
         .inclination_count = 1,
         .azimuth_count = 1,
         .sky_zone_count = 1,
-        .working_shortwave_mj_per_m2_h = 2,
+        .working_shortwave_megajoules_per_m2_h = 2,
         .working_par_umol_per_m2_s = 100,
         .leaf_area_m2_per_m2 = &.{2},
         .stalk_area_m2_per_m2 = &.{1},
@@ -207,13 +207,13 @@ test "upward scatter absorbs and publishes one runtime species" {
     }, .{
         .diffuse_par_umol_per_m2_s = &diffuse_par,
         .total_par_umol_per_m2_s = &total_par,
-        .forward_shortwave_mj_per_m2_h = &forward_sw,
+        .forward_shortwave_megajoules_per_m2_h = &forward_sw,
         .forward_par_umol_per_m2_s = &forward_par,
-        .species_live_shortwave_mj_h = &live_sw,
-        .species_dead_shortwave_mj_h = &dead_sw,
+        .species_live_shortwave_megajoules_h = &live_sw,
+        .species_dead_shortwave_megajoules_h = &dead_sw,
         .species_live_par_umol_s = &live_par,
         .species_dead_par_umol_s = &dead_par,
-        .cell_shortwave_mj_h = &cell_sw,
+        .cell_shortwave_megajoules_h = &cell_sw,
         .cell_par_umol_s = &cell_par,
     });
     try std.testing.expectEqual(@as(f64, 25), diffuse_par[0]);

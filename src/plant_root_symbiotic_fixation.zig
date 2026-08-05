@@ -116,6 +116,9 @@ pub fn calculate(
             minimum_infection_carbon_g_c,
             runtime.host_exchange_fraction_per_h_by_fixation_type[inputs.fixation_type - 1],
             inputs.timestep_h,
+            0,
+            0,
+            0,
         )
     else
         Symbiosis.HostExchange{

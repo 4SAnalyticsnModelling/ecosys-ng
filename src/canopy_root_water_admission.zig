@@ -2,8 +2,8 @@ const std = @import("std");
 
 pub const Inputs = struct {
     emergence_day: u32,
-    wet_canopy_heat_capacity_mj_per_k: f64,
-    minimum_canopy_heat_capacity_mj_per_k: f64,
+    wet_canopy_heat_capacity_megajoules_per_k: f64,
+    minimum_canopy_heat_capacity_megajoules_per_k: f64,
     absorbed_radiation_fraction: f64,
     negligible_radiation_fraction: f64,
     primary_root_depth_m: f64,
@@ -31,8 +31,8 @@ pub const Result = struct {
 pub fn calculate(inputs: Inputs) !?Result {
     try validate(inputs);
     if (inputs.emergence_day == 0 or
-        inputs.wet_canopy_heat_capacity_mj_per_k <=
-            inputs.minimum_canopy_heat_capacity_mj_per_k or
+        inputs.wet_canopy_heat_capacity_megajoules_per_k <=
+            inputs.minimum_canopy_heat_capacity_megajoules_per_k or
         inputs.absorbed_radiation_fraction <=
             inputs.negligible_radiation_fraction or
         inputs.primary_root_depth_m <=
@@ -72,8 +72,8 @@ fn validate(inputs: Inputs) !void {
     inline for (@typeInfo(Inputs).@"struct".fields) |field|
         if (field.type == f64 and !std.math.isFinite(@field(inputs, field.name)))
             return error.InvalidCanopyRootWaterAdmissionInput;
-    if (inputs.wet_canopy_heat_capacity_mj_per_k < 0 or
-        inputs.minimum_canopy_heat_capacity_mj_per_k < 0 or
+    if (inputs.wet_canopy_heat_capacity_megajoules_per_k < 0 or
+        inputs.minimum_canopy_heat_capacity_megajoules_per_k < 0 or
         inputs.absorbed_radiation_fraction < 0 or
         inputs.negligible_radiation_fraction < 0 or
         inputs.primary_root_depth_m < 0 or
@@ -91,8 +91,8 @@ fn validate(inputs: Inputs) !void {
 fn admittedInputs() Inputs {
     return .{
         .emergence_day = 120,
-        .wet_canopy_heat_capacity_mj_per_k = 2,
-        .minimum_canopy_heat_capacity_mj_per_k = 1,
+        .wet_canopy_heat_capacity_megajoules_per_k = 2,
+        .minimum_canopy_heat_capacity_megajoules_per_k = 1,
         .absorbed_radiation_fraction = 0.4,
         .negligible_radiation_fraction = 1e-12,
         .primary_root_depth_m = 0.6,
@@ -130,8 +130,8 @@ test "UPTAKE convergence admission preserves all four strict gates" {
     inputs.emergence_day = 0;
     try std.testing.expect((try calculate(inputs)) == null);
     inputs = admittedInputs();
-    inputs.wet_canopy_heat_capacity_mj_per_k =
-        inputs.minimum_canopy_heat_capacity_mj_per_k;
+    inputs.wet_canopy_heat_capacity_megajoules_per_k =
+        inputs.minimum_canopy_heat_capacity_megajoules_per_k;
     try std.testing.expect((try calculate(inputs)) == null);
     inputs = admittedInputs();
     inputs.absorbed_radiation_fraction =

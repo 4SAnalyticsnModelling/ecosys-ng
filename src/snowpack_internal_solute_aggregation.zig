@@ -18,9 +18,9 @@ pub const SoluteFlux = struct {
 
 pub const Inputs = struct {
     /// Current snow heat capacity [snow_layer], MJ K^-1.
-    heat_capacity_mj_per_k_by_layer: []const f64,
+    heat_capacity_megajoules_per_k_by_layer: []const f64,
     /// Snow-layer presence threshold, MJ K^-1.
-    minimum_heat_capacity_mj_per_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     /// `X*BLS(LS)` at each layer's upper face [snow_layer].
     upper_face_flux_by_layer: []const SoluteFlux,
 };
@@ -48,12 +48,12 @@ pub fn aggregate(inputs: Inputs, state: *State, workspace: Workspace) !void {
     try validateInputs(inputs, state.*, workspace);
     @memcpy(workspace.net_flux_by_layer, state.net_flux_by_layer);
 
-    const layer_count = inputs.heat_capacity_mj_per_k_by_layer.len;
+    const layer_count = inputs.heat_capacity_megajoules_per_k_by_layer.len;
     for (0..layer_count - 1) |layer| {
-        if (inputs.heat_capacity_mj_per_k_by_layer[layer] <=
-            inputs.minimum_heat_capacity_mj_per_k or
-            inputs.heat_capacity_mj_per_k_by_layer[layer + 1] <=
-                inputs.minimum_heat_capacity_mj_per_k)
+        if (inputs.heat_capacity_megajoules_per_k_by_layer[layer] <=
+            inputs.minimum_heat_capacity_megajoules_per_k or
+            inputs.heat_capacity_megajoules_per_k_by_layer[layer + 1] <=
+                inputs.minimum_heat_capacity_megajoules_per_k)
         {
             continue;
         }
@@ -68,7 +68,7 @@ pub fn aggregate(inputs: Inputs, state: *State, workspace: Workspace) !void {
 }
 
 fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !void {
-    const layer_count = inputs.heat_capacity_mj_per_k_by_layer.len;
+    const layer_count = inputs.heat_capacity_megajoules_per_k_by_layer.len;
     if (layer_count == 0) return error.InvalidSnowpackSoluteDimensions;
     if (inputs.upper_face_flux_by_layer.len != layer_count or
         state.net_flux_by_layer.len != layer_count or
@@ -79,11 +79,11 @@ fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !void 
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.minimum_heat_capacity_mj_per_k))
+    if (!std.math.isFinite(inputs.minimum_heat_capacity_megajoules_per_k))
         return error.NonFiniteSnowpackSoluteInput;
-    if (inputs.minimum_heat_capacity_mj_per_k < 0)
+    if (inputs.minimum_heat_capacity_megajoules_per_k < 0)
         return error.InvalidSnowpackHeatCapacity;
-    for (inputs.heat_capacity_mj_per_k_by_layer) |capacity| {
+    for (inputs.heat_capacity_megajoules_per_k_by_layer) |capacity| {
         if (!std.math.isFinite(capacity))
             return error.NonFiniteSnowpackSoluteInput;
         if (capacity < 0) return error.InvalidSnowpackHeatCapacity;
@@ -159,8 +159,8 @@ test "internal snow solute faces retain source species and layer order" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_flux_by_layer = &face_fluxes,
     }, &state, .{ .net_flux_by_layer = &scratch });
 
@@ -183,8 +183,8 @@ test "internal face cancellation closes every elemental carrier exactly" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_flux_by_layer = &face_fluxes,
     }, &state, .{ .net_flux_by_layer = &scratch });
 
@@ -216,8 +216,8 @@ test "inactive adjacent layers preserve REDIST snow presence gates" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_flux_by_layer = &face_fluxes,
     }, &state, .{ .net_flux_by_layer = &scratch });
 
@@ -239,8 +239,8 @@ test "runtime snow layer extent and ten source species are explicit" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_flux_by_layer = &face_fluxes,
     }, &state, .{ .net_flux_by_layer = &scratch });
 
@@ -255,8 +255,8 @@ test "source floating point association is retained" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_flux_by_layer = &face_fluxes,
     }, &state, .{ .net_flux_by_layer = &scratch });
 
@@ -275,8 +275,8 @@ test "invalid late input and overflow preserve state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSoluteInput,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_flux_by_layer = &face_fluxes,
         }, &state, workspace),
     );
@@ -288,8 +288,8 @@ test "invalid late input and overflow preserve state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSoluteResult,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_flux_by_layer = &face_fluxes,
         }, &state, workspace),
     );
@@ -306,8 +306,8 @@ test "dimension and workspace alias errors precede mutation" {
     try std.testing.expectError(
         error.SnowpackSoluteWorkspaceOverlap,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_flux_by_layer = &face_fluxes,
         }, &state, .{ .net_flux_by_layer = &totals }),
     );
@@ -317,8 +317,8 @@ test "dimension and workspace alias errors precede mutation" {
     try std.testing.expectError(
         error.SnowpackSoluteDimensionMismatch,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_flux_by_layer = &face_fluxes,
         }, &state, .{ .net_flux_by_layer = &short_scratch }),
     );

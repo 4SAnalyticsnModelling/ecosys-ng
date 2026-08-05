@@ -211,8 +211,8 @@ pub const CellOutwardLedger = struct {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     soil_layer_count: usize,
     organic_fraction_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
@@ -252,7 +252,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (0..inputs.soil_layer_count) |layer| {
                 const record = cell * inputs.soil_layer_count + layer;
                 for (std.meta.tags(Face)) |face| {
@@ -680,7 +680,7 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var cell_ledger = state.outward_by_cell[cell];
             for (0..inputs.soil_layer_count) |layer| {
                 const record = cell * inputs.soil_layer_count + layer;
@@ -738,14 +738,14 @@ const Dimensions = struct {
 };
 
 fn validateDimensions(inputs: Inputs, state: State) !Dimensions {
-    if (inputs.grid_column_count == 0 or
-        inputs.grid_row_count == 0 or
+    if (inputs.lon_count == 0 or
+        inputs.lat_count == 0 or
         inputs.soil_layer_count == 0)
         return error.InvalidSubsurfaceSoluteDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidSubsurfaceSoluteDimensions;
     const record_count = std.math.mul(
         usize,
@@ -763,8 +763,8 @@ fn validateDimensions(inputs: Inputs, state: State) !Dimensions {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidSubsurfaceSoluteWindow;
     return .{ .cell_count = cell_count, .record_count = record_count };
 }
@@ -968,8 +968,8 @@ fn oneCellInputs(
     empty: []const BoundaryFlux,
 ) Inputs {
     return .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .organic_fraction_count = 1,
         .external_boundary_window = .{
@@ -1113,8 +1113,8 @@ test "runtime grid closes carbon and ion ledgers against per-cell exports" {
     var conductivity = [_]f64{ 0, 0, 0, 0 };
     var state = zeroState(&cells, &conductivity);
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .soil_layer_count = 2,
         .organic_fraction_count = 1,
         .external_boundary_window = .{
@@ -1158,8 +1158,8 @@ test "late non-finite salt flux leaves all ledgers unchanged" {
         .source_hydrogen_diagnostic_g_h = 6,
     };
     try std.testing.expectError(error.InvalidSubsurfaceSoluteInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .organic_fraction_count = 1,
         .external_boundary_window = .{

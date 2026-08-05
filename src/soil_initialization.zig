@@ -20,8 +20,8 @@ pub const SoilMaterial = struct {
     initial_calcium_g_per_megagram: []f64,
     cation_exchange_capacity_mol_per_megagram: []f64,
     anion_exchange_capacity_mol_per_megagram: []f64,
-    dry_solid_heat_capacity_mj_per_m3_k: []f64,
-    solid_thermal_conductivity_numerator_m_mj_per_h_k: []f64,
+    dry_solid_heat_capacity_megajoules_per_m3_k: []f64,
+    solid_thermal_conductivity_numerator_m_megajoules_per_h_k: []f64,
     solid_thermal_conductivity_denominator: []f64,
 
     pub fn init(allocator: std.mem.Allocator, profile: SoilProfile, derivation_parameters: profile_derivation.Parameters) !SoilMaterial {
@@ -86,10 +86,10 @@ pub const SoilMaterial = struct {
             const nonsand_mineral_volume_fraction = (result.silt_mass_fraction[layer] + result.clay_mass_fraction[layer]) * normalization * bulk_to_particle_ratio;
             const sand_volume_fraction = result.sand_mass_fraction[layer] * normalization * bulk_to_particle_ratio;
             const matrix_fraction = micropore_fraction;
-            result.dry_solid_heat_capacity_mj_per_m3_k[layer] =
+            result.dry_solid_heat_capacity_megajoules_per_m3_k[layer] =
                 (2.496 * organic_volume_fraction + 2.385 * nonsand_mineral_volume_fraction + 2.128 * sand_volume_fraction) * matrix_fraction +
                 2.128 * rock_fraction;
-            result.solid_thermal_conductivity_numerator_m_mj_per_h_k[layer] =
+            result.solid_thermal_conductivity_numerator_m_megajoules_per_h_k[layer] =
                 (1.253 * organic_volume_fraction * 9.050e-4 + 0.514 * nonsand_mineral_volume_fraction * 1.056e-2 + 0.386 * sand_volume_fraction * 2.112e-2) * matrix_fraction +
                 0.514 * rock_fraction * 1.056e-2;
             result.solid_thermal_conductivity_denominator[layer] =
@@ -143,8 +143,8 @@ test "initialize soil material in model units from self-contained profile" {
     const expected_micropore_fraction = (1.0 - profile.rock_fraction[0]) * (1.0 - profile.macropore_fraction[0]);
     try std.testing.expectApproxEqAbs(expected_micropore_fraction, material.micropore_fraction[0], 1.0e-12);
     try std.testing.expectApproxEqAbs(0.098 * profile.vertical_saturated_conductivity_mm_h[0] * expected_micropore_fraction, material.vertical_hydraulic_conductivity_m2_per_mpa_h[0], 1.0e-12);
-    try std.testing.expect(material.dry_solid_heat_capacity_mj_per_m3_k[0] > 0);
-    try std.testing.expect(material.solid_thermal_conductivity_numerator_m_mj_per_h_k[0] > 0);
+    try std.testing.expect(material.dry_solid_heat_capacity_megajoules_per_m3_k[0] > 0);
+    try std.testing.expect(material.solid_thermal_conductivity_numerator_m_megajoules_per_h_k[0] > 0);
     try std.testing.expect(material.solid_thermal_conductivity_denominator[0] > 0);
 }
 

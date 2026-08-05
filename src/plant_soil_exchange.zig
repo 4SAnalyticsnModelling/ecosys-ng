@@ -59,18 +59,28 @@ pub const CanopyFireParameters = struct {
     maximum_anaerobic_charcoal_fraction: f64 = 0.5,
     oxygen_half_saturation_umol_per_mol: f64,
     methane_half_saturation_umol_per_mol: f64,
-    aerobic_combustion_energy_mj_per_g_carbon: f64,
-    anaerobic_combustion_energy_mj_per_g_carbon: f64,
-    methane_combustion_energy_mj_per_g_carbon: f64,
+    aerobic_combustion_energy_megajoules_per_g_carbon: f64,
+    anaerobic_combustion_energy_megajoules_per_g_carbon: f64,
+    methane_combustion_energy_megajoules_per_g_carbon: f64,
 };
 
 pub const CanopyFireResult = struct {
     oxygen_consumed_g: f64,
+    /// Source `ROGOX2` (`trnsfr.f` 1111, 1292): the aerobic, oxygen-limited
+    /// combustion uptake alone, before the methane-oxidation demand is added.
+    /// `redist.f` 4499 and 4837 need this term separately from
+    /// `methane_combustion_g_carbon`, and neither is recoverable from
+    /// `oxygen_consumed_g` once they are summed.
+    oxygen_limited_uptake_g: f64,
+    /// Source `RC4OX2` (`trnsfr.f` 1114--1116, 1295--1297): methane oxidised by
+    /// the residual oxygen, in g C. Its oxygen demand is
+    /// `methane_combustion_g_carbon * oxygen_g_per_g_carbon`.
+    methane_combustion_g_carbon: f64,
     carbon_dioxide_emitted_g_carbon: f64,
     methane_emitted_g_carbon: f64,
     charcoal_produced_g_carbon: f64,
     charcoal_fraction_of_combusted_carbon: f64,
-    heat_released_mj: f64,
+    heat_released_megajoules: f64,
     aerobic_fraction_of_noncharcoal: f64,
     anaerobic_fraction_of_noncharcoal: f64,
     combustion_temperature_response: f64,
@@ -82,9 +92,9 @@ pub const SubsurfaceFireParameters = struct {
     maximum_anaerobic_charcoal_fraction: f64 = 0.5,
     oxygen_half_saturation_g_o_per_m3: f64,
     methane_half_saturation_g_c_per_m3: f64,
-    aerobic_combustion_energy_mj_per_g_carbon: f64,
-    anaerobic_combustion_energy_mj_per_g_carbon: f64,
-    methane_combustion_energy_mj_per_g_carbon: f64,
+    aerobic_combustion_energy_megajoules_per_g_carbon: f64,
+    anaerobic_combustion_energy_megajoules_per_g_carbon: f64,
+    methane_combustion_energy_megajoules_per_g_carbon: f64,
 };
 
 pub const CombustedPoolResult = struct {
@@ -421,7 +431,7 @@ pub const RootExchangeState = struct {
     total_content_by_layer_g: [root_gas_count][]f64,
     total_root_length_density_m_per_m3: []f64,
     total_water_uptake_m3_per_h: []f64,
-    convective_water_heat_mj_per_h: []f64,
+    convective_water_heat_megajoules_per_h: []f64,
 };
 
 /// Exact EXTRACT root gas bookkeeping (`*A`, `*P`, and `TL*P`) and water/heat
@@ -429,7 +439,7 @@ pub const RootExchangeState = struct {
 pub fn aggregateRootExchange(root_axis_count: usize, soil_layer_count: usize, plant_population: f64, horizontal_layer_area_m2: []const f64, soil_temperature_k: []const f64, inputs: RootExchangeInputs, state: *RootExchangeState) !void {
     if (root_axis_count == 0 or soil_layer_count == 0 or !std.math.isFinite(plant_population) or plant_population < 0 or horizontal_layer_area_m2.len != soil_layer_count or soil_temperature_k.len != soil_layer_count) return error.InvalidRootExchangeLayout;
     const value_count = try std.math.mul(usize, root_axis_count, soil_layer_count);
-    if (inputs.root_length_density_per_plant_m_per_m3.len != value_count or inputs.water_uptake_m3_per_h.len != value_count or state.total_root_length_density_m_per_m3.len != soil_layer_count or state.total_water_uptake_m3_per_h.len != soil_layer_count or state.convective_water_heat_mj_per_h.len != soil_layer_count) return error.RootExchangeDimensionMismatch;
+    if (inputs.root_length_density_per_plant_m_per_m3.len != value_count or inputs.water_uptake_m3_per_h.len != value_count or state.total_root_length_density_m_per_m3.len != soil_layer_count or state.total_water_uptake_m3_per_h.len != soil_layer_count or state.convective_water_heat_megajoules_per_h.len != soil_layer_count) return error.RootExchangeDimensionMismatch;
     inline for (0..root_gas_count) |gas| if (inputs.gaseous_atmosphere_exchange_g_per_h[gas].len != value_count or inputs.aqueous_to_gaseous_exchange_g_per_h[gas].len != value_count or inputs.aqueous_biological_change_g_per_h[gas].len != value_count or state.gaseous_content_g[gas].len != value_count or state.aqueous_content_g[gas].len != value_count or state.total_content_by_layer_g[gas].len != soil_layer_count) return error.RootExchangeDimensionMismatch;
     inline for (.{ horizontal_layer_area_m2, soil_temperature_k, inputs.root_length_density_per_plant_m_per_m3, inputs.water_uptake_m3_per_h }) |values| for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteRootExchange;
     for (horizontal_layer_area_m2, soil_temperature_k) |area, temperature| if (area <= 0 or temperature <= 0) return error.InvalidRootExchangeGeometry;
@@ -439,7 +449,7 @@ pub fn aggregateRootExchange(root_axis_count: usize, soil_layer_count: usize, pl
         const index = axis * soil_layer_count + layer;
         if (axis == 0) state.total_root_length_density_m_per_m3[layer] += inputs.root_length_density_per_plant_m_per_m3[index] * plant_population / horizontal_layer_area_m2[layer];
         state.total_water_uptake_m3_per_h[layer] += inputs.water_uptake_m3_per_h[index];
-        state.convective_water_heat_mj_per_h[layer] += inputs.water_uptake_m3_per_h[index] * 4.19 * soil_temperature_k[layer];
+        state.convective_water_heat_megajoules_per_h[layer] += inputs.water_uptake_m3_per_h[index] * 4.19 * soil_temperature_k[layer];
         inline for (0..root_gas_count) |gas| {
             state.gaseous_content_g[gas][index] += inputs.gaseous_atmosphere_exchange_g_per_h[gas][index] - inputs.aqueous_to_gaseous_exchange_g_per_h[gas][index];
             state.aqueous_content_g[gas][index] += inputs.aqueous_to_gaseous_exchange_g_per_h[gas][index] + inputs.aqueous_biological_change_g_per_h[gas][index];
@@ -469,11 +479,11 @@ pub const CanopyTransferInputs = struct {
     leaf_carbon_g: []const f64,
     stalk_area_m2: []const f64,
     standing_dead_ground_area_m2: []const f64,
-    net_radiation_mj_per_h: []const f64,
-    latent_heat_flux_mj_per_h: []const f64,
-    sensible_heat_flux_mj_per_h: []const f64,
-    storage_heat_flux_mj_per_h: []const f64,
-    convective_heat_flux_mj_per_h: []const f64,
+    net_radiation_megajoules_per_h: []const f64,
+    latent_heat_flux_megajoules_per_h: []const f64,
+    sensible_heat_flux_megajoules_per_h: []const f64,
+    storage_heat_flux_megajoules_per_h: []const f64,
+    convective_heat_flux_megajoules_per_h: []const f64,
     transpiration_m3_per_h: []const f64,
     evaporation_m3_per_h: []const f64,
     internal_water_m3: []const f64,
@@ -490,28 +500,28 @@ pub const CanopyTransferTotals = struct {
     leaf_carbon_g: []f64,
     stalk_area_m2: []f64,
     standing_dead_ground_area_m2: f64,
-    net_radiation_mj_per_h: f64,
-    latent_heat_flux_mj_per_h: f64,
-    sensible_heat_flux_mj_per_h: f64,
-    storage_heat_flux_mj_per_h: f64,
+    net_radiation_megajoules_per_h: f64,
+    latent_heat_flux_megajoules_per_h: f64,
+    sensible_heat_flux_megajoules_per_h: f64,
+    storage_heat_flux_megajoules_per_h: f64,
     transpiration_and_evaporation_m3_per_h: f64,
     internal_water_m3: f64,
     surface_water_m3: f64,
     evaporation_m3_per_h: f64,
-    water_energy_mj: f64,
-    water_energy_change_mj_per_h: f64,
+    water_energy_megajoules: f64,
+    water_energy_change_megajoules_per_h: f64,
 };
 
 /// Aggregates the EXTRACT canopy/standing-dead transfer block for any runtime
-/// species and canopy-layer counts. `previous_water_energy_mj` is updated in
+/// species and canopy-layer counts. `previous_water_energy_megajoules` is updated in
 /// place exactly like ENGYX after the hourly storage-flux calculation.
-pub fn aggregateHourlyCanopyTransfers(species_count: usize, canopy_layer_count: usize, air_temperature_k: f64, inputs: CanopyTransferInputs, previous_water_energy_mj: []f64, totals: *CanopyTransferTotals) !void {
+pub fn aggregateHourlyCanopyTransfers(species_count: usize, canopy_layer_count: usize, air_temperature_k: f64, inputs: CanopyTransferInputs, previous_water_energy_megajoules: []f64, totals: *CanopyTransferTotals) !void {
     if (species_count == 0 or canopy_layer_count == 0 or !std.math.isFinite(air_temperature_k) or air_temperature_k <= 0) return error.InvalidCanopyTransferLayout;
     const layered_count = try std.math.mul(usize, species_count, canopy_layer_count);
     inline for (.{ inputs.standing_dead_area_m2, inputs.leaf_area_m2, inputs.leaf_carbon_g, inputs.stalk_area_m2 }) |values| if (values.len != layered_count) return error.CanopyTransferDimensionMismatch;
-    inline for (.{ inputs.active, inputs.standing_dead_ground_area_m2, inputs.net_radiation_mj_per_h, inputs.latent_heat_flux_mj_per_h, inputs.sensible_heat_flux_mj_per_h, inputs.storage_heat_flux_mj_per_h, inputs.convective_heat_flux_mj_per_h, inputs.transpiration_m3_per_h, inputs.evaporation_m3_per_h, inputs.internal_water_m3, inputs.surface_water_m3, inputs.standing_dead_surface_water_m3, inputs.retained_foliar_water_m3_per_h, inputs.retained_standing_dead_water_m3_per_h, inputs.canopy_temperature_k, previous_water_energy_mj }) |values| if (values.len != species_count) return error.CanopyTransferDimensionMismatch;
+    inline for (.{ inputs.active, inputs.standing_dead_ground_area_m2, inputs.net_radiation_megajoules_per_h, inputs.latent_heat_flux_megajoules_per_h, inputs.sensible_heat_flux_megajoules_per_h, inputs.storage_heat_flux_megajoules_per_h, inputs.convective_heat_flux_megajoules_per_h, inputs.transpiration_m3_per_h, inputs.evaporation_m3_per_h, inputs.internal_water_m3, inputs.surface_water_m3, inputs.standing_dead_surface_water_m3, inputs.retained_foliar_water_m3_per_h, inputs.retained_standing_dead_water_m3_per_h, inputs.canopy_temperature_k, previous_water_energy_megajoules }) |values| if (values.len != species_count) return error.CanopyTransferDimensionMismatch;
     inline for (.{ totals.standing_dead_area_m2, totals.leaf_area_m2, totals.leaf_carbon_g, totals.stalk_area_m2 }) |values| if (values.len != canopy_layer_count) return error.CanopyTransferDimensionMismatch;
-    inline for (.{ inputs.standing_dead_area_m2, inputs.leaf_area_m2, inputs.leaf_carbon_g, inputs.stalk_area_m2, inputs.standing_dead_ground_area_m2, inputs.net_radiation_mj_per_h, inputs.latent_heat_flux_mj_per_h, inputs.sensible_heat_flux_mj_per_h, inputs.storage_heat_flux_mj_per_h, inputs.convective_heat_flux_mj_per_h, inputs.transpiration_m3_per_h, inputs.evaporation_m3_per_h, inputs.internal_water_m3, inputs.surface_water_m3, inputs.standing_dead_surface_water_m3, inputs.retained_foliar_water_m3_per_h, inputs.retained_standing_dead_water_m3_per_h, inputs.canopy_temperature_k, previous_water_energy_mj }) |values| for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyTransfer;
+    inline for (.{ inputs.standing_dead_area_m2, inputs.leaf_area_m2, inputs.leaf_carbon_g, inputs.stalk_area_m2, inputs.standing_dead_ground_area_m2, inputs.net_radiation_megajoules_per_h, inputs.latent_heat_flux_megajoules_per_h, inputs.sensible_heat_flux_megajoules_per_h, inputs.storage_heat_flux_megajoules_per_h, inputs.convective_heat_flux_megajoules_per_h, inputs.transpiration_m3_per_h, inputs.evaporation_m3_per_h, inputs.internal_water_m3, inputs.surface_water_m3, inputs.standing_dead_surface_water_m3, inputs.retained_foliar_water_m3_per_h, inputs.retained_standing_dead_water_m3_per_h, inputs.canopy_temperature_k, previous_water_energy_megajoules }) |values| for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyTransfer;
     for (0..species_count) |species| {
         for (0..canopy_layer_count) |layer| {
             const index = species * canopy_layer_count + layer;
@@ -523,28 +533,28 @@ pub fn aggregateHourlyCanopyTransfers(species_count: usize, canopy_layer_count: 
             }
         }
         totals.standing_dead_ground_area_m2 += inputs.standing_dead_ground_area_m2[species];
-        totals.net_radiation_mj_per_h += inputs.net_radiation_mj_per_h[species];
-        totals.latent_heat_flux_mj_per_h += inputs.latent_heat_flux_mj_per_h[species];
-        totals.sensible_heat_flux_mj_per_h += inputs.sensible_heat_flux_mj_per_h[species];
-        totals.storage_heat_flux_mj_per_h -= inputs.storage_heat_flux_mj_per_h[species] - inputs.convective_heat_flux_mj_per_h[species];
+        totals.net_radiation_megajoules_per_h += inputs.net_radiation_megajoules_per_h[species];
+        totals.latent_heat_flux_megajoules_per_h += inputs.latent_heat_flux_megajoules_per_h[species];
+        totals.sensible_heat_flux_megajoules_per_h += inputs.sensible_heat_flux_megajoules_per_h[species];
+        totals.storage_heat_flux_megajoules_per_h -= inputs.storage_heat_flux_megajoules_per_h[species] - inputs.convective_heat_flux_megajoules_per_h[species];
         const transpiration_and_evaporation = inputs.transpiration_m3_per_h[species] + inputs.evaporation_m3_per_h[species];
         totals.transpiration_and_evaporation_m3_per_h += transpiration_and_evaporation;
         totals.internal_water_m3 += inputs.internal_water_m3[species];
         totals.surface_water_m3 += inputs.surface_water_m3[species] + inputs.standing_dead_surface_water_m3[species];
         totals.evaporation_m3_per_h += inputs.evaporation_m3_per_h[species];
-        const water_energy_mj = 4.19 * (inputs.surface_water_m3[species] + inputs.standing_dead_surface_water_m3[species] + inputs.retained_foliar_water_m3_per_h[species] + inputs.retained_standing_dead_water_m3_per_h[species] + inputs.evaporation_m3_per_h[species]) * inputs.canopy_temperature_k[species];
-        totals.water_energy_mj += water_energy_mj;
+        const water_energy_megajoules = 4.19 * (inputs.surface_water_m3[species] + inputs.standing_dead_surface_water_m3[species] + inputs.retained_foliar_water_m3_per_h[species] + inputs.retained_standing_dead_water_m3_per_h[species] + inputs.evaporation_m3_per_h[species]) * inputs.canopy_temperature_k[species];
+        totals.water_energy_megajoules += water_energy_megajoules;
         // The source XNFH term represented one member of its repeated
         // sub-hour cycle. ecosys-ng commits the full hourly carrier once.
-        totals.water_energy_change_mj_per_h += water_energy_mj - previous_water_energy_mj[species] - (inputs.retained_foliar_water_m3_per_h[species] + inputs.retained_standing_dead_water_m3_per_h[species]) * 4.19 * air_temperature_k;
-        previous_water_energy_mj[species] = water_energy_mj;
+        totals.water_energy_change_megajoules_per_h += water_energy_megajoules - previous_water_energy_megajoules[species] - (inputs.retained_foliar_water_m3_per_h[species] + inputs.retained_standing_dead_water_m3_per_h[species]) * 4.19 * air_temperature_k;
+        previous_water_energy_megajoules[species] = water_energy_megajoules;
     }
     try validateCanopyTransferTotals(totals.*);
 }
 
 fn validateCanopyTransferTotals(totals: CanopyTransferTotals) !void {
     inline for (.{ totals.standing_dead_area_m2, totals.leaf_area_m2, totals.leaf_carbon_g, totals.stalk_area_m2 }) |values| for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyTransfer;
-    inline for (.{ totals.standing_dead_ground_area_m2, totals.net_radiation_mj_per_h, totals.latent_heat_flux_mj_per_h, totals.sensible_heat_flux_mj_per_h, totals.storage_heat_flux_mj_per_h, totals.transpiration_and_evaporation_m3_per_h, totals.internal_water_m3, totals.surface_water_m3, totals.evaporation_m3_per_h, totals.water_energy_mj, totals.water_energy_change_mj_per_h }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyTransfer;
+    inline for (.{ totals.standing_dead_ground_area_m2, totals.net_radiation_megajoules_per_h, totals.latent_heat_flux_megajoules_per_h, totals.sensible_heat_flux_megajoules_per_h, totals.storage_heat_flux_megajoules_per_h, totals.transpiration_and_evaporation_m3_per_h, totals.internal_water_m3, totals.surface_water_m3, totals.evaporation_m3_per_h, totals.water_energy_megajoules, totals.water_energy_change_megajoules_per_h }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyTransfer;
 }
 
 /// Live EXTRACT ENGYC/ENGYX/THFLXC publication after canopy surface-water
@@ -560,13 +570,13 @@ pub fn refreshHourlyCanopyWaterEnergy(
     standing_dead_surface_water_m3_by_plant: []const f64,
     retained_foliar_water_m3_per_h_by_plant: []const f64,
     retained_standing_dead_water_m3_per_h_by_plant: []const f64,
-    previous_water_energy_mj_by_plant: []f64,
-    total_water_energy_mj_by_cell: []f64,
-    water_energy_change_mj_per_h_by_cell: []f64,
+    previous_water_energy_megajoules_by_plant: []f64,
+    total_water_energy_megajoules_by_cell: []f64,
+    water_energy_change_megajoules_per_h_by_cell: []f64,
 ) !void {
     if (species_count == 0 or air_temperature_k_by_cell.len == 0 or
-        total_water_energy_mj_by_cell.len != air_temperature_k_by_cell.len or
-        water_energy_change_mj_per_h_by_cell.len != air_temperature_k_by_cell.len)
+        total_water_energy_megajoules_by_cell.len != air_temperature_k_by_cell.len or
+        water_energy_change_megajoules_per_h_by_cell.len != air_temperature_k_by_cell.len)
         return error.CanopyWaterEnergyDimensionMismatch;
     const plant_count = try std.math.mul(usize, air_temperature_k_by_cell.len, species_count);
     inline for (.{
@@ -575,7 +585,7 @@ pub fn refreshHourlyCanopyWaterEnergy(
         standing_dead_surface_water_m3_by_plant,
         retained_foliar_water_m3_per_h_by_plant,
         retained_standing_dead_water_m3_per_h_by_plant,
-        previous_water_energy_mj_by_plant,
+        previous_water_energy_megajoules_by_plant,
     }) |values| if (values.len != plant_count) return error.CanopyWaterEnergyDimensionMismatch;
     for (air_temperature_k_by_cell) |temperature_k|
         if (!std.math.isFinite(temperature_k) or temperature_k <= 0) return error.InvalidCanopyWaterEnergyInput;
@@ -586,12 +596,12 @@ pub fn refreshHourlyCanopyWaterEnergy(
             standing_dead_surface_water_m3_by_plant[plant],
             retained_foliar_water_m3_per_h_by_plant[plant],
             retained_standing_dead_water_m3_per_h_by_plant[plant],
-            previous_water_energy_mj_by_plant[plant],
+            previous_water_energy_megajoules_by_plant[plant],
         }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyWaterEnergyInput;
         if (canopy_temperature_k_by_plant[plant] <= 0 or
             surface_water_m3_by_plant[plant] < 0 or
             standing_dead_surface_water_m3_by_plant[plant] < 0 or
-            previous_water_energy_mj_by_plant[plant] < 0)
+            previous_water_energy_megajoules_by_plant[plant] < 0)
             return error.InvalidCanopyWaterEnergyInput;
         const cell = plant / species_count;
         const current = 4.19 *
@@ -600,12 +610,12 @@ pub fn refreshHourlyCanopyWaterEnergy(
         const incoming = 4.19 *
             (retained_foliar_water_m3_per_h_by_plant[plant] + retained_standing_dead_water_m3_per_h_by_plant[plant]) *
             air_temperature_k_by_cell[cell];
-        const change = current - previous_water_energy_mj_by_plant[plant] - incoming;
+        const change = current - previous_water_energy_megajoules_by_plant[plant] - incoming;
         if (!std.math.isFinite(current) or current < 0 or !std.math.isFinite(change))
             return error.NonFiniteCanopyWaterEnergy;
     }
-    @memset(total_water_energy_mj_by_cell, 0);
-    @memset(water_energy_change_mj_per_h_by_cell, 0);
+    @memset(total_water_energy_megajoules_by_cell, 0);
+    @memset(water_energy_change_megajoules_per_h_by_cell, 0);
     for (0..plant_count) |plant| {
         const cell = plant / species_count;
         const current = 4.19 *
@@ -614,9 +624,9 @@ pub fn refreshHourlyCanopyWaterEnergy(
         const incoming = 4.19 *
             (retained_foliar_water_m3_per_h_by_plant[plant] + retained_standing_dead_water_m3_per_h_by_plant[plant]) *
             air_temperature_k_by_cell[cell];
-        total_water_energy_mj_by_cell[cell] += current;
-        water_energy_change_mj_per_h_by_cell[cell] += current - previous_water_energy_mj_by_plant[plant] - incoming;
-        previous_water_energy_mj_by_plant[plant] = current;
+        total_water_energy_megajoules_by_cell[cell] += current;
+        water_energy_change_megajoules_per_h_by_cell[cell] += current - previous_water_energy_megajoules_by_plant[plant] - incoming;
+        previous_water_energy_megajoules_by_plant[plant] = current;
     }
 }
 
@@ -651,12 +661,25 @@ pub fn combustPlantPools(carbon_g: []const f64, nitrogen_g: []const f64, phospho
     return result;
 }
 
+/// Guards the exported parts against drifting from the aggregate they were
+/// split out of. `oxygen_consumed_g` is the only term downstream gas ledgers
+/// debit, while `redist.f` 4499/4837 consume the two parts separately, so an
+/// inconsistency here would double count or silently lose oxygen. Both parts
+/// are also required non-negative: a negative `ROGOX` or `RC4OX` has no
+/// physical reading and would flip the sign of the REDIST debit.
+fn validateOxygenPartition(result: CanopyFireResult, oxygen_g_per_g_carbon: f64) !void {
+    if (result.oxygen_limited_uptake_g < 0 or result.methane_combustion_g_carbon < 0) return error.NegativeFireOxygenPartition;
+    const recombined = result.oxygen_limited_uptake_g + result.methane_combustion_g_carbon * oxygen_g_per_g_carbon;
+    const scale = @max(1.0, @abs(result.oxygen_consumed_g));
+    if (@abs(recombined - result.oxygen_consumed_g) > 1e-12 * scale) return error.FireOxygenPartitionMismatch;
+}
+
 /// Exact EXTRACT total-canopy combustion partition. Positive gas values are
 /// emissions/consumption; callers apply their own atmospheric ledger signs.
 pub fn canopyFireCombustion(total_combusted_carbon_g: f64, negligible_carbon_g: f64, canopy_temperature_k: f64, oxygen_concentration_umol_per_mol: f64, oxygen_content_g: f64, methane_concentration_umol_per_mol: f64, parameters: CanopyFireParameters) !CanopyFireResult {
-    inline for (.{ total_combusted_carbon_g, negligible_carbon_g, canopy_temperature_k, oxygen_concentration_umol_per_mol, oxygen_content_g, methane_concentration_umol_per_mol, parameters.gas_constant_j_per_mol_k, parameters.combustion_activation_energy_j_per_mol, parameters.combustion_temperature_intercept, parameters.oxygen_g_per_g_carbon, parameters.maximum_aerobic_charcoal_fraction, parameters.maximum_anaerobic_charcoal_fraction, parameters.oxygen_half_saturation_umol_per_mol, parameters.methane_half_saturation_umol_per_mol, parameters.aerobic_combustion_energy_mj_per_g_carbon, parameters.anaerobic_combustion_energy_mj_per_g_carbon, parameters.methane_combustion_energy_mj_per_g_carbon }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyFireInput;
+    inline for (.{ total_combusted_carbon_g, negligible_carbon_g, canopy_temperature_k, oxygen_concentration_umol_per_mol, oxygen_content_g, methane_concentration_umol_per_mol, parameters.gas_constant_j_per_mol_k, parameters.combustion_activation_energy_j_per_mol, parameters.combustion_temperature_intercept, parameters.oxygen_g_per_g_carbon, parameters.maximum_aerobic_charcoal_fraction, parameters.maximum_anaerobic_charcoal_fraction, parameters.oxygen_half_saturation_umol_per_mol, parameters.methane_half_saturation_umol_per_mol, parameters.aerobic_combustion_energy_megajoules_per_g_carbon, parameters.anaerobic_combustion_energy_megajoules_per_g_carbon, parameters.methane_combustion_energy_megajoules_per_g_carbon }) |value| if (!std.math.isFinite(value)) return error.NonFiniteCanopyFireInput;
     if (total_combusted_carbon_g < 0 or negligible_carbon_g < 0 or canopy_temperature_k <= 0 or oxygen_concentration_umol_per_mol < 0 or oxygen_content_g < 0 or methane_concentration_umol_per_mol < 0 or parameters.gas_constant_j_per_mol_k <= 0 or parameters.combustion_activation_energy_j_per_mol < 0 or parameters.oxygen_g_per_g_carbon <= 0 or parameters.maximum_aerobic_charcoal_fraction < 0 or parameters.maximum_aerobic_charcoal_fraction > 1 or parameters.maximum_anaerobic_charcoal_fraction < 0 or parameters.maximum_anaerobic_charcoal_fraction > 1 or parameters.oxygen_half_saturation_umol_per_mol < 0 or parameters.methane_half_saturation_umol_per_mol < 0) return error.InvalidCanopyFireInput;
-    if (total_combusted_carbon_g <= negligible_carbon_g) return .{ .oxygen_consumed_g = 0, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_mj = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = 0 };
+    if (total_combusted_carbon_g <= negligible_carbon_g) return .{ .oxygen_consumed_g = 0, .oxygen_limited_uptake_g = 0, .methane_combustion_g_carbon = 0, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_megajoules = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = 0 };
     const oxygen_denominator = oxygen_concentration_umol_per_mol + parameters.oxygen_half_saturation_umol_per_mol;
     const methane_denominator = methane_concentration_umol_per_mol + parameters.methane_half_saturation_umol_per_mol;
     if (oxygen_denominator <= 0 or methane_denominator <= 0) return error.ZeroCanopyFireHalfSaturationDenominator;
@@ -678,16 +701,19 @@ pub fn canopyFireCombustion(total_combusted_carbon_g: f64, negligible_carbon_g: 
     if (noncharcoal_g <= 0) return error.NoGaseousCanopyFireProduct;
     const result: CanopyFireResult = .{
         .oxygen_consumed_g = aerobic_oxygen_g + methane_oxidized_g_carbon * parameters.oxygen_g_per_g_carbon,
+        .oxygen_limited_uptake_g = aerobic_oxygen_g,
+        .methane_combustion_g_carbon = methane_oxidized_g_carbon,
         .carbon_dioxide_emitted_g_carbon = aerobic_carbon_g + methane_oxidized_g_carbon,
         .methane_emitted_g_carbon = methane_produced_g_carbon - methane_oxidized_g_carbon,
         .charcoal_produced_g_carbon = charcoal_g,
         .charcoal_fraction_of_combusted_carbon = charcoal_g / total_combusted_carbon_g,
-        .heat_released_mj = aerobic_carbon_g * parameters.aerobic_combustion_energy_mj_per_g_carbon + methane_produced_g_carbon * parameters.anaerobic_combustion_energy_mj_per_g_carbon + methane_oxidized_g_carbon * parameters.methane_combustion_energy_mj_per_g_carbon,
+        .heat_released_megajoules = aerobic_carbon_g * parameters.aerobic_combustion_energy_megajoules_per_g_carbon + methane_produced_g_carbon * parameters.anaerobic_combustion_energy_megajoules_per_g_carbon + methane_oxidized_g_carbon * parameters.methane_combustion_energy_megajoules_per_g_carbon,
         .aerobic_fraction_of_noncharcoal = aerobic_carbon_g / noncharcoal_g,
         .anaerobic_fraction_of_noncharcoal = methane_produced_g_carbon / noncharcoal_g,
         .combustion_temperature_response = temperature_response,
     };
     inline for (@typeInfo(CanopyFireResult).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name))) return error.NonFiniteCanopyFireResult;
+    try validateOxygenPartition(result, parameters.oxygen_g_per_g_carbon);
     return result;
 }
 
@@ -707,12 +733,12 @@ pub fn subsurfaceOrganicMatterFire(total_combusted_carbon_g: f64, negligible_car
         parameters.maximum_anaerobic_charcoal_fraction,
         parameters.oxygen_half_saturation_g_o_per_m3,
         parameters.methane_half_saturation_g_c_per_m3,
-        parameters.aerobic_combustion_energy_mj_per_g_carbon,
-        parameters.anaerobic_combustion_energy_mj_per_g_carbon,
-        parameters.methane_combustion_energy_mj_per_g_carbon,
+        parameters.aerobic_combustion_energy_megajoules_per_g_carbon,
+        parameters.anaerobic_combustion_energy_megajoules_per_g_carbon,
+        parameters.methane_combustion_energy_megajoules_per_g_carbon,
     }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSubsurfaceFireInput;
     if (total_combusted_carbon_g < 0 or negligible_carbon_g < 0 or combustion_temperature_response < 0 or combustion_temperature_response > 1 or oxygen_concentration_g_o_per_m3 < 0 or oxygen_content_g_o < 0 or methane_concentration_g_c_per_m3 < 0 or methane_content_g_c < 0 or parameters.oxygen_g_per_g_carbon <= 0 or parameters.maximum_aerobic_charcoal_fraction < 0 or parameters.maximum_aerobic_charcoal_fraction > 1 or parameters.maximum_anaerobic_charcoal_fraction < 0 or parameters.maximum_anaerobic_charcoal_fraction > 1 or parameters.oxygen_half_saturation_g_o_per_m3 < 0 or parameters.methane_half_saturation_g_c_per_m3 < 0) return error.InvalidSubsurfaceFireInput;
-    if (total_combusted_carbon_g <= negligible_carbon_g) return .{ .oxygen_consumed_g = 0, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_mj = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = combustion_temperature_response };
+    if (total_combusted_carbon_g <= negligible_carbon_g) return .{ .oxygen_consumed_g = 0, .oxygen_limited_uptake_g = 0, .methane_combustion_g_carbon = 0, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_megajoules = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = combustion_temperature_response };
     const oxygen_denominator = oxygen_concentration_g_o_per_m3 + parameters.oxygen_half_saturation_g_o_per_m3;
     const methane_denominator = methane_concentration_g_c_per_m3 + parameters.methane_half_saturation_g_c_per_m3;
     if (oxygen_denominator <= 0 or methane_denominator <= 0) return error.ZeroSubsurfaceFireHalfSaturationDenominator;
@@ -732,16 +758,19 @@ pub fn subsurfaceOrganicMatterFire(total_combusted_carbon_g: f64, negligible_car
     const noncharcoal_g = aerobic_carbon_g + methane_produced_g_carbon;
     const result: CanopyFireResult = .{
         .oxygen_consumed_g = aerobic_oxygen_g + methane_oxidized_g_carbon * parameters.oxygen_g_per_g_carbon,
+        .oxygen_limited_uptake_g = aerobic_oxygen_g,
+        .methane_combustion_g_carbon = methane_oxidized_g_carbon,
         .carbon_dioxide_emitted_g_carbon = aerobic_carbon_g + methane_oxidized_g_carbon,
         .methane_emitted_g_carbon = methane_produced_g_carbon - methane_oxidized_g_carbon,
         .charcoal_produced_g_carbon = charcoal_g,
         .charcoal_fraction_of_combusted_carbon = charcoal_g / total_combusted_carbon_g,
-        .heat_released_mj = aerobic_carbon_g * parameters.aerobic_combustion_energy_mj_per_g_carbon + methane_produced_g_carbon * parameters.anaerobic_combustion_energy_mj_per_g_carbon + methane_oxidized_g_carbon * parameters.methane_combustion_energy_mj_per_g_carbon,
+        .heat_released_megajoules = aerobic_carbon_g * parameters.aerobic_combustion_energy_megajoules_per_g_carbon + methane_produced_g_carbon * parameters.anaerobic_combustion_energy_megajoules_per_g_carbon + methane_oxidized_g_carbon * parameters.methane_combustion_energy_megajoules_per_g_carbon,
         .aerobic_fraction_of_noncharcoal = if (noncharcoal_g > 0) aerobic_carbon_g / noncharcoal_g else 0,
         .anaerobic_fraction_of_noncharcoal = if (noncharcoal_g > 0) methane_produced_g_carbon / noncharcoal_g else 0,
         .combustion_temperature_response = combustion_temperature_response,
     };
     inline for (@typeInfo(CanopyFireResult).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name))) return error.NonFiniteSubsurfaceFireResult;
+    try validateOxygenPartition(result, parameters.oxygen_g_per_g_carbon);
     return result;
 }
 
@@ -813,20 +842,20 @@ test "extract aggregation accepts more than five plant species" {
 }
 
 test "extract canopy fire conserves carbon and oxygen bounds" {
-    const result = try canopyFireCombustion(10, 1e-12, 600, 100_000, 12, 2, .{ .oxygen_half_saturation_umol_per_mol = 10_000, .methane_half_saturation_umol_per_mol = 1, .aerobic_combustion_energy_mj_per_g_carbon = 0.03, .anaerobic_combustion_energy_mj_per_g_carbon = 0.01, .methane_combustion_energy_mj_per_g_carbon = 0.05 });
+    const result = try canopyFireCombustion(10, 1e-12, 600, 100_000, 12, 2, .{ .oxygen_half_saturation_umol_per_mol = 10_000, .methane_half_saturation_umol_per_mol = 1, .aerobic_combustion_energy_megajoules_per_g_carbon = 0.03, .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.01, .methane_combustion_energy_megajoules_per_g_carbon = 0.05 });
     try std.testing.expectApproxEqAbs(@as(f64, 10), result.carbon_dioxide_emitted_g_carbon + result.methane_emitted_g_carbon + result.charcoal_produced_g_carbon, 1e-12);
     try std.testing.expect(result.oxygen_consumed_g <= 12);
     try std.testing.expectApproxEqAbs(@as(f64, 1), result.aerobic_fraction_of_noncharcoal + result.anaerobic_fraction_of_noncharcoal, 1e-12);
-    try std.testing.expect(result.heat_released_mj > 0);
+    try std.testing.expect(result.heat_released_megajoules > 0);
 }
 
 test "EXTRACT canopy fire oxidizes newly produced methane without an ambient inventory cap" {
     const parameters: CanopyFireParameters = .{
         .oxygen_half_saturation_umol_per_mol = 1,
         .methane_half_saturation_umol_per_mol = 1,
-        .aerobic_combustion_energy_mj_per_g_carbon = 0.03,
-        .anaerobic_combustion_energy_mj_per_g_carbon = 0.01,
-        .methane_combustion_energy_mj_per_g_carbon = 0.05,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.03,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.01,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.05,
     };
     const result = try canopyFireCombustion(10, 0, 600, 1_000_000, 100, 1_000_000, parameters);
     try std.testing.expect(result.carbon_dioxide_emitted_g_carbon > 0);
@@ -837,20 +866,75 @@ test "TRNSFR subsurface fire conserves layer carbon oxygen methane and heat" {
     const result = try subsurfaceOrganicMatterFire(10, 1e-12, 0.25, 3, 8, 0.4, 0.2, .{
         .oxygen_half_saturation_g_o_per_m3 = 0.5,
         .methane_half_saturation_g_c_per_m3 = 0.1,
-        .aerobic_combustion_energy_mj_per_g_carbon = 0.0375,
-        .anaerobic_combustion_energy_mj_per_g_carbon = 0.0125,
-        .methane_combustion_energy_mj_per_g_carbon = 0.0743,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.0743,
     });
     try std.testing.expectApproxEqAbs(@as(f64, 10), result.carbon_dioxide_emitted_g_carbon + result.methane_emitted_g_carbon + result.charcoal_produced_g_carbon, 1e-12);
     try std.testing.expect(result.oxygen_consumed_g <= 8);
     try std.testing.expect(result.carbon_dioxide_emitted_g_carbon >= 0);
     try std.testing.expect(result.methane_emitted_g_carbon >= 0);
     try std.testing.expect(result.charcoal_produced_g_carbon >= 0);
-    try std.testing.expect(result.heat_released_mj > 0);
+    try std.testing.expect(result.heat_released_megajoules > 0);
+}
+
+test "TRNSFR subsurface fire exports ROGOX and RC4OX consistently with the aggregate" {
+    const parameters: SubsurfaceFireParameters = .{
+        .oxygen_half_saturation_g_o_per_m3 = 0.5,
+        .methane_half_saturation_g_c_per_m3 = 0.1,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.0743,
+    };
+    // Swept over regimes that select each arm of the source RC4OX three-way
+    // AMIN1: methane-content limited, residual-oxygen limited, and kinetic.
+    const cases = [_][4]f64{
+        .{ 3, 8, 0.4, 0.2 },
+        .{ 40, 1.0, 5.0, 0.001 },
+        .{ 0.01, 0.05, 20.0, 50.0 },
+        .{ 100, 500, 0.0, 0.0 },
+    };
+    for (cases) |c| {
+        const result = try subsurfaceOrganicMatterFire(10, 1e-12, 0.25, c[0], c[1], c[2], c[3], parameters);
+        // Tier 2: the exported parts reconstruct the only aggregate any gas
+        // ledger debits. Nothing downstream may see a different total.
+        try std.testing.expectApproxEqAbs(result.oxygen_consumed_g, result.oxygen_limited_uptake_g + result.methane_combustion_g_carbon * parameters.oxygen_g_per_g_carbon, 1e-12 * @max(1.0, result.oxygen_consumed_g));
+        // Tier 1: both parts sit in a valid physical domain.
+        try std.testing.expect(result.oxygen_limited_uptake_g >= 0);
+        try std.testing.expect(result.methane_combustion_g_carbon >= 0);
+        // Tier 2: neither part may exceed the inventory that supplies it. ROGOX
+        // is capped by the oxygen present, RC4OX by the methane present and by
+        // the oxygen the aerobic branch left behind.
+        try std.testing.expect(result.oxygen_limited_uptake_g <= c[1] + 1e-12);
+        try std.testing.expect(result.methane_combustion_g_carbon <= c[3] + 1e-12);
+        try std.testing.expect(result.oxygen_consumed_g <= c[1] + 1e-12);
+        // The aggregate identity the parts were split out of still holds.
+        try std.testing.expectApproxEqAbs(result.carbon_dioxide_emitted_g_carbon, result.oxygen_limited_uptake_g / parameters.oxygen_g_per_g_carbon + result.methane_combustion_g_carbon, 1e-12);
+        try std.testing.expectApproxEqAbs(@as(f64, 10), result.carbon_dioxide_emitted_g_carbon + result.methane_emitted_g_carbon + result.charcoal_produced_g_carbon, 1e-12);
+    }
+}
+
+test "fire oxygen partition rejects parts that do not reconstruct the aggregate" {
+    // The guard is the reason the export cannot silently drift; assert it fires.
+    try std.testing.expectError(error.FireOxygenPartitionMismatch, validateOxygenPartition(.{ .oxygen_consumed_g = 10, .oxygen_limited_uptake_g = 1, .methane_combustion_g_carbon = 0, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_megajoules = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = 0 }, 2.667));
+    try std.testing.expectError(error.NegativeFireOxygenPartition, validateOxygenPartition(.{ .oxygen_consumed_g = 0, .oxygen_limited_uptake_g = -1, .methane_combustion_g_carbon = 1.0 / 2.667, .carbon_dioxide_emitted_g_carbon = 0, .methane_emitted_g_carbon = 0, .charcoal_produced_g_carbon = 0, .charcoal_fraction_of_combusted_carbon = 0, .heat_released_megajoules = 0, .aerobic_fraction_of_noncharcoal = 0, .anaerobic_fraction_of_noncharcoal = 0, .combustion_temperature_response = 0 }, 2.667));
+}
+
+test "subsurface fire below the negligible carbon threshold exports zero parts" {
+    const result = try subsurfaceOrganicMatterFire(0, 1e-12, 0.25, 3, 8, 0.4, 0.2, .{
+        .oxygen_half_saturation_g_o_per_m3 = 0.5,
+        .methane_half_saturation_g_c_per_m3 = 0.1,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.0743,
+    });
+    try std.testing.expectEqual(@as(f64, 0), result.oxygen_limited_uptake_g);
+    try std.testing.expectEqual(@as(f64, 0), result.methane_combustion_g_carbon);
+    try std.testing.expectEqual(@as(f64, 0), result.oxygen_consumed_g);
 }
 
 test "extract plant pool combustion conserves carbon nitrogen and phosphorus" {
-    const canopy = try canopyFireCombustion(10, 0, 600, 100_000, 12, 2, .{ .oxygen_half_saturation_umol_per_mol = 10_000, .methane_half_saturation_umol_per_mol = 1, .aerobic_combustion_energy_mj_per_g_carbon = 0.03, .anaerobic_combustion_energy_mj_per_g_carbon = 0.01, .methane_combustion_energy_mj_per_g_carbon = 0.05 });
+    const canopy = try canopyFireCombustion(10, 0, 600, 100_000, 12, 2, .{ .oxygen_half_saturation_umol_per_mol = 10_000, .methane_half_saturation_umol_per_mol = 1, .aerobic_combustion_energy_megajoules_per_g_carbon = 0.03, .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.01, .methane_combustion_energy_megajoules_per_g_carbon = 0.05 });
     const salts = [_]f64{1} ** 16;
     const result = try combustPlantPools(&.{ 3, 7 }, &.{ 0.2, 0.3 }, &.{ 0.04, 0.06 }, &salts, true, 0.25, canopyPlantCombustionFractions(canopy));
     try std.testing.expectApproxEqAbs(@as(f64, 10), result.carbon_dioxide_g_carbon + result.methane_g_carbon + result.charcoal_g_carbon, 1e-12);
@@ -893,7 +977,7 @@ test "extract root exchange cancels internal gas phase transfer" {
     var density = [_]f64{0};
     var water = [_]f64{0};
     var heat = [_]f64{0};
-    var state: RootExchangeState = .{ .gaseous_content_g = gaseous, .aqueous_content_g = aqueous, .total_content_by_layer_g = gas_totals, .total_root_length_density_m_per_m3 = &density, .total_water_uptake_m3_per_h = &water, .convective_water_heat_mj_per_h = &heat };
+    var state: RootExchangeState = .{ .gaseous_content_g = gaseous, .aqueous_content_g = aqueous, .total_content_by_layer_g = gas_totals, .total_root_length_density_m_per_m3 = &density, .total_water_uptake_m3_per_h = &water, .convective_water_heat_megajoules_per_h = &heat };
     try aggregateRootExchange(2, 1, 10, &.{2}, &.{280}, .{ .root_length_density_per_plant_m_per_m3 = &.{ 4, 9 }, .water_uptake_m3_per_h = &.{ 0.1, 0.2 }, .gaseous_atmosphere_exchange_g_per_h = atmosphere_inputs, .aqueous_to_gaseous_exchange_g_per_h = dissolved_inputs, .aqueous_biological_change_g_per_h = biological_inputs }, &state);
     try std.testing.expectApproxEqAbs(@as(f64, 7), state.total_content_by_layer_g[@intFromEnum(RootGas.carbon_dioxide)][0], 1e-12);
     try std.testing.expectEqual(@as(f64, 20), density[0]);
@@ -962,17 +1046,17 @@ test "extract canopy transfers aggregate runtime species and active leaf areas" 
     var leaf_carbon = [_]f64{ 0, 0 };
     var stalk_area = [_]f64{ 0, 0 };
     var previous_energy = [_]f64{ 1, 2, 3 };
-    var totals: CanopyTransferTotals = .{ .standing_dead_area_m2 = &dead_area, .leaf_area_m2 = &leaf_area, .leaf_carbon_g = &leaf_carbon, .stalk_area_m2 = &stalk_area, .standing_dead_ground_area_m2 = 0, .net_radiation_mj_per_h = 0, .latent_heat_flux_mj_per_h = 0, .sensible_heat_flux_mj_per_h = 0, .storage_heat_flux_mj_per_h = 0, .transpiration_and_evaporation_m3_per_h = 0, .internal_water_m3 = 0, .surface_water_m3 = 0, .evaporation_m3_per_h = 0, .water_energy_mj = 0, .water_energy_change_mj_per_h = 0 };
+    var totals: CanopyTransferTotals = .{ .standing_dead_area_m2 = &dead_area, .leaf_area_m2 = &leaf_area, .leaf_carbon_g = &leaf_carbon, .stalk_area_m2 = &stalk_area, .standing_dead_ground_area_m2 = 0, .net_radiation_megajoules_per_h = 0, .latent_heat_flux_megajoules_per_h = 0, .sensible_heat_flux_megajoules_per_h = 0, .storage_heat_flux_megajoules_per_h = 0, .transpiration_and_evaporation_m3_per_h = 0, .internal_water_m3 = 0, .surface_water_m3 = 0, .evaporation_m3_per_h = 0, .water_energy_megajoules = 0, .water_energy_change_megajoules_per_h = 0 };
     const layered = [_]f64{ 1, 2, 3, 4, 5, 6 };
     const species_values = [_]f64{ 1, 2, 3 };
     const zero_species = [_]f64{ 0, 0, 0 };
-    try aggregateHourlyCanopyTransfers(3, 2, 280, .{ .active = &.{ true, false, true }, .standing_dead_area_m2 = &layered, .leaf_area_m2 = &layered, .leaf_carbon_g = &layered, .stalk_area_m2 = &layered, .standing_dead_ground_area_m2 = &species_values, .net_radiation_mj_per_h = &species_values, .latent_heat_flux_mj_per_h = &species_values, .sensible_heat_flux_mj_per_h = &species_values, .storage_heat_flux_mj_per_h = &species_values, .convective_heat_flux_mj_per_h = &zero_species, .transpiration_m3_per_h = &zero_species, .evaporation_m3_per_h = &zero_species, .internal_water_m3 = &species_values, .surface_water_m3 = &zero_species, .standing_dead_surface_water_m3 = &zero_species, .retained_foliar_water_m3_per_h = &.{ 1, 0, 0 }, .retained_standing_dead_water_m3_per_h = &zero_species, .canopy_temperature_k = &.{ 280, 281, 282 } }, &previous_energy, &totals);
+    try aggregateHourlyCanopyTransfers(3, 2, 280, .{ .active = &.{ true, false, true }, .standing_dead_area_m2 = &layered, .leaf_area_m2 = &layered, .leaf_carbon_g = &layered, .stalk_area_m2 = &layered, .standing_dead_ground_area_m2 = &species_values, .net_radiation_megajoules_per_h = &species_values, .latent_heat_flux_megajoules_per_h = &species_values, .sensible_heat_flux_megajoules_per_h = &species_values, .storage_heat_flux_megajoules_per_h = &species_values, .convective_heat_flux_megajoules_per_h = &zero_species, .transpiration_m3_per_h = &zero_species, .evaporation_m3_per_h = &zero_species, .internal_water_m3 = &species_values, .surface_water_m3 = &zero_species, .standing_dead_surface_water_m3 = &zero_species, .retained_foliar_water_m3_per_h = &.{ 1, 0, 0 }, .retained_standing_dead_water_m3_per_h = &zero_species, .canopy_temperature_k = &.{ 280, 281, 282 } }, &previous_energy, &totals);
     try std.testing.expectEqual(@as(f64, 9), totals.standing_dead_area_m2[0]);
     try std.testing.expectEqual(@as(f64, 6), totals.leaf_area_m2[0]);
-    try std.testing.expectEqual(@as(f64, 6), totals.net_radiation_mj_per_h);
-    try std.testing.expectEqual(@as(f64, -6), totals.storage_heat_flux_mj_per_h);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.19 * 280), totals.water_energy_mj, 1e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, -6), totals.water_energy_change_mj_per_h, 1e-12);
+    try std.testing.expectEqual(@as(f64, 6), totals.net_radiation_megajoules_per_h);
+    try std.testing.expectEqual(@as(f64, -6), totals.storage_heat_flux_megajoules_per_h);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.19 * 280), totals.water_energy_megajoules, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, -6), totals.water_energy_change_megajoules_per_h, 1e-12);
     try std.testing.expectEqual(@as(f64, 0), previous_energy[2]);
 }
 

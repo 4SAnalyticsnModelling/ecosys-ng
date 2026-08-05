@@ -7,8 +7,8 @@ const Dormancy = @import("plant_dormancy.zig").RuntimeState;
 const DormancyBranch = @import("plant_dormancy.zig").State;
 
 const magic = "ECOSDEVP";
-// Version 7 distinguishes death-replant standing-dead carryover from seed carryover.
-const version: u32 = 7;
+// Version 8 persists branch-local IFLGR and FLGQ end-of-season state.
+const version: u32 = 8;
 const DormancyBranchV1 = struct {
     accumulated_leafout_h: f64,
     accumulated_leafoff_h: f64,
@@ -16,6 +16,17 @@ const DormancyBranchV1 = struct {
     shortening_photoperiod_h: f64,
     leafout_disabled: bool,
     leafoff_disabled: bool,
+};
+const DormancyBranchV7 = struct {
+    accumulated_leafout_h: f64,
+    accumulated_leafoff_h: f64,
+    lengthening_photoperiod_h: f64,
+    shortening_photoperiod_h: f64,
+    leafout_disabled: bool,
+    leafoff_disabled: bool,
+    shoot_remobilization_enabled: bool,
+    phenological_remobilization_enabled: bool,
+    remobilization_elapsed_h: f64,
 };
 
 pub const View = struct { phenology: *const Phenology, growth: *const Growth, dormancy: *const Dormancy, branch_development: *const BranchDevelopment };
@@ -113,6 +124,21 @@ pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits
                 .shortening_photoperiod_h = value.shortening_photoperiod_h,
                 .leafout_disabled = value.leafout_disabled,
                 .leafoff_disabled = value.leafoff_disabled,
+            };
+        } else if (file_version <= 7) {
+            const value = try readStruct(DormancyBranchV7, reader);
+            branch.* = .{
+                .accumulated_leafout_h = value.accumulated_leafout_h,
+                .accumulated_leafoff_h = value.accumulated_leafoff_h,
+                .lengthening_photoperiod_h = value.lengthening_photoperiod_h,
+                .shortening_photoperiod_h = value.shortening_photoperiod_h,
+                .leafout_disabled = value.leafout_disabled,
+                .leafoff_disabled = value.leafoff_disabled,
+                .shoot_remobilization_enabled = value.shoot_remobilization_enabled,
+                .phenological_remobilization_enabled = value.phenological_remobilization_enabled,
+                .remobilization_elapsed_h = value.remobilization_elapsed_h,
+                .reproductive_growth_disabled = false,
+                .reproductive_litterfall_delay_h = 0,
             };
         } else branch.* = try readStruct(DormancyBranch, reader);
     }
@@ -250,6 +276,8 @@ test "development checkpoint round trip reconstructs arbitrary species and branc
     dormancy.branches[3].shoot_remobilization_enabled = true;
     dormancy.branches[3].phenological_remobilization_enabled = true;
     dormancy.branches[3].remobilization_elapsed_h = 37;
+    dormancy.branches[3].reproductive_growth_disabled = true;
+    dormancy.branches[3].reproductive_litterfall_delay_h = 239;
     var development = try BranchDevelopment.init(std.testing.allocator, growth.branches.len);
     defer development.deinit();
     development.maturity_group[3] = 8;
@@ -276,7 +304,66 @@ test "development checkpoint round trip reconstructs arbitrary species and branc
     try std.testing.expect(restored.dormancy.branches[3].shoot_remobilization_enabled);
     try std.testing.expect(restored.dormancy.branches[3].phenological_remobilization_enabled);
     try std.testing.expectEqual(@as(f64, 37), restored.dormancy.branches[3].remobilization_elapsed_h);
+    try std.testing.expect(restored.dormancy.branches[3].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 239), restored.dormancy.branches[3].reproductive_litterfall_delay_h);
     try std.testing.expectEqual(@as(u32, 123), restored.branch_development.stage_day[35]);
+}
+
+test "version seven restart defaults new reproductive turnover state" {
+    var phenology = try Phenology.init(std.testing.allocator, 1, 1);
+    defer phenology.deinit();
+    var growth = try Growth.init(std.testing.allocator, &.{1});
+    defer growth.deinit();
+    var dormancy = try Dormancy.init(std.testing.allocator, 1);
+    defer dormancy.deinit();
+    dormancy.branches[0].accumulated_leafout_h = 12;
+    dormancy.branches[0].remobilization_elapsed_h = 37;
+    var development = try BranchDevelopment.init(std.testing.allocator, 1);
+    defer development.deinit();
+    var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer bytes.deinit();
+
+    try bytes.writer.writeAll(magic);
+    try bytes.writer.writeInt(u32, 7, .little);
+    try bytes.writer.writeInt(u64, 1, .little);
+    try bytes.writer.writeInt(u64, 1, .little);
+    try bytes.writer.writeInt(u64, 1, .little);
+    try bytes.writer.writeInt(u64, 1, .little);
+    for (growth.plant_branch_offsets) |value| try bytes.writer.writeInt(u64, @intCast(value), .little);
+    inline for (@typeInfo(Phenology).@"struct".fields) |field| switch (field.type) {
+        []bool => try writeBoolSlice(&bytes.writer, @field(phenology, field.name)),
+        []u16 => try writeU16Slice(&bytes.writer, @field(phenology, field.name)),
+        []f64 => try writeF64Slice(&bytes.writer, @field(phenology, field.name)),
+        else => {},
+    };
+    try writeStruct(&bytes.writer, growth.branches[0]);
+    const old = dormancy.branches[0];
+    try writeStruct(&bytes.writer, DormancyBranchV7{
+        .accumulated_leafout_h = old.accumulated_leafout_h,
+        .accumulated_leafoff_h = old.accumulated_leafoff_h,
+        .lengthening_photoperiod_h = old.lengthening_photoperiod_h,
+        .shortening_photoperiod_h = old.shortening_photoperiod_h,
+        .leafout_disabled = old.leafout_disabled,
+        .leafoff_disabled = old.leafoff_disabled,
+        .shoot_remobilization_enabled = old.shoot_remobilization_enabled,
+        .phenological_remobilization_enabled = old.phenological_remobilization_enabled,
+        .remobilization_elapsed_h = old.remobilization_elapsed_h,
+    });
+    inline for (@typeInfo(BranchDevelopment).@"struct".fields) |field| switch (field.type) {
+        []f64 => try writeF64Slice(&bytes.writer, @field(development, field.name)),
+        []usize => try writeUsizeSlice(&bytes.writer, @field(development, field.name)),
+        []u32 => try writeU32Slice(&bytes.writer, @field(development, field.name)),
+        []bool => try writeBoolSlice(&bytes.writer, @field(development, field.name)),
+        else => {},
+    };
+
+    var reader: std.Io.Reader = .fixed(bytes.written());
+    var restored = try read(std.testing.allocator, &reader, .{ .maximum_cells = 1, .maximum_species = 1, .maximum_branches = 1 });
+    defer restored.deinit();
+    try std.testing.expectEqual(@as(f64, 12), restored.dormancy.branches[0].accumulated_leafout_h);
+    try std.testing.expectEqual(@as(f64, 37), restored.dormancy.branches[0].remobilization_elapsed_h);
+    try std.testing.expect(!restored.dormancy.branches[0].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 0), restored.dormancy.branches[0].reproductive_litterfall_delay_h);
 }
 
 test "development checkpoint enforces runtime branch limit before state allocation" {

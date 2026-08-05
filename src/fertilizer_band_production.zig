@@ -164,7 +164,7 @@ pub fn consumeUndissolved(
     defer allocator.free(ninth);
     const tenth = try allocator.alloc(f64, count);
     defer allocator.free(tenth);
-    const next_exchange = try allocator.dupe(cation_exchange.Cations, chemistry.cation_exchange_mol_per_Mg);
+    const next_exchange = try allocator.dupe(cation_exchange.Cations, chemistry.cation_exchange_mol_per_megagram);
     defer allocator.free(next_exchange);
     const next_aqueous = try allocator.dupe(aqueous_network.State, chemistry.aqueous);
     defer allocator.free(next_aqueous);
@@ -184,7 +184,7 @@ pub fn consumeUndissolved(
         const relative_phosphate_change = coordinator.persistentRelativeChanges()[2 * count .. 3 * count];
         for (0..count) |layer| {
             const fractions = try state.zoneFractions(cell, layer);
-            const exchange = chemistry.cation_exchange_mol_per_Mg[base + layer];
+            const exchange = chemistry.cation_exchange_mol_per_megagram[base + layer];
             const next = try repartitionConcentrations(exchange.ammonium_non_band, exchange.ammonium_band, fractions.ammonium_non_band, fractions.ammonium_band, relative_ammonium_change[layer]);
             next_exchange[base + layer].ammonium_non_band = next.non_band;
             next_exchange[base + layer].ammonium_band = next.band;
@@ -256,7 +256,7 @@ pub fn consumeUndissolved(
             nitrogen_state.soil[base + layer].banded_nitrate_mol_n = eighth[layer];
             mineral_state.soil[base + layer].broadcast_monocalcium_phosphate_mol = ninth[layer];
             mineral_state.soil[base + layer].banded_monocalcium_phosphate_mol = tenth[layer];
-            chemistry.cation_exchange_mol_per_Mg[base + layer] = next_exchange[base + layer];
+            chemistry.cation_exchange_mol_per_megagram[base + layer] = next_exchange[base + layer];
             chemistry.aqueous[base + layer] = next_aqueous[base + layer];
             reactive_nitrogen.non_band_nitrite_g_n[base + layer] = next_non_band_nitrite_g_n[base + layer];
             reactive_nitrogen.band_nitrite_g_n[base + layer] = next_band_nitrite_g_n[base + layer];
@@ -279,11 +279,11 @@ fn stagePhosphatePair(
     inline for (.{
         "dissolved_hpo4_mol_p_per_m3",
         "dissolved_h2po4_mol_p_per_m3",
-        "deprotonated_site_mol_per_Mg",
-        "hydroxyl_site_mol_per_Mg",
-        "protonated_site_mol_per_Mg",
-        "adsorbed_hpo4_mol_p_per_Mg",
-        "adsorbed_h2po4_mol_p_per_Mg",
+        "deprotonated_site_mol_per_megagram",
+        "hydroxyl_site_mol_per_megagram",
+        "protonated_site_mol_per_megagram",
+        "adsorbed_hpo4_mol_p_per_megagram",
+        "adsorbed_h2po4_mol_p_per_megagram",
         "aluminum_phosphate_solid_mol_per_m3",
         "iron_phosphate_solid_mol_per_m3",
         "dicalcium_phosphate_solid_mol_per_m3",
@@ -385,10 +385,10 @@ test "production boundaries reject stale and duplicate hour consumption" {
     defer chemistry.deinit();
     var reactive_nitrogen = try reactive_nitrogen_module.State.init(std.testing.allocator, 1, 1);
     defer reactive_nitrogen.deinit();
-    chemistry.cation_exchange_mol_per_Mg[0].ammonium_non_band = std.math.nan(f64);
+    chemistry.cation_exchange_mol_per_megagram[0].ammonium_non_band = std.math.nan(f64);
     try std.testing.expectError(error.InvalidBandInventoryState, consumeUndissolved(std.testing.allocator, &state, token, &nitrogen_state, &mineral_state, &chemistry, &reactive_nitrogen, false));
     try std.testing.expectEqual(phase.Phase.intervening_science, (try state.coordinator(0)).persistentMetadata().phase);
-    chemistry.cation_exchange_mol_per_Mg[0].ammonium_non_band = 0;
+    chemistry.cation_exchange_mol_per_megagram[0].ammonium_non_band = 0;
     chemistry.aqueous[0].ammonia_band = std.math.nan(f64);
     try std.testing.expectError(error.InvalidBandInventoryState, consumeUndissolved(std.testing.allocator, &state, token, &nitrogen_state, &mineral_state, &chemistry, &reactive_nitrogen, false));
     try std.testing.expectEqual(phase.Phase.intervening_science, (try state.coordinator(0)).persistentMetadata().phase);
@@ -444,8 +444,8 @@ test "complete phosphate family conserves each carrier and honors dynamic salt g
     var current_band = std.mem.zeroes(phosphate_network.State);
     current_non_band.dissolved_h2po4_mol_p_per_m3 = 10;
     current_band.dissolved_h2po4_mol_p_per_m3 = 2;
-    current_non_band.adsorbed_hpo4_mol_p_per_Mg = 5;
-    current_band.adsorbed_hpo4_mol_p_per_Mg = 1;
+    current_non_band.adsorbed_hpo4_mol_p_per_megagram = 5;
+    current_band.adsorbed_hpo4_mol_p_per_megagram = 1;
     current_non_band.aluminum_phosphate_solid_mol_per_m3 = 3;
     current_band.aluminum_phosphate_solid_mol_per_m3 = 0.5;
     current_non_band.iron_hpo4_pair_mol_per_m3 = 4;
@@ -455,7 +455,7 @@ test "complete phosphate family conserves each carrier and honors dynamic salt g
     try stagePhosphatePair(&next_non_band, &next_band, current_non_band, current_band, 0.72, 0.28, -0.1, true);
     inline for (.{
         "dissolved_h2po4_mol_p_per_m3",
-        "adsorbed_hpo4_mol_p_per_Mg",
+        "adsorbed_hpo4_mol_p_per_megagram",
         "aluminum_phosphate_solid_mol_per_m3",
         "iron_hpo4_pair_mol_per_m3",
     }) |name| try std.testing.expectApproxEqAbs(

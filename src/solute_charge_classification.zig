@@ -25,7 +25,7 @@ pub fn classify(aqueous: aqueous_network.State, non_band: phosphate_network.Stat
     const ca_po4 = weighted(non_band.calcium_po4_pair_mol_per_m3, band.calcium_po4_pair_mol_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
     const ca_hpo4 = weighted(non_band.calcium_hpo4_pair_mol_per_m3, band.calcium_hpo4_pair_mol_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
     const ca_h2po4 = weighted(non_band.calcium_h2po4_pair_mol_per_m3, band.calcium_h2po4_pair_mol_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
-    const mg_hpo4 = weighted(non_band.magnesium_hpo4_pair_mol_per_m3, band.magnesium_hpo4_pair_mol_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
+    const megagrams_hpo4 = weighted(non_band.magnesium_hpo4_pair_mol_per_m3, band.magnesium_hpo4_pair_mol_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
     const h3po4 = weighted(non_band.dissolved_h3po4_mol_p_per_m3, band.dissolved_h3po4_mol_p_per_m3, fractions.phosphate_non_band, fractions.phosphate_band);
     return .{
         .trivalent_cations_mol = aqueous.aluminum + aqueous.iron,
@@ -34,7 +34,7 @@ pub fn classify(aqueous: aqueous_network.State, non_band: phosphate_network.Stat
         .divalent_anions_mol = aqueous.sulfate + aqueous.carbonate + p1,
         .monovalent_cations_mol = aqueous.ammonium_non_band * fractions.ammonium_non_band + aqueous.ammonium_band * fractions.ammonium_band + aqueous.hydrogen + aqueous.sodium + aqueous.potassium + aqueous.aluminum_hydroxide_2 + aqueous.iron_hydroxide_2 + aqueous.aluminum_sulfate + aqueous.iron_sulfate + aqueous.calcium_hydroxide + aqueous.calcium_bicarbonate + aqueous.magnesium_hydroxide + aqueous.magnesium_bicarbonate + fe_hpo4 + ca_h2po4,
         .monovalent_anions_mol = aqueous.nitrate_non_band * fractions.nitrate_non_band + aqueous.nitrate_band * fractions.nitrate_band + aqueous.hydroxide + aqueous.bicarbonate + aqueous.chloride + aqueous.aluminum_hydroxide_4 + aqueous.iron_hydroxide_4 + aqueous.sodium_carbonate + aqueous.sodium_sulfate + aqueous.potassium_sulfate + p2 + ca_po4,
-        .neutral_solutes_mol = aqueous.aluminum_hydroxide_3 + aqueous.iron_hydroxide_3 + aqueous.calcium_carbonate + aqueous.calcium_sulfate + aqueous.magnesium_carbonate + aqueous.magnesium_sulfate + h3po4 + ca_hpo4 + mg_hpo4,
+        .neutral_solutes_mol = aqueous.aluminum_hydroxide_3 + aqueous.iron_hydroxide_3 + aqueous.calcium_carbonate + aqueous.calcium_sulfate + aqueous.magnesium_carbonate + aqueous.magnesium_sulfate + h3po4 + ca_hpo4 + megagrams_hpo4,
     };
 }
 

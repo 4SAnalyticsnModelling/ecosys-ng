@@ -3,25 +3,25 @@ const std = @import("std");
 pub const ResidueClass = struct {
     water_holding_capacity_m3_g: f64, // THETRX
     carbon_mass_g: f64, // RC0
-    dry_bulk_density_mg_m3: f64, // BKRS
+    dry_bulk_density_megagrams_m3: f64, // BKRS
 };
 
 pub const Inputs = struct {
     residue_classes: []const ResidueClass,
     water_volume_m3: f64,
     ice_volume_m3: f64,
-    underlying_soil_bulk_density_mg_m3: f64,
+    underlying_soil_bulk_density_megagrams_m3: f64,
     organic_carbon_g: f64,
     charcoal_carbon_g: f64,
     horizontal_area_m2: f64,
     volume_threshold_m3: f64,
-    positive_density_threshold_mg_m3: f64,
+    positive_density_threshold_megagrams_m3: f64,
 };
 
 pub const ActiveProperties = struct {
     wet_volume_m3: f64,
     effective_volume_m3: f64,
-    residue_mass_mg: f64,
+    residue_mass_megagrams: f64,
     pore_capacity_m3: f64,
     air_filled_volume_m3: f64,
     porosity_m3_m3: f64,
@@ -64,7 +64,7 @@ pub fn calculate(inputs: Inputs) CalculationError!Result {
             if (!std.math.isFinite(value)) return error.NonFiniteInput;
             if (value < 0.0) return error.NegativeInput;
         }
-        if (class.carbon_mass_g > 0.0 and class.dry_bulk_density_mg_m3 <= 0.0) {
+        if (class.carbon_mass_g > 0.0 and class.dry_bulk_density_megagrams_m3 <= 0.0) {
             return error.InvalidResidueBulkDensity;
         }
     }
@@ -83,7 +83,7 @@ pub fn calculate(inputs: Inputs) CalculationError!Result {
     for (inputs.residue_classes) |class| {
         if (class.carbon_mass_g > 0.0) {
             dry_density_sum =
-                dry_density_sum + class.carbon_mass_g / class.dry_bulk_density_mg_m3;
+                dry_density_sum + class.carbon_mass_g / class.dry_bulk_density_megagrams_m3;
         }
     }
     const dry_residue_volume_m3 = 1.0e-6 * @max(0.0, dry_density_sum);
@@ -99,15 +99,15 @@ pub fn calculate(inputs: Inputs) CalculationError!Result {
     if (inputs.horizontal_area_m2 <= 0.0) return error.InvalidHorizontalArea;
 
     const effective_volume_m3 =
-        if (inputs.underlying_soil_bulk_density_mg_m3 <=
-        inputs.positive_density_threshold_mg_m3)
+        if (inputs.underlying_soil_bulk_density_megagrams_m3 <=
+        inputs.positive_density_threshold_megagrams_m3)
             inputs.water_volume_m3 + inputs.ice_volume_m3
         else
             wet_volume_m3;
-    const residue_mass_mg =
+    const residue_mass_megagrams =
         1.82e-6 * (inputs.organic_carbon_g + inputs.charcoal_carbon_g);
     const pore_capacity_m3 =
-        @max(0.0, dry_residue_volume_m3 - residue_mass_mg / 1.30);
+        @max(0.0, dry_residue_volume_m3 - residue_mass_megagrams / 1.30);
     const air_filled_volume_m3 = @max(
         0.0,
         pore_capacity_m3 - inputs.water_volume_m3 - inputs.ice_volume_m3,
@@ -129,7 +129,7 @@ pub fn calculate(inputs: Inputs) CalculationError!Result {
     const active = ActiveProperties{
         .wet_volume_m3 = wet_volume_m3,
         .effective_volume_m3 = effective_volume_m3,
-        .residue_mass_mg = residue_mass_mg,
+        .residue_mass_megagrams = residue_mass_megagrams,
         .pore_capacity_m3 = pore_capacity_m3,
         .air_filled_volume_m3 = air_filled_volume_m3,
         .porosity_m3_m3 = porosity_m3_m3,
@@ -154,24 +154,24 @@ test "runtime residue classes determine volume porosity and thickness" {
         .{
             .water_holding_capacity_m3_g = 1.0e-6,
             .carbon_mass_g = 100_000.0,
-            .dry_bulk_density_mg_m3 = 0.2,
+            .dry_bulk_density_megagrams_m3 = 0.2,
         },
         .{
             .water_holding_capacity_m3_g = 2.0e-6,
             .carbon_mass_g = 50_000.0,
-            .dry_bulk_density_mg_m3 = 0.1,
+            .dry_bulk_density_megagrams_m3 = 0.1,
         },
     };
     const result = try calculate(.{
         .residue_classes = &classes,
         .water_volume_m3 = 0.3,
         .ice_volume_m3 = 0.0,
-        .underlying_soil_bulk_density_mg_m3 = 1.2,
+        .underlying_soil_bulk_density_megagrams_m3 = 1.2,
         .organic_carbon_g = 100_000.0,
         .charcoal_carbon_g = 0.0,
         .horizontal_area_m2 = 10.0,
         .volume_threshold_m3 = 1.0e-12,
-        .positive_density_threshold_mg_m3 = 0.0,
+        .positive_density_threshold_megagrams_m3 = 0.0,
     });
     try std.testing.expectApproxEqAbs(
         @as(f64, 0.2),
@@ -187,12 +187,12 @@ test "empty residue returns no active properties" {
         .residue_classes = &.{},
         .water_volume_m3 = 0.0,
         .ice_volume_m3 = 0.0,
-        .underlying_soil_bulk_density_mg_m3 = 0.0,
+        .underlying_soil_bulk_density_megagrams_m3 = 0.0,
         .organic_carbon_g = 0.0,
         .charcoal_carbon_g = 0.0,
         .horizontal_area_m2 = 0.0,
         .volume_threshold_m3 = 0.0,
-        .positive_density_threshold_mg_m3 = 0.0,
+        .positive_density_threshold_megagrams_m3 = 0.0,
     });
     try std.testing.expect(result.active == null);
 }

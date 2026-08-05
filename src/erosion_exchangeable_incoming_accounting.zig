@@ -47,7 +47,7 @@ pub const exchangeable_pool_count: usize =
     @typeInfo(ExchangeablePool).@"enum".fields.len;
 
 pub const BoundaryFlux = struct {
-    total_sediment_Mg_per_step: f64,
+    total_sediment_megagrams_per_step: f64,
     /// `X*ER` and `X*EB` [exchangeable_pool], mol per model step.
     mol_per_step_by_pool: []const f64,
 };
@@ -55,9 +55,9 @@ pub const BoundaryFlux = struct {
 pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     local_flux_by_boundary_side: []const BoundaryFlux,
-    positive_neighbor_total_sediment_Mg_per_step_by_boundary_side: []const f64,
+    positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side: []const f64,
 };
 
 pub const State = struct {
@@ -93,12 +93,12 @@ pub fn account(
 
     for (
         inputs.local_flux_by_boundary_side,
-        inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side,
+        inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side,
     ) |local, positive_neighbor_total| {
-        if (@abs(local.total_sediment_Mg_per_step) <=
-            inputs.sediment_activity_threshold_Mg_per_step and
+        if (@abs(local.total_sediment_megagrams_per_step) <=
+            inputs.sediment_activity_threshold_megagrams_per_step and
             @abs(positive_neighbor_total) <=
-                inputs.sediment_activity_threshold_Mg_per_step)
+                inputs.sediment_activity_threshold_megagrams_per_step)
         {
             continue;
         }
@@ -127,16 +127,16 @@ fn erosionEnabled(mode: DisturbanceMode) bool {
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
     if (inputs.local_flux_by_boundary_side.len == 0)
         return error.InvalidExchangeableErosionDimensions;
-    if (inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side.len !=
+    if (inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side.len !=
         inputs.local_flux_by_boundary_side.len or
         state.net_incoming_mol_per_step_by_pool.len != exchangeable_pool_count or
         workspace.net_incoming_mol_per_step_by_pool.len != exchangeable_pool_count)
     {
         return error.ExchangeableErosionDimensionMismatch;
     }
-    if (!std.math.isFinite(inputs.sediment_activity_threshold_Mg_per_step))
+    if (!std.math.isFinite(inputs.sediment_activity_threshold_megagrams_per_step))
         return error.NonFiniteExchangeableErosionInput;
-    if (inputs.sediment_activity_threshold_Mg_per_step < 0)
+    if (inputs.sediment_activity_threshold_megagrams_per_step < 0)
         return error.InvalidErosionActivityThreshold;
     try validateFinite(state.net_incoming_mol_per_step_by_pool);
 
@@ -146,13 +146,13 @@ fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
     for (inputs.local_flux_by_boundary_side) |flux| {
         if (flux.mol_per_step_by_pool.len != exchangeable_pool_count)
             return error.ExchangeableErosionDimensionMismatch;
-        if (!std.math.isFinite(flux.total_sediment_Mg_per_step))
+        if (!std.math.isFinite(flux.total_sediment_megagrams_per_step))
             return error.NonFiniteExchangeableErosionInput;
         try validateFinite(flux.mol_per_step_by_pool);
         if (overlap(scratch, flux.mol_per_step_by_pool))
             return error.ExchangeableErosionWorkspaceOverlap;
     }
-    for (inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side) |value|
+    for (inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side) |value|
         if (!std.math.isFinite(value))
             return error.NonFiniteExchangeableErosionInput;
 }
@@ -192,8 +192,8 @@ test "active sides add all 22 exchangeable pools in source order" {
     const two = [_]f64{2} ** exchangeable_pool_count;
     const three = [_]f64{3} ** exchangeable_pool_count;
     const local = [_]BoundaryFlux{
-        .{ .total_sediment_Mg_per_step = 2, .mol_per_step_by_pool = &two },
-        .{ .total_sediment_Mg_per_step = -3, .mol_per_step_by_pool = &three },
+        .{ .total_sediment_megagrams_per_step = 2, .mol_per_step_by_pool = &two },
+        .{ .total_sediment_megagrams_per_step = -3, .mol_per_step_by_pool = &three },
     };
     const positive = [_]f64{ 0, 0 };
     var totals = [_]f64{100} ** exchangeable_pool_count;
@@ -203,9 +203,9 @@ test "active sides add all 22 exchangeable pools in source order" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive,
     }, &state, .{ .net_incoming_mol_per_step_by_pool = &scratch });
     try expectAll(&totals, 105);
 }
@@ -216,10 +216,10 @@ test "strict side gate and runtime accepted sum conserve every pool exactly" {
     const four = [_]f64{4} ** exchangeable_pool_count;
     const five = [_]f64{5} ** exchangeable_pool_count;
     const local = [_]BoundaryFlux{
-        .{ .total_sediment_Mg_per_step = 1, .mol_per_step_by_pool = &two },
-        .{ .total_sediment_Mg_per_step = -3, .mol_per_step_by_pool = &three },
-        .{ .total_sediment_Mg_per_step = 4, .mol_per_step_by_pool = &four },
-        .{ .total_sediment_Mg_per_step = 5, .mol_per_step_by_pool = &five },
+        .{ .total_sediment_megagrams_per_step = 1, .mol_per_step_by_pool = &two },
+        .{ .total_sediment_megagrams_per_step = -3, .mol_per_step_by_pool = &three },
+        .{ .total_sediment_megagrams_per_step = 4, .mol_per_step_by_pool = &four },
+        .{ .total_sediment_megagrams_per_step = 5, .mol_per_step_by_pool = &five },
     };
     const positive = [_]f64{ 1, 0, 0, 0 };
     var totals = [_]f64{0} ** exchangeable_pool_count;
@@ -229,9 +229,9 @@ test "strict side gate and runtime accepted sum conserve every pool exactly" {
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive,
     }, &state, .{ .net_incoming_mol_per_step_by_pool = &scratch });
     try expectAll(&totals, 6);
 }
@@ -239,7 +239,7 @@ test "strict side gate and runtime accepted sum conserve every pool exactly" {
 test "positive-neighbor sediment alone activates local exchangeable flux" {
     const seven = [_]f64{7} ** exchangeable_pool_count;
     const local = [_]BoundaryFlux{.{
-        .total_sediment_Mg_per_step = 1,
+        .total_sediment_megagrams_per_step = 1,
         .mol_per_step_by_pool = &seven,
     }};
     const positive = [_]f64{2};
@@ -249,9 +249,9 @@ test "positive-neighbor sediment alone activates local exchangeable flux" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive,
     }, &state, .{ .net_incoming_mol_per_step_by_pool = &scratch });
     try expectAll(&totals, 7);
 }
@@ -261,16 +261,16 @@ test "disabled erosion and vertical axes bypass unused pool storage" {
     try account(.{
         .disturbance_mode = .freeze_thaw,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .local_flux_by_boundary_side = &.{},
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &.{},
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &.{},
     }, &state, .{ .net_incoming_mol_per_step_by_pool = &.{} });
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .vertical,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .local_flux_by_boundary_side = &.{},
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &.{},
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &.{},
     }, &state, .{ .net_incoming_mol_per_step_by_pool = &.{} });
 }
 
@@ -278,7 +278,7 @@ test "invalid overflow dimension and alias failures preserve state" {
     var contribution = [_]f64{2} ** exchangeable_pool_count;
     contribution[exchangeable_pool_count - 1] = std.math.nan(f64);
     const local = [_]BoundaryFlux{.{
-        .total_sediment_Mg_per_step = 2,
+        .total_sediment_megagrams_per_step = 2,
         .mol_per_step_by_pool = &contribution,
     }};
     const positive = [_]f64{0};
@@ -288,9 +288,9 @@ test "invalid overflow dimension and alias failures preserve state" {
     const inputs = Inputs{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive,
     };
 
     try std.testing.expectError(

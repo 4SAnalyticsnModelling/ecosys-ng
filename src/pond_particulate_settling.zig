@@ -28,7 +28,7 @@ pub const Pool = struct {
 
 pub const Geometry = struct {
     /// Bulk density by runtime layer (Mg m-3); zero denotes pond water.
-    bulk_density_Mg_per_m3: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
     /// Current layer thickness by runtime layer (m).
     layer_thickness_m: []const f64,
     /// Fortran NL, converted to a zero-based inclusive layer index.
@@ -48,7 +48,7 @@ pub const Options = struct {
 
 pub const Result = struct {
     /// Mineral sediment newly delivered into positive-density layers (Mg).
-    deposited_mineral_sediment_Mg: f64,
+    deposited_mineral_sediment_megagrams: f64,
     /// Deepest positive-density receiver that accepted sediment, if any.
     deepest_deposition_layer: ?usize,
 };
@@ -81,7 +81,7 @@ pub fn settle(
     const settling_fraction = try settlingFraction(options);
 
     var result: Result = .{
-        .deposited_mineral_sediment_Mg = 0,
+        .deposited_mineral_sediment_megagrams = 0,
         .deepest_deposition_layer = null,
     };
     if (geometry.last_layer == 0 or settling_fraction == 0) return result;
@@ -98,9 +98,9 @@ pub fn settle(
             pool.amount_by_layer[donor] -= transfer;
             pool.amount_by_layer[receiver] += transfer;
             if (pool.diagnostic_role == .mineral_sediment_mass and
-                geometry.bulk_density_Mg_per_m3[receiver] > 0)
+                geometry.bulk_density_megagrams_per_m3[receiver] > 0)
             {
-                result.deposited_mineral_sediment_Mg += transfer;
+                result.deposited_mineral_sediment_megagrams += transfer;
                 result.deepest_deposition_layer = receiver;
             }
         }
@@ -109,10 +109,10 @@ pub fn settle(
 }
 
 fn isPondDonor(geometry: Geometry, layer: usize) bool {
-    const water_layer = geometry.bulk_density_Mg_per_m3[layer] <= 0;
+    const water_layer = geometry.bulk_density_megagrams_per_m3[layer] <= 0;
     const surface_over_pond =
         layer == 0 and
-        geometry.bulk_density_Mg_per_m3[geometry.surface_soil_layer] <= 0;
+        geometry.bulk_density_megagrams_per_m3[geometry.surface_soil_layer] <= 0;
     return (water_layer or surface_over_pond) and
         geometry.layer_thickness_m[layer] > 0;
 }
@@ -127,7 +127,7 @@ fn firstReceiver(geometry: Geometry, donor: usize) ?usize {
 }
 
 fn validate(geometry: Geometry, pools: []const Pool, options: Options) !void {
-    const layer_count = geometry.bulk_density_Mg_per_m3.len;
+    const layer_count = geometry.bulk_density_megagrams_per_m3.len;
     if (layer_count == 0 or geometry.layer_thickness_m.len != layer_count or
         geometry.last_layer >= layer_count or
         geometry.surface_soil_layer >= layer_count)
@@ -137,7 +137,7 @@ fn validate(geometry: Geometry, pools: []const Pool, options: Options) !void {
         return error.InvalidPondSettlingControl;
     _ = try settlingFraction(options);
 
-    for (geometry.bulk_density_Mg_per_m3, geometry.layer_thickness_m) |
+    for (geometry.bulk_density_megagrams_per_m3, geometry.layer_thickness_m) |
         density,
         thickness,
     | {
@@ -186,7 +186,7 @@ test "REDIST descending order prevents same-step settling cascade" {
     };
 
     const result = try settle(.{
-        .bulk_density_Mg_per_m3 = &.{ 0, 0, 1.2 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 0, 1.2 },
         .layer_thickness_m = &.{ 0.1, 0.1, 0.2 },
         .last_layer = 2,
         .surface_soil_layer = 2,
@@ -197,7 +197,7 @@ test "REDIST descending order prevents same-step settling cascade" {
     try std.testing.expectApproxEqAbs(@as(f64, 99.9), sediment[0], 1e-13);
     try std.testing.expectApproxEqAbs(@as(f64, 50.05), sediment[1], 1e-13);
     try std.testing.expectApproxEqAbs(@as(f64, 0.05), sediment[2], 1e-13);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.05), result.deposited_mineral_sediment_Mg, 1e-13);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.05), result.deposited_mineral_sediment_megagrams, 1e-13);
     try std.testing.expectEqual(@as(?usize, 2), result.deepest_deposition_layer);
 }
 
@@ -212,7 +212,7 @@ test "mixed-unit particulate pools conserve each extensive inventory" {
     };
 
     _ = try settle(.{
-        .bulk_density_Mg_per_m3 = &.{ 0, 1.1 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 1.1 },
         .layer_thickness_m = &.{ 0.2, 0.2 },
         .last_layer = 1,
         .surface_soil_layer = 1,
@@ -232,7 +232,7 @@ test "zero-thickness layers are skipped when selecting receiver" {
         .{ .name = "microbial nitrogen", .unit = .grams_nitrogen, .amount_by_layer = &nitrogen },
     };
     _ = try settle(.{
-        .bulk_density_Mg_per_m3 = &.{ 0, 0, 1 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 0, 1 },
         .layer_thickness_m = &.{ 0.1, 1e-7, 0.2 },
         .last_layer = 2,
         .surface_soil_layer = 2,
@@ -251,7 +251,7 @@ test "invalid late pool leaves all pools unchanged" {
         .{ .name = "invalid", .unit = .moles, .amount_by_layer = &invalid },
     };
     try std.testing.expectError(error.InvalidPondParticulateInventory, settle(.{
-        .bulk_density_Mg_per_m3 = &.{ 0, 1 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 1 },
         .layer_thickness_m = &.{ 0.1, 0.1 },
         .last_layer = 1,
         .surface_soil_layer = 1,
@@ -267,7 +267,7 @@ test "missing receiver is rejected before any pool mutation" {
         .{ .name = "particulate", .unit = .moles, .amount_by_layer = &inventory },
     };
     try std.testing.expectError(error.MissingPondSettlingReceiver, settle(.{
-        .bulk_density_Mg_per_m3 = &.{ 0, 0 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 0 },
         .layer_thickness_m = &.{ 0.1, 0 },
         .last_layer = 1,
         .surface_soil_layer = 1,

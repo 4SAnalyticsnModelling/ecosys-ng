@@ -5,7 +5,7 @@ pub const Intensive = struct {
     snowfall_water_equivalent_m_per_h: f64,
     surface_irrigation_m_per_h: f64,
     subsurface_irrigation_m_per_h: f64,
-    sky_longwave_mj_per_m2_h: f64,
+    sky_longwave_megajoules_per_m2_h: f64,
 };
 
 pub const Extensive = struct {
@@ -15,7 +15,7 @@ pub const Extensive = struct {
     subsurface_irrigation_m3_per_h: f64,
     rain_plus_surface_irrigation_m3_per_h: f64,
     rain_plus_snow_m3_per_h: f64,
-    sky_longwave_mj_per_h: f64,
+    sky_longwave_megajoules_per_h: f64,
 };
 
 /// Exact WTHR conversion from per-area forcing to one runtime grid cell.
@@ -37,7 +37,7 @@ pub fn scale(cell_area_m2: f64, forcing: Intensive) !Extensive {
             forcing.surface_irrigation_m_per_h) * cell_area_m2,
         .rain_plus_snow_m3_per_h = (forcing.rainfall_m_per_h +
             forcing.snowfall_water_equivalent_m_per_h) * cell_area_m2,
-        .sky_longwave_mj_per_h = forcing.sky_longwave_mj_per_m2_h * cell_area_m2,
+        .sky_longwave_megajoules_per_h = forcing.sky_longwave_megajoules_per_m2_h * cell_area_m2,
     };
     inline for (@typeInfo(Extensive).@"struct".fields) |field|
         if (!std.math.isFinite(@field(result, field.name)))
@@ -71,7 +71,7 @@ test "WTHR cell scaling preserves all extensive carrier identities" {
         .snowfall_water_equivalent_m_per_h = 0.002,
         .surface_irrigation_m_per_h = 0.003,
         .subsurface_irrigation_m_per_h = 0.004,
-        .sky_longwave_mj_per_m2_h = 0.5,
+        .sky_longwave_megajoules_per_m2_h = 0.5,
     });
     try std.testing.expectEqual(@as(f64, 0.025), result.rainfall_m3_per_h);
     try std.testing.expectEqual(
@@ -94,7 +94,7 @@ test "WTHR cell scaling preserves all extensive carrier identities" {
         @as(f64, 0.075),
         result.rain_plus_snow_m3_per_h,
     );
-    try std.testing.expectEqual(@as(f64, 12.5), result.sky_longwave_mj_per_h);
+    try std.testing.expectEqual(@as(f64, 12.5), result.sky_longwave_megajoules_per_h);
 }
 
 test "runtime-cell batch accepts heterogeneous areas" {
@@ -107,22 +107,22 @@ test "runtime-cell batch accepts heterogeneous areas" {
                 .snowfall_water_equivalent_m_per_h = 0,
                 .surface_irrigation_m_per_h = 0,
                 .subsurface_irrigation_m_per_h = 0,
-                .sky_longwave_mj_per_m2_h = 1,
+                .sky_longwave_megajoules_per_m2_h = 1,
             },
             .{
                 .rainfall_m_per_h = 0.001,
                 .snowfall_water_equivalent_m_per_h = 0,
                 .surface_irrigation_m_per_h = 0,
                 .subsurface_irrigation_m_per_h = 0,
-                .sky_longwave_mj_per_m2_h = 1,
+                .sky_longwave_megajoules_per_m2_h = 1,
             },
         },
         &output,
     );
     try std.testing.expectEqual(@as(f64, 0.01), output[0].rainfall_m3_per_h);
     try std.testing.expectEqual(@as(f64, 0.1), output[1].rainfall_m3_per_h);
-    try std.testing.expectEqual(@as(f64, 10), output[0].sky_longwave_mj_per_h);
-    try std.testing.expectEqual(@as(f64, 100), output[1].sky_longwave_mj_per_h);
+    try std.testing.expectEqual(@as(f64, 10), output[0].sky_longwave_megajoules_per_h);
+    try std.testing.expectEqual(@as(f64, 100), output[1].sky_longwave_megajoules_per_h);
 }
 
 test "invalid late cell leaves batch output unchanged" {
@@ -142,14 +142,14 @@ test "invalid late cell leaves batch output unchanged" {
                     .snowfall_water_equivalent_m_per_h = 0,
                     .surface_irrigation_m_per_h = 0,
                     .subsurface_irrigation_m_per_h = 0,
-                    .sky_longwave_mj_per_m2_h = 1,
+                    .sky_longwave_megajoules_per_m2_h = 1,
                 },
                 .{
                     .rainfall_m_per_h = 0,
                     .snowfall_water_equivalent_m_per_h = 0,
                     .surface_irrigation_m_per_h = 0,
                     .subsurface_irrigation_m_per_h = 0,
-                    .sky_longwave_mj_per_m2_h = std.math.nan(f64),
+                    .sky_longwave_megajoules_per_m2_h = std.math.nan(f64),
                 },
             },
             &output,
@@ -166,7 +166,7 @@ test "extensive overflow fails scalar scaling" {
             .snowfall_water_equivalent_m_per_h = 0,
             .surface_irrigation_m_per_h = 0,
             .subsurface_irrigation_m_per_h = 0,
-            .sky_longwave_mj_per_m2_h = 0,
+            .sky_longwave_megajoules_per_m2_h = 0,
         }),
     );
 }

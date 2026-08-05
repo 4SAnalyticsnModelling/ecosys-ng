@@ -4,7 +4,7 @@ const grid_module = @import("grid.zig");
 pub const BoundaryFlux = struct {
     matrix_water_m3: f64,
     macropore_water_m3: f64,
-    convective_heat_mj: f64,
+    convective_heat_megajoules: f64,
 };
 
 pub const FreeDrainageInputs = struct {
@@ -127,10 +127,10 @@ pub fn recharge(inputs: RechargeInputs, macropore: bool) !BoundaryFlux {
     return if (macropore) checkedBoundaryFlux(0, inputs.direction_sign * limited, inputs.source_temperature_k) else checkedBoundaryFlux(inputs.direction_sign * limited, 0, inputs.source_temperature_k);
 }
 
-pub fn geothermalHeatFluxMj(lower_layer_temperature_k: f64, deep_temperature_k: f64, conductivity_m_mj_per_h_k: f64, deep_source_depth_m: f64, lower_boundary_depth_m: f64, face_area_m2: f64, time_fraction: f64) !f64 {
-    inline for (.{ lower_layer_temperature_k, deep_temperature_k, conductivity_m_mj_per_h_k, deep_source_depth_m, lower_boundary_depth_m, face_area_m2, time_fraction }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilWaterBoundaryInput;
-    if (lower_layer_temperature_k <= 0 or deep_temperature_k <= 0 or conductivity_m_mj_per_h_k < 0 or deep_source_depth_m <= lower_boundary_depth_m or face_area_m2 < 0 or time_fraction <= 0 or time_fraction > 1) return error.InvalidSoilWaterBoundaryInput;
-    return (lower_layer_temperature_k - deep_temperature_k) * conductivity_m_mj_per_h_k / (deep_source_depth_m - lower_boundary_depth_m) * face_area_m2 * time_fraction;
+pub fn geothermalHeatFluxMj(lower_layer_temperature_k: f64, deep_temperature_k: f64, conductivity_m_megajoules_per_h_k: f64, deep_source_depth_m: f64, lower_boundary_depth_m: f64, face_area_m2: f64, time_fraction: f64) !f64 {
+    inline for (.{ lower_layer_temperature_k, deep_temperature_k, conductivity_m_megajoules_per_h_k, deep_source_depth_m, lower_boundary_depth_m, face_area_m2, time_fraction }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilWaterBoundaryInput;
+    if (lower_layer_temperature_k <= 0 or deep_temperature_k <= 0 or conductivity_m_megajoules_per_h_k < 0 or deep_source_depth_m <= lower_boundary_depth_m or face_area_m2 < 0 or time_fraction <= 0 or time_fraction > 1) return error.InvalidSoilWaterBoundaryInput;
+    return (lower_layer_temperature_k - deep_temperature_k) * conductivity_m_megajoules_per_h_k / (deep_source_depth_m - lower_boundary_depth_m) * face_area_m2 * time_fraction;
 }
 
 /// Atomically publishes all external WATSUB oriented water and convective-heat
@@ -138,29 +138,29 @@ pub fn geothermalHeatFluxMj(lower_layer_temperature_k: f64, deep_temperature_k: 
 /// a source-layer storage change. Multiple faces may target one runtime layer.
 /// No grid field changes unless every accumulated candidate is finite and
 /// inside its liquid pore capacity.
-pub fn commitFluxes(allocator: std.mem.Allocator, grid: *grid_module.GridState, boundary_layer_index: []const usize, direction_sign: []const f64, fluxes: []const BoundaryFlux, cell_heat_source_mj: []f64) !void {
-    if (boundary_layer_index.len != fluxes.len or direction_sign.len != fluxes.len or cell_heat_source_mj.len != grid.layer_count) return error.SoilWaterBoundaryDimensionMismatch;
+pub fn commitFluxes(allocator: std.mem.Allocator, grid: *grid_module.GridState, boundary_layer_index: []const usize, direction_sign: []const f64, fluxes: []const BoundaryFlux, cell_heat_source_megajoules: []f64) !void {
+    if (boundary_layer_index.len != fluxes.len or direction_sign.len != fluxes.len or cell_heat_source_megajoules.len != grid.layer_count) return error.SoilWaterBoundaryDimensionMismatch;
     const matrix_change_m3 = try allocator.alloc(f64, grid.layer_count);
     defer allocator.free(matrix_change_m3);
     const macropore_change_m3 = try allocator.alloc(f64, grid.layer_count);
     defer allocator.free(macropore_change_m3);
-    const heat_change_mj = try allocator.alloc(f64, grid.layer_count);
-    defer allocator.free(heat_change_mj);
+    const heat_change_megajoules = try allocator.alloc(f64, grid.layer_count);
+    defer allocator.free(heat_change_megajoules);
     @memset(matrix_change_m3, 0);
     @memset(macropore_change_m3, 0);
-    @memset(heat_change_mj, 0);
+    @memset(heat_change_megajoules, 0);
     for (boundary_layer_index, direction_sign, fluxes) |layer, sign, flux| {
         if (layer >= grid.layer_count) return error.SoilWaterBoundaryLayerOutOfBounds;
         if (!std.math.isFinite(sign) or @abs(sign) != 1) return error.InvalidSoilWaterBoundaryDirectionSign;
         inline for (@typeInfo(BoundaryFlux).@"struct".fields) |field| if (!std.math.isFinite(@field(flux, field.name))) return error.NonFiniteSoilWaterBoundaryFlux;
         matrix_change_m3[layer] += sign * flux.matrix_water_m3;
         macropore_change_m3[layer] += sign * flux.macropore_water_m3;
-        heat_change_mj[layer] += sign * flux.convective_heat_mj;
+        heat_change_megajoules[layer] += sign * flux.convective_heat_megajoules;
     }
     for (0..grid.layer_count) |layer| {
         const matrix = grid.matrix_liquid_water_m3[layer] + matrix_change_m3[layer];
         const macropore = grid.macropore_liquid_water_m3[layer] + macropore_change_m3[layer];
-        const heat = cell_heat_source_mj[layer] + heat_change_mj[layer];
+        const heat = cell_heat_source_megajoules[layer] + heat_change_megajoules[layer];
         if (!std.math.isFinite(matrix) or !std.math.isFinite(macropore) or !std.math.isFinite(heat)) return error.NonFiniteSoilWaterBoundaryCandidate;
         if (matrix < -1e-12 or macropore < -1e-12) return error.NegativeSoilWaterBoundaryCandidate;
         if (matrix + grid.matrix_ice_water_m3[layer] > grid.matrix_pore_capacity_m3[layer] + 1e-12 or macropore + grid.macropore_ice_water_m3[layer] > grid.macropore_pore_capacity_m3[layer] + 1e-12) return error.SoilWaterBoundaryCandidateExceedsPoreCapacity;
@@ -172,14 +172,14 @@ pub fn commitFluxes(allocator: std.mem.Allocator, grid: *grid_module.GridState, 
         grid.matrix_air_volume_m3[layer] = @max(0, grid.matrix_pore_capacity_m3[layer] - grid.matrix_ice_water_m3[layer] - grid.matrix_liquid_water_m3[layer]);
         grid.macropore_air_volume_m3[layer] = @max(0, grid.macropore_pore_capacity_m3[layer] - grid.macropore_ice_water_m3[layer] - grid.macropore_liquid_water_m3[layer]);
         grid.air_volume_m3[layer] = grid.matrix_air_volume_m3[layer] + grid.macropore_air_volume_m3[layer];
-        cell_heat_source_mj[layer] += heat_change_mj[layer];
+        cell_heat_source_megajoules[layer] += heat_change_megajoules[layer];
     }
 }
 
 fn checkedBoundaryFlux(matrix: f64, macro: f64, temperature_k: f64) !BoundaryFlux {
-    const heat_mj = 4.19 * temperature_k * (matrix + macro);
-    if (!std.math.isFinite(matrix) or !std.math.isFinite(macro) or !std.math.isFinite(heat_mj)) return error.NonFiniteSoilWaterBoundaryFlux;
-    return .{ .matrix_water_m3 = matrix, .macropore_water_m3 = macro, .convective_heat_mj = heat_mj };
+    const heat_megajoules = 4.19 * temperature_k * (matrix + macro);
+    if (!std.math.isFinite(matrix) or !std.math.isFinite(macro) or !std.math.isFinite(heat_megajoules)) return error.NonFiniteSoilWaterBoundaryFlux;
+    return .{ .matrix_water_m3 = matrix, .macropore_water_m3 = macro, .convective_heat_megajoules = heat_megajoules };
 }
 
 fn validateFiniteStruct(value: anytype) !void {
@@ -204,7 +204,7 @@ test "geothermal flux follows lower minus deep temperature" {
 }
 
 test "boundary commit aggregates runtime faces and is atomic on late failure" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     @memset(grid.matrix_pore_capacity_m3, 1);
@@ -213,13 +213,13 @@ test "boundary commit aggregates runtime faces and is atomic on late failure" {
     @memset(grid.macropore_liquid_water_m3, 0.25);
     @memset(grid.liquid_water_m3, 0.75);
     var heat = [_]f64{ 1, 2 };
-    try commitFluxes(std.testing.allocator, &grid, &.{ 0, 0 }, &.{ 1, 1 }, &.{ .{ .matrix_water_m3 = -0.1, .macropore_water_m3 = 0.05, .convective_heat_mj = -2 }, .{ .matrix_water_m3 = 0.02, .macropore_water_m3 = 0, .convective_heat_mj = 0.5 } }, &heat);
+    try commitFluxes(std.testing.allocator, &grid, &.{ 0, 0 }, &.{ 1, 1 }, &.{ .{ .matrix_water_m3 = -0.1, .macropore_water_m3 = 0.05, .convective_heat_megajoules = -2 }, .{ .matrix_water_m3 = 0.02, .macropore_water_m3 = 0, .convective_heat_megajoules = 0.5 } }, &heat);
     try std.testing.expectApproxEqAbs(@as(f64, 0.42), grid.matrix_liquid_water_m3[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0.30), grid.macropore_liquid_water_m3[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, -0.5), heat[0], 1e-15);
     const before_matrix = grid.matrix_liquid_water_m3[0];
     const before_heat = heat[0];
-    try std.testing.expectError(error.NegativeSoilWaterBoundaryCandidate, commitFluxes(std.testing.allocator, &grid, &.{ 0, 1 }, &.{ 1, 1 }, &.{ .{ .matrix_water_m3 = 0.1, .macropore_water_m3 = 0, .convective_heat_mj = 1 }, .{ .matrix_water_m3 = -2, .macropore_water_m3 = 0, .convective_heat_mj = 0 } }, &heat));
+    try std.testing.expectError(error.NegativeSoilWaterBoundaryCandidate, commitFluxes(std.testing.allocator, &grid, &.{ 0, 1 }, &.{ 1, 1 }, &.{ .{ .matrix_water_m3 = 0.1, .macropore_water_m3 = 0, .convective_heat_megajoules = 1 }, .{ .matrix_water_m3 = -2, .macropore_water_m3 = 0, .convective_heat_megajoules = 0 } }, &heat));
     try std.testing.expectEqual(before_matrix, grid.matrix_liquid_water_m3[0]);
     try std.testing.expectEqual(before_heat, heat[0]);
 }

@@ -18,11 +18,11 @@ pub const PhosphateTransformations = struct {
 
 pub const ReactionParameters = struct {
     fractions: charge_classification.ZoneFractions,
-    non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3: f64,
-    band_phosphate_soil_mass_per_water_volume_Mg_per_m3: f64,
-    cation_exchange_capacity_mol_charge_per_Mg: f64,
+    non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3: f64,
+    band_phosphate_soil_mass_per_water_volume_megagrams_per_m3: f64,
+    cation_exchange_capacity_mol_charge_per_megagram: f64,
     cation_exchange_water_ratios: CationExchangeWaterRatios,
-    total_carboxyl_sites_mol_per_Mg: f64,
+    total_carboxyl_sites_mol_per_megagram: f64,
     carboxyl_exchange_parameters: carboxyl_exchange.Parameters,
     aqueous_constants: aqueous_reaction_rates.EquilibriumConstants,
     aqueous_kinetics: aqueous_reaction_rates.Kinetics,
@@ -38,9 +38,9 @@ pub const ReactionParameters = struct {
 };
 
 pub const CationExchangeWaterRatios = struct {
-    shared_Mg_per_m3: f64,
-    ammonium_non_band_Mg_per_m3: f64,
-    ammonium_band_Mg_per_m3: f64,
+    shared_megagrams_per_m3: f64,
+    ammonium_non_band_megagrams_per_m3: f64,
+    ammonium_band_megagrams_per_m3: f64,
 };
 
 pub const CellTransformations = struct {
@@ -49,11 +49,11 @@ pub const CellTransformations = struct {
     band_phosphate: phosphate_network.Transformations,
     non_band_phosphate_water_fraction: f64,
     band_phosphate_water_fraction: f64,
-    cation_adsorption_mol_per_Mg: cation_exchange.Cations,
+    cation_adsorption_mol_per_megagram: cation_exchange.Cations,
     cation_exchange_water_ratios: CationExchangeWaterRatios,
     geochemistry: geochemistry.Transformations,
-    carboxyl_hydrogen_change_mol_per_Mg: f64 = 0,
-    carboxyl_soil_mass_per_water_volume_Mg_per_m3: f64 = 0,
+    carboxyl_hydrogen_change_mol_per_megagram: f64 = 0,
+    carboxyl_soil_mass_per_water_volume_megagrams_per_m3: f64 = 0,
 };
 
 pub const State = struct {
@@ -63,8 +63,8 @@ pub const State = struct {
     non_band_phosphate: []phosphate_network.State,
     band_phosphate: []phosphate_network.State,
     water_mol_per_m3: []f64,
-    cation_exchange_mol_per_Mg: []cation_exchange.Cations,
-    carboxyl_bound_hydrogen_mol_per_Mg: []f64,
+    cation_exchange_mol_per_megagram: []cation_exchange.Cations,
+    carboxyl_bound_hydrogen_mol_per_megagram: []f64,
     geochemistry_solids: []geochemistry.SolidState,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
@@ -90,13 +90,13 @@ pub const State = struct {
         for (exchange_state) |*cell| zeroStruct(cation_exchange.Cations, cell);
         @memset(carboxyl_bound_hydrogen, 0);
         for (geochemistry_solids) |*cell| zeroStruct(geochemistry.SolidState, cell);
-        return .{ .allocator = allocator, .cell_count = cell_count, .aqueous = aqueous, .non_band_phosphate = non_band, .band_phosphate = band, .water_mol_per_m3 = water, .cation_exchange_mol_per_Mg = exchange_state, .carboxyl_bound_hydrogen_mol_per_Mg = carboxyl_bound_hydrogen, .geochemistry_solids = geochemistry_solids };
+        return .{ .allocator = allocator, .cell_count = cell_count, .aqueous = aqueous, .non_band_phosphate = non_band, .band_phosphate = band, .water_mol_per_m3 = water, .cation_exchange_mol_per_megagram = exchange_state, .carboxyl_bound_hydrogen_mol_per_megagram = carboxyl_bound_hydrogen, .geochemistry_solids = geochemistry_solids };
     }
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.geochemistry_solids);
-        self.allocator.free(self.carboxyl_bound_hydrogen_mol_per_Mg);
-        self.allocator.free(self.cation_exchange_mol_per_Mg);
+        self.allocator.free(self.carboxyl_bound_hydrogen_mol_per_megagram);
+        self.allocator.free(self.cation_exchange_mol_per_megagram);
         self.allocator.free(self.water_mol_per_m3);
         self.allocator.free(self.band_phosphate);
         self.allocator.free(self.non_band_phosphate);
@@ -112,15 +112,15 @@ pub const State = struct {
         var staged_aqueous = self.aqueous[cell_index];
         var staged_non_band = self.non_band_phosphate[cell_index];
         var staged_band = self.band_phosphate[cell_index];
-        var staged_exchange = self.cation_exchange_mol_per_Mg[cell_index];
-        const staged_carboxyl_hydrogen = self.carboxyl_bound_hydrogen_mol_per_Mg[cell_index] + transformations.carboxyl_hydrogen_change_mol_per_Mg;
+        var staged_exchange = self.cation_exchange_mol_per_megagram[cell_index];
+        const staged_carboxyl_hydrogen = self.carboxyl_bound_hydrogen_mol_per_megagram[cell_index] + transformations.carboxyl_hydrogen_change_mol_per_megagram;
         var staged_geochemistry = self.geochemistry_solids[cell_index];
         if (!std.math.isFinite(staged_carboxyl_hydrogen) or staged_carboxyl_hydrogen < -1e-12) return error.InvalidCarboxylExchangeState;
-        if (!std.math.isFinite(transformations.carboxyl_soil_mass_per_water_volume_Mg_per_m3) or transformations.carboxyl_soil_mass_per_water_volume_Mg_per_m3 < 0) return error.InvalidCarboxylExchangeSoilWaterRatio;
+        if (!std.math.isFinite(transformations.carboxyl_soil_mass_per_water_volume_megagrams_per_m3) or transformations.carboxyl_soil_mass_per_water_volume_megagrams_per_m3 < 0) return error.InvalidCarboxylExchangeSoilWaterRatio;
         if (!validFraction(transformations.non_band_phosphate_water_fraction) or !validFraction(transformations.band_phosphate_water_fraction)) return error.InvalidPhosphateWaterFraction;
         var aqueous_changes = transformations.aqueous;
-        aqueous_changes.hydrogen -= transformations.carboxyl_hydrogen_change_mol_per_Mg * transformations.carboxyl_soil_mass_per_water_volume_Mg_per_m3;
-        try addCationExchange(&staged_exchange, &aqueous_changes, transformations.cation_adsorption_mol_per_Mg, transformations.cation_exchange_water_ratios);
+        aqueous_changes.hydrogen -= transformations.carboxyl_hydrogen_change_mol_per_megagram * transformations.carboxyl_soil_mass_per_water_volume_megagrams_per_m3;
+        try addCationExchange(&staged_exchange, &aqueous_changes, transformations.cation_adsorption_mol_per_megagram, transformations.cation_exchange_water_ratios);
         addGeochemistry(&aqueous_changes, transformations.geochemistry);
         addSharedPhosphate(&aqueous_changes, transformations.non_band_phosphate, transformations.non_band_phosphate_water_fraction);
         addSharedPhosphate(&aqueous_changes, transformations.band_phosphate, transformations.band_phosphate_water_fraction);
@@ -136,8 +136,8 @@ pub const State = struct {
         self.non_band_phosphate[cell_index] = staged_non_band;
         self.band_phosphate[cell_index] = staged_band;
         self.water_mol_per_m3[cell_index] = staged_water;
-        self.cation_exchange_mol_per_Mg[cell_index] = staged_exchange;
-        self.carboxyl_bound_hydrogen_mol_per_Mg[cell_index] = @max(0.0, staged_carboxyl_hydrogen);
+        self.cation_exchange_mol_per_megagram[cell_index] = staged_exchange;
+        self.carboxyl_bound_hydrogen_mol_per_megagram[cell_index] = @max(0.0, staged_carboxyl_hydrogen);
         self.geochemistry_solids[cell_index] = staged_geochemistry;
     }
 
@@ -149,13 +149,13 @@ pub const State = struct {
     ) !aqueous_network.Transformations {
         var aqueous_changes = transformations.aqueous;
         aqueous_changes.hydrogen -=
-            transformations.carboxyl_hydrogen_change_mol_per_Mg *
-            transformations.carboxyl_soil_mass_per_water_volume_Mg_per_m3;
+            transformations.carboxyl_hydrogen_change_mol_per_megagram *
+            transformations.carboxyl_soil_mass_per_water_volume_megagrams_per_m3;
         var exchange = current_exchange;
         try addCationExchange(
             &exchange,
             &aqueous_changes,
-            transformations.cation_adsorption_mol_per_Mg,
+            transformations.cation_adsorption_mol_per_megagram,
             transformations.cation_exchange_water_ratios,
         );
         addGeochemistry(&aqueous_changes, transformations.geochemistry);
@@ -193,17 +193,20 @@ pub const State = struct {
     pub fn evaluateCarboxylHydrogenChange(
         self: *const State,
         cell_index: usize,
-        total_carboxyl_sites_mol_per_Mg: f64,
+        total_carboxyl_sites_mol_per_megagram: f64,
         hydrogen_activity_mol_per_m3: f64,
-        soil_mass_per_water_volume_Mg_per_m3: f64,
+        soil_mass_per_water_volume_megagrams_per_m3: f64,
         parameters: carboxyl_exchange.Parameters,
     ) !f64 {
         if (cell_index >= self.cell_count) return error.ChemistryCellIndexOutOfBounds;
         return carboxyl_exchange.calculateChangeMolPerMg(.{
-            .total_carboxyl_sites_mol_per_Mg = total_carboxyl_sites_mol_per_Mg,
-            .hydrogen_occupied_sites_mol_per_Mg = self.carboxyl_bound_hydrogen_mol_per_Mg[cell_index],
+            .total_carboxyl_sites_mol_per_megagram = total_carboxyl_sites_mol_per_megagram,
+            .hydrogen_occupied_sites_mol_per_megagram = @min(
+                self.carboxyl_bound_hydrogen_mol_per_megagram[cell_index],
+                total_carboxyl_sites_mol_per_megagram,
+            ),
             .hydrogen_activity_mol_per_m3 = hydrogen_activity_mol_per_m3,
-            .soil_mass_per_water_volume_Mg_per_m3 = soil_mass_per_water_volume_Mg_per_m3,
+            .soil_mass_per_water_volume_megagrams_per_m3 = soil_mass_per_water_volume_megagrams_per_m3,
         }, parameters);
     }
 
@@ -232,7 +235,7 @@ pub const State = struct {
             if (index == cursor) return "cation_exchange." ++ field.name;
             cursor += 1;
         }
-        if (index == cursor) return "carboxyl_bound_hydrogen_mol_per_Mg";
+        if (index == cursor) return "carboxyl_bound_hydrogen_mol_per_megagram";
         cursor += 1;
         inline for (@typeInfo(geochemistry.SolidState).@"struct".fields) |field| {
             if (index == cursor) return "geochemistry_solids." ++ field.name;
@@ -252,8 +255,8 @@ pub const State = struct {
         packStruct(aqueous_network.State, self.aqueous[cell_index], output, &cursor);
         packStruct(phosphate_network.State, self.non_band_phosphate[cell_index], output, &cursor);
         packStruct(phosphate_network.State, self.band_phosphate[cell_index], output, &cursor);
-        packStruct(cation_exchange.Cations, self.cation_exchange_mol_per_Mg[cell_index], output, &cursor);
-        output[cursor] = self.carboxyl_bound_hydrogen_mol_per_Mg[cell_index];
+        packStruct(cation_exchange.Cations, self.cation_exchange_mol_per_megagram[cell_index], output, &cursor);
+        output[cursor] = self.carboxyl_bound_hydrogen_mol_per_megagram[cell_index];
         cursor += 1;
         packStruct(geochemistry.SolidState, self.geochemistry_solids[cell_index], output, &cursor);
         output[cursor] = self.water_mol_per_m3[cell_index];
@@ -276,8 +279,8 @@ pub const State = struct {
         self.aqueous[cell_index] = aqueous;
         self.non_band_phosphate[cell_index] = non_band;
         self.band_phosphate[cell_index] = band;
-        self.cation_exchange_mol_per_Mg[cell_index] = exchange_state;
-        self.carboxyl_bound_hydrogen_mol_per_Mg[cell_index] = carboxyl_bound_hydrogen;
+        self.cation_exchange_mol_per_megagram[cell_index] = exchange_state;
+        self.carboxyl_bound_hydrogen_mol_per_megagram[cell_index] = carboxyl_bound_hydrogen;
         self.geochemistry_solids[cell_index] = geochemistry_solids;
         self.water_mol_per_m3[cell_index] = water;
     }
@@ -303,14 +306,14 @@ pub const State = struct {
         return aqueous_network.assemble(fluxes, .{ .non_band = fractions.ammonium_non_band, .band = fractions.ammonium_band });
     }
 
-    pub fn evaluatePhosphateTransformations(self: *const State, cell_index: usize, fractions: charge_classification.ZoneFractions, non_band_soil_mass_per_water_volume_Mg_per_m3: f64, band_soil_mass_per_water_volume_Mg_per_m3: f64, constants: phosphate_reaction_rates.EquilibriumConstants, surface_parameters: phosphate_exchange.Parameters, mineral_parameters: ?phosphate_reaction_rates.MineralParameters, kinetics: phosphate_reaction_rates.Kinetics) !PhosphateTransformations {
+    pub fn evaluatePhosphateTransformations(self: *const State, cell_index: usize, fractions: charge_classification.ZoneFractions, non_band_soil_mass_per_water_volume_megagrams_per_m3: f64, band_soil_mass_per_water_volume_megagrams_per_m3: f64, constants: phosphate_reaction_rates.EquilibriumConstants, surface_parameters: phosphate_exchange.Parameters, mineral_parameters: ?phosphate_reaction_rates.MineralParameters, kinetics: phosphate_reaction_rates.Kinetics) !PhosphateTransformations {
         const coefficients = try self.activityCoefficients(cell_index, fractions);
         const non_band = if (fractions.phosphate_non_band > 0) blk: {
-            const fluxes = try phosphate_reaction_rates.calculate(self.aqueous[cell_index], self.non_band_phosphate[cell_index], coefficients, non_band_soil_mass_per_water_volume_Mg_per_m3, constants, surface_parameters, mineral_parameters, kinetics);
+            const fluxes = try phosphate_reaction_rates.calculate(self.aqueous[cell_index], self.non_band_phosphate[cell_index], coefficients, non_band_soil_mass_per_water_volume_megagrams_per_m3, constants, surface_parameters, mineral_parameters, kinetics);
             break :blk try phosphate_network.assemble(fluxes);
         } else std.mem.zeroes(phosphate_network.Transformations);
         const band = if (fractions.phosphate_band > 0) blk: {
-            const fluxes = try phosphate_reaction_rates.calculate(self.aqueous[cell_index], self.band_phosphate[cell_index], coefficients, band_soil_mass_per_water_volume_Mg_per_m3, constants, surface_parameters, mineral_parameters, kinetics);
+            const fluxes = try phosphate_reaction_rates.calculate(self.aqueous[cell_index], self.band_phosphate[cell_index], coefficients, band_soil_mass_per_water_volume_megagrams_per_m3, constants, surface_parameters, mineral_parameters, kinetics);
             break :blk try phosphate_network.assemble(fluxes);
         } else std.mem.zeroes(phosphate_network.Transformations);
         return .{ .non_band = non_band, .band = band };
@@ -324,7 +327,7 @@ pub const State = struct {
     pub fn evaluateCell(self: *const State, cell_index: usize, parameters: ReactionParameters) !CellTransformations {
         const coefficients = try self.activityCoefficients(cell_index, parameters.fractions);
         const aqueous = try self.evaluateAqueousTransformations(cell_index, parameters.fractions, parameters.aqueous_constants, parameters.aqueous_kinetics);
-        const phosphate = try self.evaluatePhosphateTransformations(cell_index, parameters.fractions, parameters.non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3, parameters.band_phosphate_soil_mass_per_water_volume_Mg_per_m3, parameters.phosphate_constants, parameters.phosphate_surface, parameters.phosphate_minerals, parameters.phosphate_kinetics);
+        const phosphate = try self.evaluatePhosphateTransformations(cell_index, parameters.fractions, parameters.non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3, parameters.band_phosphate_soil_mass_per_water_volume_megagrams_per_m3, parameters.phosphate_constants, parameters.phosphate_surface, parameters.phosphate_minerals, parameters.phosphate_kinetics);
         const shared = self.aqueous[cell_index];
         const concentrations = cation_exchange.Cations{
             .ammonium_non_band = shared.ammonium_non_band,
@@ -349,21 +352,21 @@ pub const State = struct {
             .potassium = shared.potassium * coefficients.monovalent_activity_coefficient,
         };
         const adsorption = try cation_exchange.calculateSourceOrder(.{
-            .cation_exchange_capacity_mol_charge_per_Mg = parameters.cation_exchange_capacity_mol_charge_per_Mg,
+            .cation_exchange_capacity_mol_charge_per_megagram = parameters.cation_exchange_capacity_mol_charge_per_megagram,
             .aqueous_concentration_mol_per_m3 = concentrations,
             .aqueous_activity_mol_per_m3 = activities,
-            .exchange_concentration_mol_per_Mg = self.cation_exchange_mol_per_Mg[cell_index],
+            .exchange_concentration_mol_per_megagram = self.cation_exchange_mol_per_megagram[cell_index],
             .ammonium_non_band_fraction = parameters.fractions.ammonium_non_band,
             .ammonium_band_fraction = parameters.fractions.ammonium_band,
-            .soil_mass_per_water_volume_Mg_per_m3 = parameters.cation_exchange_water_ratios.shared_Mg_per_m3,
+            .soil_mass_per_water_volume_megagrams_per_m3 = parameters.cation_exchange_water_ratios.shared_megagrams_per_m3,
         }, parameters.cation_exchange_parameters, .{
             .minimum_activity_mol_per_m3 = parameters.negligible_water_ion_concentration_mol_per_m3,
         });
         const carboxyl_hydrogen_change = try self.evaluateCarboxylHydrogenChange(
             cell_index,
-            parameters.total_carboxyl_sites_mol_per_Mg,
+            parameters.total_carboxyl_sites_mol_per_megagram,
             activities.hydrogen,
-            parameters.cation_exchange_water_ratios.shared_Mg_per_m3,
+            parameters.cation_exchange_water_ratios.shared_megagrams_per_m3,
             parameters.carboxyl_exchange_parameters,
         );
         return .{
@@ -372,11 +375,11 @@ pub const State = struct {
             .band_phosphate = phosphate.band,
             .non_band_phosphate_water_fraction = parameters.fractions.phosphate_non_band,
             .band_phosphate_water_fraction = parameters.fractions.phosphate_band,
-            .cation_adsorption_mol_per_Mg = adsorption,
+            .cation_adsorption_mol_per_megagram = adsorption,
             .cation_exchange_water_ratios = parameters.cation_exchange_water_ratios,
             .geochemistry = try self.evaluateGeochemistryTransformations(cell_index, parameters.fractions, parameters.geochemistry_products, parameters.geochemistry_kinetics),
-            .carboxyl_hydrogen_change_mol_per_Mg = carboxyl_hydrogen_change,
-            .carboxyl_soil_mass_per_water_volume_Mg_per_m3 = parameters.cation_exchange_water_ratios.shared_Mg_per_m3,
+            .carboxyl_hydrogen_change_mol_per_megagram = carboxyl_hydrogen_change,
+            .carboxyl_soil_mass_per_water_volume_megagrams_per_m3 = parameters.cation_exchange_water_ratios.shared_megagrams_per_m3,
         };
     }
 };
@@ -389,6 +392,28 @@ fn filledStruct(comptime T: type, amount: f64) T {
     var value: T = undefined;
     inline for (@typeInfo(T).@"struct".fields) |field| @field(value, field.name) = amount;
     return value;
+}
+
+test "inactive ammonium zone accepts only zero exchange flux" {
+    var exchange_state = filledStruct(cation_exchange.Cations, 0);
+    var aqueous = filledStruct(aqueous_network.Transformations, 0);
+    var adsorption = filledStruct(cation_exchange.Cations, 0);
+    const ratios: CationExchangeWaterRatios = .{
+        .shared_megagrams_per_m3 = 1.5,
+        .ammonium_non_band_megagrams_per_m3 = 1.5,
+        .ammonium_band_megagrams_per_m3 = 0,
+    };
+    try addCationExchange(
+        &exchange_state,
+        &aqueous,
+        adsorption,
+        ratios,
+    );
+    adsorption.ammonium_band = 1.0e-6;
+    try std.testing.expectError(
+        error.InactiveAmmoniumZoneHasExchangeFlux,
+        addCationExchange(&exchange_state, &aqueous, adsorption, ratios),
+    );
 }
 
 fn packStruct(comptime T: type, value: T, output: []f64, cursor: *usize) void {
@@ -424,25 +449,36 @@ fn addSharedPhosphate(aqueous: *aqueous_network.Transformations, phosphate: phos
 }
 
 fn addCationExchange(exchange_state: *cation_exchange.Cations, aqueous: *aqueous_network.Transformations, adsorption: cation_exchange.Cations, ratios: CationExchangeWaterRatios) !void {
-    inline for (@typeInfo(CationExchangeWaterRatios).@"struct".fields) |field| {
-        const value = @field(ratios, field.name);
-        if (!std.math.isFinite(value) or value <= 0) return error.InvalidCationExchangeWaterRatio;
-    }
+    if (!std.math.isFinite(ratios.shared_megagrams_per_m3) or
+        ratios.shared_megagrams_per_m3 <= 0 or
+        !std.math.isFinite(ratios.ammonium_non_band_megagrams_per_m3) or
+        ratios.ammonium_non_band_megagrams_per_m3 < 0 or
+        !std.math.isFinite(ratios.ammonium_band_megagrams_per_m3) or
+        ratios.ammonium_band_megagrams_per_m3 < 0)
+        return error.InvalidCationExchangeWaterRatio;
+    // SOLUTE sets BKVLWH/BKVLWB to zero for an inactive zero-water zone.
+    // Such a zone must also contribute exactly zero adsorption; accepting a
+    // nonzero flux here would silently discard or create aqueous ammonium.
+    if ((ratios.ammonium_non_band_megagrams_per_m3 == 0 and
+        adsorption.ammonium_non_band != 0) or
+        (ratios.ammonium_band_megagrams_per_m3 == 0 and
+            adsorption.ammonium_band != 0))
+        return error.InactiveAmmoniumZoneHasExchangeFlux;
     inline for (@typeInfo(cation_exchange.Cations).@"struct".fields) |field| {
         const flux = @field(adsorption, field.name);
         if (!std.math.isFinite(flux)) return error.NonFiniteCationExchangeTransformation;
         @field(exchange_state.*, field.name) += flux;
         if (@field(exchange_state.*, field.name) < -1e-12) return error.NegativeCationExchangeState;
     }
-    aqueous.ammonium_non_band -= adsorption.ammonium_non_band * ratios.ammonium_non_band_Mg_per_m3;
-    aqueous.ammonium_band -= adsorption.ammonium_band * ratios.ammonium_band_Mg_per_m3;
-    aqueous.hydrogen -= adsorption.hydrogen * ratios.shared_Mg_per_m3;
-    aqueous.aluminum -= adsorption.aluminum * ratios.shared_Mg_per_m3;
-    aqueous.iron -= adsorption.iron * ratios.shared_Mg_per_m3;
-    aqueous.calcium -= adsorption.calcium * ratios.shared_Mg_per_m3;
-    aqueous.magnesium -= adsorption.magnesium * ratios.shared_Mg_per_m3;
-    aqueous.sodium -= adsorption.sodium * ratios.shared_Mg_per_m3;
-    aqueous.potassium -= adsorption.potassium * ratios.shared_Mg_per_m3;
+    aqueous.ammonium_non_band -= adsorption.ammonium_non_band * ratios.ammonium_non_band_megagrams_per_m3;
+    aqueous.ammonium_band -= adsorption.ammonium_band * ratios.ammonium_band_megagrams_per_m3;
+    aqueous.hydrogen -= adsorption.hydrogen * ratios.shared_megagrams_per_m3;
+    aqueous.aluminum -= adsorption.aluminum * ratios.shared_megagrams_per_m3;
+    aqueous.iron -= adsorption.iron * ratios.shared_megagrams_per_m3;
+    aqueous.calcium -= adsorption.calcium * ratios.shared_megagrams_per_m3;
+    aqueous.magnesium -= adsorption.magnesium * ratios.shared_megagrams_per_m3;
+    aqueous.sodium -= adsorption.sodium * ratios.shared_megagrams_per_m3;
+    aqueous.potassium -= adsorption.potassium * ratios.shared_megagrams_per_m3;
 }
 
 fn addGeochemistry(aqueous: *aqueous_network.Transformations, transformations: geochemistry.Transformations) void {
@@ -466,7 +502,7 @@ test "chemistry state uses runtime cell allocation" {
     try std.testing.expectEqual(@as(usize, 7), state.non_band_phosphate.len);
     try std.testing.expectEqual(@as(usize, 7), state.band_phosphate.len);
     try std.testing.expectEqual(@as(usize, 7), state.water_mol_per_m3.len);
-    try std.testing.expectEqual(@as(usize, 7), state.cation_exchange_mol_per_Mg.len);
+    try std.testing.expectEqual(@as(usize, 7), state.cation_exchange_mol_per_megagram.len);
     try std.testing.expectEqual(@as(usize, 7), state.geochemistry_solids.len);
 }
 
@@ -485,7 +521,7 @@ test "cell chemistry commit is atomic across aqueous and both phosphate zones" {
     aqueous_change.calcium = 0.1;
     non_band_change.dissolved_h2po4_mol_p_per_m3 = 0.1;
     band_change.dissolved_h2po4_mol_p_per_m3 = -2;
-    try std.testing.expectError(error.NegativePhosphateNetworkState, state.commitCell(1, .{ .aqueous = aqueous_change, .non_band_phosphate = non_band_change, .band_phosphate = band_change, .non_band_phosphate_water_fraction = 0.8, .band_phosphate_water_fraction = 0.2, .cation_adsorption_mol_per_Mg = filledStruct(cation_exchange.Cations, 0), .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 1, .ammonium_non_band_Mg_per_m3 = 1, .ammonium_band_Mg_per_m3 = 1 }, .geochemistry = filledStruct(geochemistry.Transformations, 0) }));
+    try std.testing.expectError(error.NegativePhosphateNetworkState, state.commitCell(1, .{ .aqueous = aqueous_change, .non_band_phosphate = non_band_change, .band_phosphate = band_change, .non_band_phosphate_water_fraction = 0.8, .band_phosphate_water_fraction = 0.2, .cation_adsorption_mol_per_megagram = filledStruct(cation_exchange.Cations, 0), .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 1, .ammonium_non_band_megagrams_per_m3 = 1, .ammonium_band_megagrams_per_m3 = 1 }, .geochemistry = filledStruct(geochemistry.Transformations, 0) }));
     try std.testing.expectEqualDeep(before_aqueous, state.aqueous[1]);
     try std.testing.expectEqualDeep(before_non_band, state.non_band_phosphate[1]);
     try std.testing.expectEqualDeep(before_band, state.band_phosphate[1]);
@@ -527,8 +563,8 @@ test "band and non-band phosphate reactions update one fraction-weighted shared 
         .band_phosphate = band_change,
         .non_band_phosphate_water_fraction = 0.75,
         .band_phosphate_water_fraction = 0.25,
-        .cation_adsorption_mol_per_Mg = filledStruct(cation_exchange.Cations, 0),
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 1, .ammonium_non_band_Mg_per_m3 = 1, .ammonium_band_Mg_per_m3 = 1 },
+        .cation_adsorption_mol_per_megagram = filledStruct(cation_exchange.Cations, 0),
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 1, .ammonium_non_band_megagrams_per_m3 = 1, .ammonium_band_megagrams_per_m3 = 1 },
         .geochemistry = filledStruct(geochemistry.Transformations, 0),
     });
     try std.testing.expectApproxEqAbs(@as(f64, 9), state.aqueous[0].calcium, 1e-15);
@@ -549,14 +585,14 @@ test "cation adsorption uses distinct shared and ammonium water ratios" {
         .band_phosphate = filledStruct(phosphate_network.Transformations, 0),
         .non_band_phosphate_water_fraction = 0.8,
         .band_phosphate_water_fraction = 0.2,
-        .cation_adsorption_mol_per_Mg = adsorption,
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 2, .ammonium_non_band_Mg_per_m3 = 3, .ammonium_band_Mg_per_m3 = 4 },
+        .cation_adsorption_mol_per_megagram = adsorption,
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 2, .ammonium_non_band_megagrams_per_m3 = 3, .ammonium_band_megagrams_per_m3 = 4 },
         .geochemistry = filledStruct(geochemistry.Transformations, 0),
     });
     try std.testing.expectApproxEqAbs(@as(f64, 9.7), state.aqueous[0].ammonium_non_band, 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 9.2), state.aqueous[0].ammonium_band, 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 9.4), state.aqueous[0].calcium, 1e-15);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.3), state.cation_exchange_mol_per_Mg[0].calcium, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.3), state.cation_exchange_mol_per_megagram[0].calcium, 1e-15);
 }
 
 test "carboxyl protonation conserves hydrogen across solid and aqueous pools" {
@@ -571,15 +607,15 @@ test "carboxyl protonation conserves hydrogen across solid and aqueous pools" {
         .band_phosphate = zero_phosphate,
         .non_band_phosphate_water_fraction = 0.5,
         .band_phosphate_water_fraction = 0.5,
-        .cation_adsorption_mol_per_Mg = filledStruct(cation_exchange.Cations, 0),
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 2, .ammonium_non_band_Mg_per_m3 = 2, .ammonium_band_Mg_per_m3 = 2 },
+        .cation_adsorption_mol_per_megagram = filledStruct(cation_exchange.Cations, 0),
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 2, .ammonium_non_band_megagrams_per_m3 = 2, .ammonium_band_megagrams_per_m3 = 2 },
         .geochemistry = filledStruct(geochemistry.Transformations, 0),
-        .carboxyl_hydrogen_change_mol_per_Mg = 0.2,
-        .carboxyl_soil_mass_per_water_volume_Mg_per_m3 = 2,
+        .carboxyl_hydrogen_change_mol_per_megagram = 0.2,
+        .carboxyl_soil_mass_per_water_volume_megagrams_per_m3 = 2,
     });
-    try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.carboxyl_bound_hydrogen_mol_per_Mg[0], 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.carboxyl_bound_hydrogen_mol_per_megagram[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0.6), state.aqueous[0].hydrogen, 1e-15);
-    try std.testing.expectApproxEqAbs(@as(f64, 1), state.aqueous[0].hydrogen + 2 * state.carboxyl_bound_hydrogen_mol_per_Mg[0], 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), state.aqueous[0].hydrogen + 2 * state.carboxyl_bound_hydrogen_mol_per_megagram[0], 1e-15);
 }
 
 test "shared geochemistry updates aqueous and solid pools in one transaction" {
@@ -597,8 +633,8 @@ test "shared geochemistry updates aqueous and solid pools in one transaction" {
         .band_phosphate = filledStruct(phosphate_network.Transformations, 0),
         .non_band_phosphate_water_fraction = 0.8,
         .band_phosphate_water_fraction = 0.2,
-        .cation_adsorption_mol_per_Mg = filledStruct(cation_exchange.Cations, 0),
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 1, .ammonium_non_band_Mg_per_m3 = 1, .ammonium_band_Mg_per_m3 = 1 },
+        .cation_adsorption_mol_per_megagram = filledStruct(cation_exchange.Cations, 0),
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 1, .ammonium_non_band_megagrams_per_m3 = 1, .ammonium_band_megagrams_per_m3 = 1 },
         .geochemistry = changes,
     });
     try std.testing.expectApproxEqAbs(@as(f64, 9.92), state.aqueous[0].aluminum, 1e-15);
@@ -660,7 +696,7 @@ test "runtime state evaluates both phosphate zones with shared activities" {
     state.aqueous[0] = filledStruct(aqueous_network.State, 1);
     state.non_band_phosphate[0] = filledStruct(phosphate_network.State, 1);
     state.band_phosphate[0] = filledStruct(phosphate_network.State, 1);
-    const changes = try state.evaluatePhosphateTransformations(0, .{ .ammonium_non_band = 0.8, .ammonium_band = 0.2, .nitrate_non_band = 0.6, .nitrate_band = 0.4, .phosphate_non_band = 0.7, .phosphate_band = 0.3 }, 1.2, 1.5, filledStruct(phosphate_reaction_rates.EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_Mg_step = 0.1, .substrate_limit_fraction = 0.2 }, null, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
+    const changes = try state.evaluatePhosphateTransformations(0, .{ .ammonium_non_band = 0.8, .ammonium_band = 0.2, .nitrate_non_band = 0.6, .nitrate_band = 0.4, .phosphate_non_band = 0.7, .phosphate_band = 0.3 }, 1.2, 1.5, filledStruct(phosphate_reaction_rates.EquilibriumConstants, 1), .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_megagram_step = 0.1, .substrate_limit_fraction = 0.2 }, null, .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.1 });
     inline for (@typeInfo(phosphate_network.Transformations).@"struct".fields) |field| {
         try std.testing.expect(std.math.isFinite(@field(changes.non_band, field.name)));
         try std.testing.expect(std.math.isFinite(@field(changes.band, field.name)));
@@ -682,20 +718,20 @@ test "single cell evaluation assembles every active SOLUTE reaction family" {
     state.aqueous[0] = filledStruct(aqueous_network.State, 1);
     state.non_band_phosphate[0] = filledStruct(phosphate_network.State, 1);
     state.band_phosphate[0] = filledStruct(phosphate_network.State, 1);
-    state.cation_exchange_mol_per_Mg[0] = filledStruct(cation_exchange.Cations, 1);
+    state.cation_exchange_mol_per_megagram[0] = filledStruct(cation_exchange.Cations, 1);
     state.geochemistry_solids[0] = filledStruct(geochemistry.SolidState, 1);
     const transformations = try state.evaluateCell(0, .{
         .fractions = .{ .ammonium_non_band = 0.8, .ammonium_band = 0.2, .nitrate_non_band = 0.6, .nitrate_band = 0.4, .phosphate_non_band = 0.7, .phosphate_band = 0.3 },
-        .non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = 1.2,
-        .band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = 1.5,
-        .cation_exchange_capacity_mol_charge_per_Mg = 10,
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 1.4, .ammonium_non_band_Mg_per_m3 = 1.1, .ammonium_band_Mg_per_m3 = 1.8 },
-        .total_carboxyl_sites_mol_per_Mg = 0,
+        .non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 1.2,
+        .band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 1.5,
+        .cation_exchange_capacity_mol_charge_per_megagram = 10,
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 1.4, .ammonium_non_band_megagrams_per_m3 = 1.1, .ammonium_band_megagrams_per_m3 = 1.8 },
+        .total_carboxyl_sites_mol_per_megagram = 0,
         .carboxyl_exchange_parameters = .{ .dissociation_constant_mol_per_m3 = 0.01, .maximum_exchange_mol_per_m3_per_iteration = 0.01, .substrate_limit_fraction_per_iteration = 0.2 },
         .aqueous_constants = filledStruct(aqueous_reaction_rates.EquilibriumConstants, 1),
         .aqueous_kinetics = .{ .ammonium_substrate_limit_fraction = 0.2, .general_substrate_limit_fraction = 0.2, .maximum_fast_association_mol_per_m3_step = 0.01, .maximum_slow_association_mol_per_m3_step = 0.01 },
         .phosphate_constants = filledStruct(phosphate_reaction_rates.EquilibriumConstants, 1),
-        .phosphate_surface = .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_Mg_step = 0.01, .substrate_limit_fraction = 0.2 },
+        .phosphate_surface = .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_megagram_step = 0.01, .substrate_limit_fraction = 0.2 },
         .phosphate_minerals = null,
         .phosphate_kinetics = .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0.01 },
         .cation_exchange_parameters = .{ .selectivity = .{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }, .substrate_limit_fraction = 0.2, .maximum_adsorption_mol_charge_per_m3_step = 0.01 },
@@ -705,7 +741,7 @@ test "single cell evaluation assembles every active SOLUTE reaction family" {
         .negligible_water_ion_concentration_mol_per_m3 = 1e-32,
     });
     inline for (@typeInfo(aqueous_network.Transformations).@"struct".fields) |field| try std.testing.expect(std.math.isFinite(@field(transformations.aqueous, field.name)));
-    inline for (@typeInfo(cation_exchange.Cations).@"struct".fields) |field| try std.testing.expect(std.math.isFinite(@field(transformations.cation_adsorption_mol_per_Mg, field.name)));
+    inline for (@typeInfo(cation_exchange.Cations).@"struct".fields) |field| try std.testing.expect(std.math.isFinite(@field(transformations.cation_adsorption_mol_per_megagram, field.name)));
 }
 
 test "source-order water change includes carbon dioxide hydration" {

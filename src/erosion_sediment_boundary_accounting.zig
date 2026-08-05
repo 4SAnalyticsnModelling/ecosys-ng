@@ -133,7 +133,7 @@ pub const SulfateComplexFlux = struct {
 };
 
 pub const BoundaryFlux = struct {
-    sediment_Mg_per_step: f64,
+    sediment_megagrams_per_step: f64,
     organic: OrganicMatterFlux,
     nitrogen: NitrogenMineralFlux = .{},
     phosphorus: PhosphorusMineralFlux = .{},
@@ -143,7 +143,7 @@ pub const BoundaryFlux = struct {
 };
 
 pub const CumulativeOutwardLedger = struct {
-    sediment_Mg: f64 = 0,
+    sediment_megagrams: f64 = 0,
     carbon_g_c: f64 = 0,
     nitrogen_g_n: f64 = 0,
     phosphorus_g_p: f64 = 0,
@@ -151,7 +151,7 @@ pub const CumulativeOutwardLedger = struct {
 };
 
 pub const CellOutwardLedger = struct {
-    sediment_Mg: f64 = 0,
+    sediment_megagrams: f64 = 0,
     organic_carbon_g_c: f64 = 0,
     inorganic_carbon_g_c: f64 = 0,
     organic_nitrogen_g_n: f64 = 0,
@@ -162,14 +162,14 @@ pub const CellOutwardLedger = struct {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     disturbance_mode: DisturbanceMode,
     salt_equilibrium_mode: SaltEquilibriumMode,
     organic_dimensions: OrganicDimensions,
     flux_by_face: [Face.count][]const BoundaryFlux,
-    negligible_sediment_Mg_by_cell: []const f64,
+    negligible_sediment_megagrams_by_cell: []const f64,
     nitrogen_g_n_per_mol_n: f64,
     phosphorus_g_p_per_mol_p: f64,
 };
@@ -200,12 +200,12 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const flux = inputs.flux_by_face[@intFromEnum(face)][cell];
-                if (@abs(flux.sediment_Mg_per_step) <=
-                    inputs.negligible_sediment_Mg_by_cell[cell]) continue;
+                if (@abs(flux.sediment_megagrams_per_step) <=
+                    inputs.negligible_sediment_megagrams_by_cell[cell]) continue;
                 const transfer = calculateTransfer(
                     flux,
                     inwardSign(face),
@@ -221,7 +221,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
 }
 
 const SignedTransfer = struct {
-    sediment_Mg: f64,
+    sediment_megagrams: f64,
     organic_carbon_g_c: f64,
     exchangeable_carbon_g_c: f64,
     organic_nitrogen_g_n: f64,
@@ -238,8 +238,8 @@ fn calculateTransfer(
     direction: f64,
     inputs: Inputs,
 ) !SignedTransfer {
-    const sediment_Mg =
-        try checkedProduct(direction, flux.sediment_Mg_per_step);
+    const sediment_megagrams =
+        try checkedProduct(direction, flux.sediment_megagrams_per_step);
     const nitrogen = flux.nitrogen;
     const exchangeable_nitrogen_g_n = try massFromMoles(
         direction,
@@ -279,7 +279,7 @@ fn calculateTransfer(
         direction,
     );
     return .{
-        .sediment_Mg = sediment_Mg,
+        .sediment_megagrams = sediment_megagrams,
         .organic_carbon_g_c = organic.carbon_g_c,
         .exchangeable_carbon_g_c = 0,
         .organic_nitrogen_g_n = organic.nitrogen_g_n,
@@ -588,7 +588,7 @@ fn advanceCumulative(
     transfer: SignedTransfer,
 ) !CumulativeOutwardLedger {
     var next = current;
-    next.sediment_Mg = try checkedSum(next.sediment_Mg, -transfer.sediment_Mg);
+    next.sediment_megagrams = try checkedSum(next.sediment_megagrams, -transfer.sediment_megagrams);
     next.carbon_g_c =
         try checkedSum(next.carbon_g_c, -transfer.organic_carbon_g_c);
     next.carbon_g_c =
@@ -619,7 +619,7 @@ fn advanceCell(
     transfer: SignedTransfer,
 ) !CellOutwardLedger {
     var next = current;
-    next.sediment_Mg = try checkedSum(next.sediment_Mg, -transfer.sediment_Mg);
+    next.sediment_megagrams = try checkedSum(next.sediment_megagrams, -transfer.sediment_megagrams);
     next.organic_carbon_g_c =
         try checkedSum(next.organic_carbon_g_c, -transfer.organic_carbon_g_c);
     next.inorganic_carbon_g_c = try checkedSum(
@@ -658,13 +658,13 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var cell_ledger = state.outward_by_cell[cell];
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const flux = inputs.flux_by_face[@intFromEnum(face)][cell];
-                if (@abs(flux.sediment_Mg_per_step) <=
-                    inputs.negligible_sediment_Mg_by_cell[cell]) continue;
+                if (@abs(flux.sediment_megagrams_per_step) <=
+                    inputs.negligible_sediment_megagrams_by_cell[cell]) continue;
                 const transfer = try calculateTransfer(
                     flux,
                     inwardSign(face),
@@ -678,24 +678,24 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !usize {
-    if (inputs.grid_column_count == 0 or inputs.grid_row_count == 0)
+    if (inputs.lon_count == 0 or inputs.lat_count == 0)
         return error.InvalidSedimentBoundaryDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidSedimentBoundaryDimensions;
     inline for (inputs.flux_by_face) |values|
         if (values.len != cell_count)
             return error.InvalidSedimentBoundaryDimensions;
-    if (inputs.negligible_sediment_Mg_by_cell.len != cell_count or
+    if (inputs.negligible_sediment_megagrams_by_cell.len != cell_count or
         state.outward_by_cell.len != cell_count)
         return error.InvalidSedimentBoundaryDimensions;
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidSedimentBoundaryWindow;
     return cell_count;
 }
@@ -706,7 +706,7 @@ fn validateInputsAndState(inputs: Inputs, state: State, cell_count: usize) !void
         return error.InvalidSedimentBoundaryInput;
     inline for (inputs.flux_by_face) |values| {
         for (values) |flux| {
-            if (!std.math.isFinite(flux.sediment_Mg_per_step))
+            if (!std.math.isFinite(flux.sediment_megagrams_per_step))
                 return error.InvalidSedimentBoundaryInput;
             try validateFiniteStruct(flux.nitrogen);
             try validateFiniteStruct(flux.phosphorus);
@@ -717,7 +717,7 @@ fn validateInputsAndState(inputs: Inputs, state: State, cell_count: usize) !void
         }
     }
     for (0..cell_count) |cell| {
-        if (!nonnegativeFinite(inputs.negligible_sediment_Mg_by_cell[cell]))
+        if (!nonnegativeFinite(inputs.negligible_sediment_megagrams_by_cell[cell]))
             return error.InvalidSedimentBoundaryInput;
         validateFiniteStruct(state.outward_by_cell[cell]) catch
             return error.InvalidSedimentBoundaryState;
@@ -889,7 +889,7 @@ fn unitOrganicDimensions() OrganicDimensions {
 }
 
 fn testFlux(
-    sediment_Mg_per_step: f64,
+    sediment_megagrams_per_step: f64,
     scalar_value: f64,
     microbial: []const f64,
     residue: []const f64,
@@ -897,7 +897,7 @@ fn testFlux(
     soil: []const f64,
 ) BoundaryFlux {
     return .{
-        .sediment_Mg_per_step = sediment_Mg_per_step,
+        .sediment_megagrams_per_step = sediment_megagrams_per_step,
         .organic = .{
             .microbial_carbon_g_c_per_step = microbial,
             .microbial_nitrogen_g_n_per_step = microbial,
@@ -927,8 +927,8 @@ fn oneCellInputs(
     zero: []const BoundaryFlux,
 ) Inputs {
     return .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -939,7 +939,7 @@ fn oneCellInputs(
         .salt_equilibrium_mode = .dynamic,
         .organic_dimensions = dimensions,
         .flux_by_face = .{ east, zero, zero, zero },
-        .negligible_sediment_Mg_by_cell = &.{0},
+        .negligible_sediment_megagrams_by_cell = &.{0},
         .nitrogen_g_n_per_mol_n = 14,
         .phosphorus_g_p_per_mol_p = 31,
     };
@@ -983,7 +983,7 @@ test "REDIST erosion fixture preserves source pool extents and weights" {
 
     try apply(oneCellInputs(dimensions, &east, &zero), &state);
 
-    try std.testing.expectEqual(@as(f64, 1), state.cumulative.sediment_Mg);
+    try std.testing.expectEqual(@as(f64, 1), state.cumulative.sediment_megagrams);
     try std.testing.expectEqual(@as(f64, 171), state.cumulative.carbon_g_c);
     try std.testing.expectEqual(@as(f64, 306), state.cumulative.nitrogen_g_n);
     try std.testing.expectEqual(@as(f64, 786), state.cumulative.phosphorus_g_p);
@@ -1014,7 +1014,7 @@ test "disabled erosion and strict equal threshold leave ledgers unchanged" {
     inputs.disturbance_mode = .freeze_thaw;
     try apply(inputs, &state);
     inputs.disturbance_mode = .freeze_thaw_and_erosion;
-    inputs.negligible_sediment_Mg_by_cell = &.{1};
+    inputs.negligible_sediment_megagrams_by_cell = &.{1};
     try apply(inputs, &state);
     try std.testing.expectEqualDeep(CumulativeOutwardLedger{}, state.cumulative);
     try std.testing.expectEqualDeep(CellOutwardLedger{}, cells[0]);
@@ -1074,8 +1074,8 @@ test "runtime grid conserves global ledgers against per-cell exports" {
     var cells = [_]CellOutwardLedger{ .{}, .{}, .{}, .{} };
     var state: State = .{ .cumulative = .{}, .outward_by_cell = &cells };
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -1086,25 +1086,25 @@ test "runtime grid conserves global ledgers against per-cell exports" {
         .salt_equilibrium_mode = .dynamic,
         .organic_dimensions = unitOrganicDimensions(),
         .flux_by_face = .{ &east, &zero, &zero, &zero },
-        .negligible_sediment_Mg_by_cell = &.{ 0, 0, 0, 0 },
+        .negligible_sediment_megagrams_by_cell = &.{ 0, 0, 0, 0 },
         .nitrogen_g_n_per_mol_n = 14,
         .phosphorus_g_p_per_mol_p = 31,
     }, &state);
 
-    var sediment_Mg: f64 = 0;
+    var sediment_megagrams: f64 = 0;
     var carbon_g_c: f64 = 0;
     var nitrogen_g_n: f64 = 0;
     var phosphorus_g_p: f64 = 0;
     var ion_components_mol: f64 = 0;
     for (cells) |cell| {
-        sediment_Mg += cell.sediment_Mg;
+        sediment_megagrams += cell.sediment_megagrams;
         carbon_g_c += cell.organic_carbon_g_c + cell.inorganic_carbon_g_c;
         nitrogen_g_n += cell.organic_nitrogen_g_n + cell.inorganic_nitrogen_g_n;
         phosphorus_g_p +=
             cell.organic_phosphorus_g_p + cell.inorganic_phosphorus_g_p;
         ion_components_mol += cell.ion_components_mol;
     }
-    try std.testing.expectEqual(state.cumulative.sediment_Mg, sediment_Mg);
+    try std.testing.expectEqual(state.cumulative.sediment_megagrams, sediment_megagrams);
     try std.testing.expectEqual(state.cumulative.carbon_g_c, carbon_g_c);
     try std.testing.expectEqual(state.cumulative.nitrogen_g_n, nitrogen_g_n);
     try std.testing.expectEqual(state.cumulative.phosphorus_g_p, phosphorus_g_p);
@@ -1122,14 +1122,14 @@ test "invalid late mineral flux is rejected atomically" {
         testFlux(0, 0, &one, &one, &one, &one),
         testFlux(0, 0, &one, &one, &one, &one),
     };
-    var cells = [_]CellOutwardLedger{ .{ .sediment_Mg = 2 }, .{} };
+    var cells = [_]CellOutwardLedger{ .{ .sediment_megagrams = 2 }, .{} };
     var state: State = .{
-        .cumulative = .{ .sediment_Mg = 3 },
+        .cumulative = .{ .sediment_megagrams = 3 },
         .outward_by_cell = &cells,
     };
     try std.testing.expectError(error.InvalidSedimentBoundaryInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -1140,12 +1140,12 @@ test "invalid late mineral flux is rejected atomically" {
         .salt_equilibrium_mode = .dynamic,
         .organic_dimensions = unitOrganicDimensions(),
         .flux_by_face = .{ &east, &zero, &zero, &zero },
-        .negligible_sediment_Mg_by_cell = &.{ 0, 0 },
+        .negligible_sediment_megagrams_by_cell = &.{ 0, 0 },
         .nitrogen_g_n_per_mol_n = 14,
         .phosphorus_g_p_per_mol_p = 31,
     }, &state));
-    try std.testing.expectEqual(@as(f64, 3), state.cumulative.sediment_Mg);
-    try std.testing.expectEqual(@as(f64, 2), cells[0].sediment_Mg);
+    try std.testing.expectEqual(@as(f64, 3), state.cumulative.sediment_megagrams);
+    try std.testing.expectEqual(@as(f64, 2), cells[0].sediment_megagrams);
     try std.testing.expectEqualDeep(CellOutwardLedger{}, cells[1]);
 }
 

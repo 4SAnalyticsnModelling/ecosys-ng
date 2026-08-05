@@ -1,16 +1,16 @@
 const std = @import("std");
 
 pub const EnergyFluxDiagnostics = struct {
-    net_radiation_mj_per_step: f64,
-    latent_heat_mj_per_step: f64,
-    sensible_heat_mj_per_step: f64,
-    heat_storage_mj_per_step: f64,
-    vapor_convective_heat_mj_per_step: f64,
-    emitted_thermal_radiation_mj_per_step: f64,
+    net_radiation_megajoules_per_step: f64,
+    latent_heat_megajoules_per_step: f64,
+    sensible_heat_megajoules_per_step: f64,
+    heat_storage_megajoules_per_step: f64,
+    vapor_convective_heat_megajoules_per_step: f64,
+    emitted_thermal_radiation_megajoules_per_step: f64,
     evaporation_m3_per_step: f64,
     transpiration_m3_per_step: f64,
     ground_canopy_vapor_flux_m3_per_step: f64,
-    ground_canopy_sensible_heat_mj_per_step: f64,
+    ground_canopy_sensible_heat_megajoules_per_step: f64,
 };
 
 pub const Inputs = struct {
@@ -41,16 +41,16 @@ pub fn compute(inputs: Inputs) !State {
     result.intercepted_water_m3 =
         inputs.intercepted_water_m3 +
         inputs.intercepted_water_rate_m3_per_h * inputs.timestep_h;
-    result.energy_flux.net_radiation_mj_per_step = 0;
-    result.energy_flux.latent_heat_mj_per_step = 0;
-    result.energy_flux.sensible_heat_mj_per_step = 0;
-    result.energy_flux.heat_storage_mj_per_step = 0;
-    result.energy_flux.vapor_convective_heat_mj_per_step = 0;
-    result.energy_flux.emitted_thermal_radiation_mj_per_step = 0;
+    result.energy_flux.net_radiation_megajoules_per_step = 0;
+    result.energy_flux.latent_heat_megajoules_per_step = 0;
+    result.energy_flux.sensible_heat_megajoules_per_step = 0;
+    result.energy_flux.heat_storage_megajoules_per_step = 0;
+    result.energy_flux.vapor_convective_heat_megajoules_per_step = 0;
+    result.energy_flux.emitted_thermal_radiation_megajoules_per_step = 0;
     result.energy_flux.evaporation_m3_per_step = 0;
     result.energy_flux.transpiration_m3_per_step = 0;
     result.energy_flux.ground_canopy_vapor_flux_m3_per_step = 0;
-    result.energy_flux.ground_canopy_sensible_heat_mj_per_step = 0;
+    result.energy_flux.ground_canopy_sensible_heat_megajoules_per_step = 0;
     result.canopy_air_temperature_k = inputs.ambient_air_temperature_k;
     result.canopy_air_vapor_volume_fraction = inputs.ambient_vapor_volume_fraction;
     result.canopy_surface_temperature_k =

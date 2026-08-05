@@ -5,7 +5,7 @@ pub const Inputs = struct {
     geometry_floor_m: f64,
     initial_water_content_m3_per_m3: f64,
     initial_ice_porosity_m3_per_m3: f64,
-    pure_ice_density_Mg_per_m3: f64,
+    pure_ice_density_megagrams_per_m3: f64,
 };
 
 pub const State = struct {
@@ -14,7 +14,7 @@ pub const State = struct {
     accumulated_area_m2: f64,
     initial_water_content_m3_per_m3: f64,
     initial_ice_porosity_m3_per_m3: f64,
-    effective_ice_density_Mg_per_m3: f64,
+    effective_ice_density_megagrams_per_m3: f64,
     ice_specific_volume_difference_m3_per_m3: f64,
 };
 
@@ -34,19 +34,19 @@ pub fn initialize(inputs: Inputs) !State {
         inputs.initial_water_content_m3_per_m3 > 1 or
         inputs.initial_ice_porosity_m3_per_m3 < 0 or
         inputs.initial_ice_porosity_m3_per_m3 > 1 or
-        inputs.pure_ice_density_Mg_per_m3 <= 0 or
-        inputs.pure_ice_density_Mg_per_m3 > 1 or
+        inputs.pure_ice_density_megagrams_per_m3 <= 0 or
+        inputs.pure_ice_density_megagrams_per_m3 > 1 or
         inputs.initial_ice_porosity_m3_per_m3 >
-            inputs.pure_ice_density_Mg_per_m3)
+            inputs.pure_ice_density_megagrams_per_m3)
     {
         return error.InvalidSoilInitializationScale;
     }
 
-    const effective_ice_density_Mg_per_m3 =
-        inputs.pure_ice_density_Mg_per_m3 -
+    const effective_ice_density_megagrams_per_m3 =
+        inputs.pure_ice_density_megagrams_per_m3 -
         inputs.initial_ice_porosity_m3_per_m3;
     const ice_specific_volume_difference_m3_per_m3 =
-        1.0 - effective_ice_density_Mg_per_m3;
+        1.0 - effective_ice_density_megagrams_per_m3;
 
     return .{
         .calculation_floor = inputs.calculation_floor,
@@ -54,7 +54,7 @@ pub fn initialize(inputs: Inputs) !State {
         .accumulated_area_m2 = 0.0,
         .initial_water_content_m3_per_m3 = inputs.initial_water_content_m3_per_m3,
         .initial_ice_porosity_m3_per_m3 = inputs.initial_ice_porosity_m3_per_m3,
-        .effective_ice_density_Mg_per_m3 = effective_ice_density_Mg_per_m3,
+        .effective_ice_density_megagrams_per_m3 = effective_ice_density_megagrams_per_m3,
         .ice_specific_volume_difference_m3_per_m3 = ice_specific_volume_difference_m3_per_m3,
     };
 }
@@ -65,7 +65,7 @@ test "STARTS source runtime values reproduce lines 93 through 100" {
         .geometry_floor_m = 1.0e-6,
         .initial_water_content_m3_per_m3 = 1.0e-3,
         .initial_ice_porosity_m3_per_m3 = 0.0,
-        .pure_ice_density_Mg_per_m3 = 0.92,
+        .pure_ice_density_megagrams_per_m3 = 0.92,
     });
 
     try std.testing.expectEqual(@as(f64, 1.0e-15), state.calculation_floor);
@@ -77,7 +77,7 @@ test "STARTS source runtime values reproduce lines 93 through 100" {
     );
     try std.testing.expectEqual(
         @as(f64, 0.92),
-        state.effective_ice_density_Mg_per_m3,
+        state.effective_ice_density_megagrams_per_m3,
     );
     try std.testing.expectApproxEqAbs(
         @as(f64, 0.08),
@@ -92,12 +92,12 @@ test "configured initial ice porosity preserves source density equations" {
         .geometry_floor_m = 2.0e-6,
         .initial_water_content_m3_per_m3 = 0.2,
         .initial_ice_porosity_m3_per_m3 = 0.02,
-        .pure_ice_density_Mg_per_m3 = 0.917,
+        .pure_ice_density_megagrams_per_m3 = 0.917,
     });
 
     try std.testing.expectApproxEqAbs(
         @as(f64, 0.897),
-        state.effective_ice_density_Mg_per_m3,
+        state.effective_ice_density_megagrams_per_m3,
         1.0e-15,
     );
     try std.testing.expectApproxEqAbs(
@@ -115,7 +115,7 @@ test "invalid runtime scales fail before producing state" {
             .geometry_floor_m = 1.0e-6,
             .initial_water_content_m3_per_m3 = 0.1,
             .initial_ice_porosity_m3_per_m3 = 0.0,
-            .pure_ice_density_Mg_per_m3 = 0.92,
+            .pure_ice_density_megagrams_per_m3 = 0.92,
         }),
     );
     try std.testing.expectError(
@@ -125,7 +125,7 @@ test "invalid runtime scales fail before producing state" {
             .geometry_floor_m = std.math.nan(f64),
             .initial_water_content_m3_per_m3 = 0.1,
             .initial_ice_porosity_m3_per_m3 = 0.0,
-            .pure_ice_density_Mg_per_m3 = 0.92,
+            .pure_ice_density_megagrams_per_m3 = 0.92,
         }),
     );
 }

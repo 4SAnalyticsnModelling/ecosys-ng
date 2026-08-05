@@ -198,12 +198,12 @@ pub fn appendOwnedTileContributions(
     state: *const State,
     contributions: *std.ArrayList(lateral_store.Contribution),
 ) !void {
-    if (state.cell_count != plan.grid_row_count * plan.grid_column_count)
+    if (state.cell_count != plan.lat_count * plan.lon_count)
         return error.SurfaceRunoffDimensionMismatch;
     const owned_cells = try plan.ownedCells(tile_index);
     for (owned_cells) |source| {
-        const row = source / plan.grid_column_count;
-        const column = source % plan.grid_column_count;
+        const row = source / plan.lon_count;
+        const column = source % plan.lon_count;
         const fluxes = [_]f64{
             state.east_runoff_m3_per_step[source],
             state.west_runoff_m3_per_step[source],
@@ -222,13 +222,13 @@ pub fn appendOwnedTileContributions(
             .delta = -outgoing_m3,
         });
         const destinations = [_]?usize{
-            if (column + 1 < plan.grid_column_count) source + 1 else null,
+            if (column + 1 < plan.lon_count) source + 1 else null,
             if (column > 0) source - 1 else null,
-            if (row + 1 < plan.grid_row_count)
-                source + plan.grid_column_count
+            if (row + 1 < plan.lat_count)
+                source + plan.lon_count
             else
                 null,
-            if (row > 0) source - plan.grid_column_count else null,
+            if (row > 0) source - plan.lon_count else null,
         };
         for (fluxes, destinations) |flux_m3, destination| {
             if (flux_m3 == 0) continue;

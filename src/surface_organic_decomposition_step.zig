@@ -124,7 +124,7 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
         total_colonized_g_c += context.surface_organic.adsorbed[mobile].carbon_g_c + context.surface_organic.adsorbed_acetate_carbon_g_c[mobile];
         const active_water = context.biologically_active_water_m3[cell];
         const dissolved_concentration = if (active_water > context.negligible_carbon_g_c) context.surface_organic.dissolved[mobile].carbon_g_c / active_water else 0;
-        const response = try decomposition.environment(.{ .is_surface = true, .total_colonized_carbon_g_c = total_colonized_g_c, .microbial_activity_g_c_per_step = activity_g_c, .biologically_active_water_m3 = active_water, .soil_mass_Mg = 0, .bulk_volume_m3 = context.litter_bulk_volume_m3[cell], .dissolved_carbon_concentration_g_c_per_m3 = dissolved_concentration, .timestep_h = context.timestep_h, .negligible_carbon_g_c = context.negligible_carbon_g_c }, context.parameters.environment);
+        const response = try decomposition.environment(.{ .is_surface = true, .total_colonized_carbon_g_c = total_colonized_g_c, .microbial_activity_g_c_per_step = activity_g_c, .biologically_active_water_m3 = active_water, .soil_mass_megagrams = 0, .bulk_volume_m3 = context.litter_bulk_volume_m3[cell], .dissolved_carbon_concentration_g_c_per_m3 = dissolved_concentration, .timestep_h = context.timestep_h, .negligible_carbon_g_c = context.negligible_carbon_g_c }, context.parameters.environment);
         context.result.microbial_density_response[compact] = response.microbial_density_response;
         context.result.dissolved_carbon_product_response[compact] = response.dissolved_carbon_product_response;
         var structural_decomposed: [organic.structural_fraction_count]organic.ElementPool = undefined;

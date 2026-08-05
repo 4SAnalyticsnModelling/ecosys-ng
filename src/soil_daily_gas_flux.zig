@@ -6,11 +6,26 @@ const output_binding = @import("soil_hourly_output_binding.zig");
 
 /// Heap-owned DAY accumulators for accepted soil/litter atmospheric exchange
 /// plus source-signed root withdrawal. Values retain tracked-element units.
+pub const RedistSurfaceGasIncrements = struct {
+    carbon_surface_input_g_c: f64,
+    carbon_subsurface_output_g_c: f64,
+    oxygen_surface_input_g_o: f64,
+    oxygen_subsurface_output_g_o: f64,
+    hydrogen_surface_input_g_h: f64,
+    hydrogen_subsurface_output_g_h: f64,
+};
+
 pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     soil_litter_boundary_mass_g_by_cell_and_species: []f64,
     tracked_element_mass_g_by_cell_and_species: []f64,
+    redist_carbon_surface_input_g_c_by_cell: []f64,
+    redist_carbon_subsurface_output_g_c_by_cell: []f64,
+    redist_oxygen_surface_input_g_o_by_cell: []f64,
+    redist_oxygen_subsurface_output_g_o_by_cell: []f64,
+    redist_hydrogen_surface_input_g_h_by_cell: []f64,
+    redist_hydrogen_subsurface_output_g_h_by_cell: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
         if (cell_count == 0) return error.ZeroDailyGasFluxCells;
@@ -18,25 +33,111 @@ pub const State = struct {
         const boundary = try allocator.alloc(f64, count);
         errdefer allocator.free(boundary);
         const combined = try allocator.alloc(f64, count);
+        const redist_carbon_surface_input = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_carbon_surface_input);
+        const redist_carbon_subsurface_output = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_carbon_subsurface_output);
+        const redist_oxygen_surface_input = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_oxygen_surface_input);
+        const redist_oxygen_subsurface_output = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_oxygen_subsurface_output);
+        const redist_hydrogen_surface_input = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_hydrogen_surface_input);
+        const redist_hydrogen_subsurface_output = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(redist_hydrogen_subsurface_output);
         @memset(boundary, 0);
         @memset(combined, 0);
+        @memset(redist_carbon_surface_input, 0);
+        @memset(redist_carbon_subsurface_output, 0);
+        @memset(redist_oxygen_surface_input, 0);
+        @memset(redist_oxygen_subsurface_output, 0);
+        @memset(redist_hydrogen_surface_input, 0);
+        @memset(redist_hydrogen_subsurface_output, 0);
         return .{
             .allocator = allocator,
             .cell_count = cell_count,
             .soil_litter_boundary_mass_g_by_cell_and_species = boundary,
             .tracked_element_mass_g_by_cell_and_species = combined,
+            .redist_carbon_surface_input_g_c_by_cell = redist_carbon_surface_input,
+            .redist_carbon_subsurface_output_g_c_by_cell = redist_carbon_subsurface_output,
+            .redist_oxygen_surface_input_g_o_by_cell = redist_oxygen_surface_input,
+            .redist_oxygen_subsurface_output_g_o_by_cell = redist_oxygen_subsurface_output,
+            .redist_hydrogen_surface_input_g_h_by_cell = redist_hydrogen_surface_input,
+            .redist_hydrogen_subsurface_output_g_h_by_cell = redist_hydrogen_subsurface_output,
         };
     }
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.soil_litter_boundary_mass_g_by_cell_and_species);
         self.allocator.free(self.tracked_element_mass_g_by_cell_and_species);
+        self.allocator.free(self.redist_carbon_surface_input_g_c_by_cell);
+        self.allocator.free(self.redist_carbon_subsurface_output_g_c_by_cell);
+        self.allocator.free(self.redist_oxygen_surface_input_g_o_by_cell);
+        self.allocator.free(self.redist_oxygen_subsurface_output_g_o_by_cell);
+        self.allocator.free(self.redist_hydrogen_surface_input_g_h_by_cell);
+        self.allocator.free(self.redist_hydrogen_subsurface_output_g_h_by_cell);
         self.* = undefined;
     }
 
     pub fn reset(self: *State) void {
         @memset(self.soil_litter_boundary_mass_g_by_cell_and_species, 0);
         @memset(self.tracked_element_mass_g_by_cell_and_species, 0);
+        @memset(self.redist_carbon_surface_input_g_c_by_cell, 0);
+        @memset(self.redist_carbon_subsurface_output_g_c_by_cell, 0);
+        @memset(self.redist_oxygen_surface_input_g_o_by_cell, 0);
+        @memset(self.redist_oxygen_subsurface_output_g_o_by_cell, 0);
+        @memset(self.redist_hydrogen_surface_input_g_h_by_cell, 0);
+        @memset(self.redist_hydrogen_subsurface_output_g_h_by_cell, 0);
+    }
+
+    pub fn accumulateRedistSurfaceGasHour(
+        self: *State,
+        cell: usize,
+        carbon_surface_input_g_c: f64,
+        carbon_subsurface_output_g_c: f64,
+        oxygen_surface_input_g_o: f64,
+        oxygen_subsurface_output_g_o: f64,
+        hydrogen_surface_input_g_h: f64,
+        hydrogen_subsurface_output_g_h: f64,
+    ) !void {
+        if (cell >= self.cell_count) return error.DailyGasFluxCellOutOfBounds;
+        const values = .{
+            carbon_surface_input_g_c,
+            carbon_subsurface_output_g_c,
+            oxygen_surface_input_g_o,
+            oxygen_subsurface_output_g_o,
+            hydrogen_surface_input_g_h,
+            hydrogen_subsurface_output_g_h,
+        };
+        inline for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteDailyGasFlux;
+
+        self.redist_carbon_surface_input_g_c_by_cell[cell] += carbon_surface_input_g_c;
+        self.redist_carbon_subsurface_output_g_c_by_cell[cell] += carbon_subsurface_output_g_c;
+        self.redist_oxygen_surface_input_g_o_by_cell[cell] += oxygen_surface_input_g_o;
+        self.redist_oxygen_subsurface_output_g_o_by_cell[cell] += oxygen_subsurface_output_g_o;
+        self.redist_hydrogen_surface_input_g_h_by_cell[cell] += hydrogen_surface_input_g_h;
+        self.redist_hydrogen_subsurface_output_g_h_by_cell[cell] += hydrogen_subsurface_output_g_h;
+    }
+
+    pub fn getRedistSurfaceGasTotals(self: *const State) !RedistSurfaceGasIncrements {
+        if (self.cell_count == 0) return error.ZeroDailyGasFluxCells;
+        var totals = RedistSurfaceGasIncrements{
+            .carbon_surface_input_g_c = 0,
+            .carbon_subsurface_output_g_c = 0,
+            .oxygen_surface_input_g_o = 0,
+            .oxygen_subsurface_output_g_o = 0,
+            .hydrogen_surface_input_g_h = 0,
+            .hydrogen_subsurface_output_g_h = 0,
+        };
+        for (0..self.cell_count) |cell| {
+            totals.carbon_surface_input_g_c = addFinite(totals.carbon_surface_input_g_c, self.redist_carbon_surface_input_g_c_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+            totals.carbon_subsurface_output_g_c = addFinite(totals.carbon_subsurface_output_g_c, self.redist_carbon_subsurface_output_g_c_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+            totals.oxygen_surface_input_g_o = addFinite(totals.oxygen_surface_input_g_o, self.redist_oxygen_surface_input_g_o_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+            totals.oxygen_subsurface_output_g_o = addFinite(totals.oxygen_subsurface_output_g_o, self.redist_oxygen_subsurface_output_g_o_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+            totals.hydrogen_surface_input_g_h = addFinite(totals.hydrogen_surface_input_g_h, self.redist_hydrogen_surface_input_g_h_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+            totals.hydrogen_subsurface_output_g_h = addFinite(totals.hydrogen_subsurface_output_g_h, self.redist_hydrogen_subsurface_output_g_h_by_cell[cell]) catch return error.NonFiniteDailyGasFlux;
+        }
+        return totals;
     }
 
     pub fn accumulateHour(
@@ -82,6 +183,47 @@ pub const State = struct {
         }
     }
 
+    /// Adds accepted gas exchange through physical external subsurface faces.
+    /// Values use the transport sign convention: positive is external domain
+    /// to ecosystem. Internal/lateral faces are excluded by their owner.
+    pub fn accumulateSubsurfaceNitrogenBoundaryHour(
+        self: *State,
+        soil_layer_capacity: usize,
+        active_soil_layer_count: []const usize,
+        subsurface_flux_g_per_h: []const f64,
+    ) !void {
+        if (soil_layer_capacity == 0 or active_soil_layer_count.len != self.cell_count or
+            subsurface_flux_g_per_h.len != self.cell_count * soil_layer_capacity * gas.species_count)
+            return error.DailyGasFluxDimensionMismatch;
+        for (active_soil_layer_count) |active|
+            if (active == 0 or active > soil_layer_capacity) return error.DailyGasFluxDimensionMismatch;
+        for (subsurface_flux_g_per_h) |value|
+            if (!std.math.isFinite(value)) return error.NonFiniteDailyGasFlux;
+        for (0..self.cell_count) |cell| {
+            const first_layer = cell * soil_layer_capacity;
+            inline for ([_]gas.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species_value| {
+                const species = @intFromEnum(species_value);
+                var increment_g: f64 = 0;
+                for (first_layer..first_layer + active_soil_layer_count[cell]) |layer|
+                    increment_g = try addFinite(
+                        increment_g,
+                        subsurface_flux_g_per_h[layer * gas.species_count + species],
+                    );
+                const index = cell * gas.species_count + species;
+                const next_boundary = try addFinite(
+                    self.soil_litter_boundary_mass_g_by_cell_and_species[index],
+                    increment_g,
+                );
+                const next_combined = try addFinite(
+                    self.tracked_element_mass_g_by_cell_and_species[index],
+                    increment_g,
+                );
+                self.soil_litter_boundary_mass_g_by_cell_and_species[index] = next_boundary;
+                self.tracked_element_mass_g_by_cell_and_species[index] = next_combined;
+            }
+        }
+    }
+
     pub fn get(self: *const State, cell: usize, species: gas.Species) !f64 {
         if (cell >= self.cell_count) return error.DailyGasFluxCellOutOfBounds;
         return self.tracked_element_mass_g_by_cell_and_species[cell * gas.species_count + @intFromEnum(species)];
@@ -96,6 +238,23 @@ pub const State = struct {
         return self.soil_litter_boundary_mass_g_by_cell_and_species[cell * gas.species_count + @intFromEnum(species)];
     }
 };
+
+test "external subsurface nitrogen excludes inactive capacity layers" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    var flux = [_]f64{0} ** (2 * gas.species_count);
+    flux[@intFromEnum(gas.Species.nitrogen)] = 3;
+    flux[gas.species_count + @intFromEnum(gas.Species.nitrogen)] = -1;
+    try state.accumulateSubsurfaceNitrogenBoundaryHour(2, &.{1}, &flux);
+    try std.testing.expectEqual(@as(f64, 3), try state.getSoilLitterBoundary(0, .nitrogen));
+    try std.testing.expectEqual(@as(f64, 3), try state.get(0, .nitrogen));
+}
+
+fn addFinite(first: f64, second: f64) !f64 {
+    const result = first + second;
+    if (!std.math.isFinite(result)) return error.NonFiniteDailyGasFlux;
+    return result;
+}
 
 fn boundaryHourIncrement(cell: usize, soil_layer_count: usize, species: gas.Species, soil_flux: []const f64, litter_flux: []const f64) !f64 {
     return output_binding.gasBoundaryExchangeG(soil_flux, litter_flux, cell * soil_layer_count, soil_layer_count, cell, species);

@@ -113,6 +113,109 @@ pub const AnaerobicEnergyParameters = struct {
     acetotrophic_methanogenesis: AcetotrophicMethanogenesisParameters,
 };
 
+/// Source NITRO.F 179--187 anaerobic growth-respiration energetics, as runtime
+/// state reachable from the production heterotrophic respiration owner.
+///
+/// These are the inputs to the source `ECHZ` growth respiration requirement for
+/// the three anaerobic populations. `ECHZ` is a *function of product energy
+/// feedback* in the source:
+///
+///   fermenter (N=4)   ECHZ = max(EO2X, min(1, 1/(1 + max(0, GCHX-GHAX)/EOMF)))
+///   diazotroph (N=7)  ECHZ = max(ENFY, min(1, 1/(1 + max(0, GCHX-GHAX)/EOMY)))
+///   acetotroph (N=5)  ECHZ = max(EO2X, min(1, 1/(1 + max(0, GC4X+GOMM)/EOMH)))
+///
+/// where `GHAX` combines the aqueous H2 and acetate feedback and `GOMM` is the
+/// acetate feedback, both varying hourly with concentration and temperature.
+///
+/// The production path in `soil_heterotrophic_respiration_step` currently
+/// applies fixed constants instead (`0.5` for fermenters,
+/// `0.42016806722689076` for acetotrophic methanogens), which loses that
+/// thermodynamic feedback. `0.42016806722689076` is in fact exactly source
+/// `EO2A = 1/(1+(GO2X-GCHX)/EOMC)`, the *aerobic acetate* requirement, so an
+/// aerobic constant is being applied to an anaerobic population. See
+/// `docs/traceability/bind_nitro_001_double_mutation_analysis.md`.
+///
+/// This record exists so the owning NITRO lane can correct that inside the
+/// single existing owner. Adding it does NOT introduce a second writer of the
+/// anaerobic respiration publish set, and no kernel is bound to it here.
+pub const AnaerobicGrowthEnergyParameters = struct {
+    /// `GCHX`, energy yield of fermentation (kilojoule per gram carbon).
+    fermentation_energy_yield_kilojoule_per_g_c: f64,
+    /// `GC4X`, energy yield of acetotrophic methanogenesis.
+    acetotrophic_methanogenesis_energy_yield_kilojoule_per_g_c: f64,
+    /// `EOMF`, fermenter growth energy requirement.
+    fermenter_growth_energy_requirement_kilojoule_per_g_c: f64,
+    /// `EOMY`, anaerobic diazotroph growth energy requirement.
+    anaerobic_diazotroph_growth_energy_requirement_kilojoule_per_g_c: f64,
+    /// `EOMH`, acetotrophic methanogen growth energy requirement.
+    acetotrophic_methanogen_growth_energy_requirement_kilojoule_per_g_c: f64,
+    /// `EO2X`, minimum growth respiration requirement for the fermenter and
+    /// acetotrophic methanogen branches (dimensionless g C per g C).
+    minimum_growth_respiration_requirement_g_c_per_g_c: f64,
+    /// `ENFY`, minimum growth respiration requirement for the anaerobic
+    /// diazotroph branch.
+    anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c: f64,
+
+    /// Source `ECHZ` for a fermenter or anaerobic diazotroph, given the
+    /// combined H2 and acetate feedback `GHAX` in kilojoule per gram carbon.
+    /// Retains source operation order: subtract, floor at zero, divide, add
+    /// one, reciprocate, cap at one, then floor at the population minimum.
+    pub fn fermenterGrowthRespirationRequirement(
+        self: AnaerobicGrowthEnergyParameters,
+        combined_product_feedback_kilojoule_per_g_c: f64,
+        is_anaerobic_diazotroph: bool,
+    ) !f64 {
+        const requirement = if (is_anaerobic_diazotroph)
+            self.anaerobic_diazotroph_growth_energy_requirement_kilojoule_per_g_c
+        else
+            self.fermenter_growth_energy_requirement_kilojoule_per_g_c;
+        const minimum = if (is_anaerobic_diazotroph)
+            self.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c
+        else
+            self.minimum_growth_respiration_requirement_g_c_per_g_c;
+        return growthRespirationRequirement(
+            self.fermentation_energy_yield_kilojoule_per_g_c -
+                combined_product_feedback_kilojoule_per_g_c,
+            requirement,
+            minimum,
+        );
+    }
+
+    /// Source `ECHZ` for an acetotrophic methanogen, given the acetate
+    /// feedback `GOMM` in kilojoule per gram carbon. Note the source ADDS the
+    /// acetate feedback here where the fermenter branch subtracts it.
+    pub fn acetotrophicGrowthRespirationRequirement(
+        self: AnaerobicGrowthEnergyParameters,
+        acetate_feedback_kilojoule_per_g_c: f64,
+    ) !f64 {
+        return growthRespirationRequirement(
+            self.acetotrophic_methanogenesis_energy_yield_kilojoule_per_g_c +
+                acetate_feedback_kilojoule_per_g_c,
+            self.acetotrophic_methanogen_growth_energy_requirement_kilojoule_per_g_c,
+            self.minimum_growth_respiration_requirement_g_c_per_g_c,
+        );
+    }
+};
+
+fn growthRespirationRequirement(
+    net_energy_kilojoule_per_g_c: f64,
+    growth_energy_requirement_kilojoule_per_g_c: f64,
+    minimum_g_c_per_g_c: f64,
+) !f64 {
+    if (!std.math.isFinite(net_energy_kilojoule_per_g_c) or
+        !std.math.isFinite(growth_energy_requirement_kilojoule_per_g_c) or
+        growth_energy_requirement_kilojoule_per_g_c <= 0 or
+        !std.math.isFinite(minimum_g_c_per_g_c) or
+        minimum_g_c_per_g_c < 0 or minimum_g_c_per_g_c > 1)
+        return error.InvalidAnaerobicGrowthEnergy;
+    const yield_ratio = @max(0, net_energy_kilojoule_per_g_c) /
+        growth_energy_requirement_kilojoule_per_g_c;
+    const result = @max(minimum_g_c_per_g_c, @min(1, 1 / (1 + yield_ratio)));
+    if (!std.math.isFinite(result) or result < 0 or result > 1)
+        return error.NonFiniteAnaerobicGrowthEnergy;
+    return result;
+}
+
 pub const MicrobialTurnoverParameters = struct {
     labile_basal_decomposition_rate_per_h: f64,
     resistant_basal_decomposition_rate_per_h: f64,
@@ -165,6 +268,10 @@ pub const Parameters = struct {
     microbial_turnover: MicrobialTurnoverParameters,
     microbial_layer_mixing_rate_per_h: f64 = 0.001,
     methane: ?MethaneParameters = null,
+    /// Source NITRO.F 179--187 anaerobic `ECHZ` energetics. Optional so an
+    /// existing runtime parameter file stays valid; when absent, the current
+    /// production constants remain in effect and no behaviour changes.
+    anaerobic_growth_energy: ?AnaerobicGrowthEnergyParameters = null,
 };
 
 /// Runtime compatibility defaults transcribed from the source NITRO parameter
@@ -185,7 +292,7 @@ const source_anaerobic_energy_parameter_text =
     "soil_fermenter_respiration,3,6,0.125,12,12,3,37.5,37.5,0.4,0.5,0.0083143,2,72\n" ++
     "soil_acetotrophic_methanogenesis,4,12,12,0.125,1.5,37.5,0.4,0.0083143,24,0.5";
 
-const source_parameter_text =
+const source_parameter_text_without_anaerobic_growth_energy =
     "soil_nitrification,0.001,0.0002,7000,14,1.4,1.4,0.125,0.125,0.3,0.1,0.5,2.667,3.429,1.143\n" ++
     "soil_denitrification,0.001,1.4,1.4,0.014,1,0.429,0.429,0.214,0.875\n" ++
     "soil_autotrophic_denitrification,0.5,0.333\n" ++
@@ -201,6 +308,12 @@ const source_parameter_text =
     "soil_microbial_turnover,0.01,0.001,0.167,0.333,0.333,0.333,0.150,0.300,0.333,0.25,2.0,5.0,1.0,0.5\n" ++
     "soil_microbial_layer_mixing,0.001\n" ++
     "soil_methane,4,2,0.001,0.01,0.1,1,10,0.05,1.5,0.111,0.2,0.03,0.5,0.4,0.5,0.125";
+
+const source_parameter_text =
+    source_parameter_text_without_anaerobic_growth_energy ++
+    // NITRO.F 179--187: GCHX=3.0, GC4X=1.5, EOMF=EOMY=EOMH=37.5,
+    // EO2X=1/(1+GO2X/EOMC)=1/(1+37.5/25)=0.4, ENFY=1/(1+37.5/37.5)=0.5.
+    "\nsoil_anaerobic_growth_energy,3.0,1.5,37.5,37.5,37.5,0.4,0.5";
 
 /// Runtime soil NITRO parameters. Record names are ASCII case-insensitive and
 /// values accept comma, tab, space, or pipe delimiters with any file extension.
@@ -243,6 +356,7 @@ pub fn parse(source: []const u8) !Parameters {
     try fillStruct(MicrobialTurnoverParameters, &result.microbial_turnover, &tokens);
     result.microbial_layer_mixing_rate_per_h = 0.001;
     result.methane = null;
+    result.anaerobic_growth_energy = null;
     var has_mixing = false;
     while (tokens.next()) |record| {
         if (std.ascii.eqlIgnoreCase(record, "soil_microbial_layer_mixing")) {
@@ -256,6 +370,12 @@ pub fn parse(source: []const u8) !Parameters {
             methane.methanotroph_population_index = try nextUnsigned(&tokens);
             inline for (@typeInfo(MethaneParameters).@"struct".fields[2..]) |field| @field(methane, field.name) = try nextFloat(&tokens);
             result.methane = methane;
+        } else if (std.ascii.eqlIgnoreCase(record, "soil_anaerobic_growth_energy")) {
+            if (result.anaerobic_growth_energy != null) return error.DuplicateSoilNitrogenParameter;
+            var energy: AnaerobicGrowthEnergyParameters = undefined;
+            inline for (@typeInfo(AnaerobicGrowthEnergyParameters).@"struct".fields) |field|
+                @field(energy, field.name) = try nextFloat(&tokens);
+            result.anaerobic_growth_energy = energy;
         } else return error.UnexpectedSoilNitrogenParameter;
     }
     try validate(result);
@@ -406,6 +526,7 @@ fn expectedRecordValueCount(label: []const u8) ?usize {
         .{ .name = "soil_microbial_turnover", .count = structFieldCount(MicrobialTurnoverParameters) },
         .{ .name = "soil_microbial_layer_mixing", .count = 1 },
         .{ .name = "soil_methane", .count = structFieldCount(MethaneParameters) },
+        .{ .name = "soil_anaerobic_growth_energy", .count = structFieldCount(AnaerobicGrowthEnergyParameters) },
     };
     for (entries) |entry| {
         if (std.ascii.eqlIgnoreCase(label, entry.name)) return entry.count;
@@ -445,6 +566,22 @@ pub fn validate(parameters: Parameters) !void {
         if (methane.hydrogenotroph_population_index == methane.methanotroph_population_index) return error.InvalidSoilNitrogenParameter;
         inline for (@typeInfo(MethaneParameters).@"struct".fields[2..]) |field| if (!std.math.isFinite(@field(methane, field.name)) or @field(methane, field.name) < 0) return error.InvalidSoilNitrogenParameter;
         if (methane.hydrogen_half_saturation_g_h_per_m3 <= 0 or methane.methanogen_growth_energy_requirement_kj_per_g_c <= 0 or methane.hydrogen_supply_conversion_g_c_per_g_h <= 0 or methane.methane_half_saturation_g_c_per_m3 <= 0 or methane.minimum_growth_respiration_fraction > 1) return error.InvalidSoilNitrogenParameter;
+    }
+    if (parameters.anaerobic_growth_energy) |energy| {
+        inline for (@typeInfo(AnaerobicGrowthEnergyParameters).@"struct".fields) |field| {
+            const value = @field(energy, field.name);
+            if (!std.math.isFinite(value) or value <= 0) return error.InvalidSoilNitrogenParameter;
+        }
+        // The two ECHZ floors are dimensionless growth respiration fractions.
+        if (energy.minimum_growth_respiration_requirement_g_c_per_g_c > 1 or
+            energy.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c > 1)
+            return error.InvalidSoilNitrogenParameter;
+        // Both ECHZ branches must be evaluable at zero product feedback, which
+        // is the most favourable case, and at the strongest feedback that still
+        // leaves a nonnegative numerator. Failing here beats failing per layer.
+        _ = try energy.fermenterGrowthRespirationRequirement(0, false);
+        _ = try energy.fermenterGrowthRespirationRequirement(0, true);
+        _ = try energy.acetotrophicGrowthRespirationRequirement(0);
     }
     if (turnover.minimum_carbon_recycling_fraction + turnover.carbon_recycling_range_fraction > 1 or turnover.maximum_nitrogen_recycling_fraction > 1 or turnover.maximum_phosphorus_recycling_fraction > 1 or turnover.humification_maximum_clay_fraction > 1) return error.InvalidSoilNitrogenParameter;
 }
@@ -551,9 +688,11 @@ test "source NITRO derived geometry phosphate and EN2F defaults reach runtime ow
 }
 
 test "anaerobic energy owners remain outside production parameter aggregate" {
-    // NITRO EOMF/EOMY/GCHX and EOMH/GC4X reach the isolated kernels only as
-    // caller-supplied arrays. Isolated runtime owners now exist, but keep
-    // this negative proof until production bindings are added deliberately.
+    // The two isolated vector kernels are still NOT production-bound, and must
+    // not be: `soil_heterotrophic_respiration_step` already owns the anaerobic
+    // respiration publish set for the same populations, so binding them would
+    // be a double mutation. See
+    // `docs/traceability/bind_nitro_001_double_mutation_analysis.md`.
     try std.testing.expect(!@hasField(Parameters, "fermenter_respiration"));
     try std.testing.expect(!@hasField(Parameters, "acetotrophic_methanogenesis"));
 
@@ -562,6 +701,197 @@ test "anaerobic energy owners remain outside production parameter aggregate" {
     // must not be mistaken for source acetotrophic GC4X=1.5/EOMH=37.5.
     try std.testing.expect(methane.hydrogenotrophic_reference_energy_yield_kj_per_g_c != 1.5);
     try std.testing.expect(methane.methanogen_growth_energy_requirement_kj_per_g_c != 37.5);
+
+    // The `ECHZ` energetics DO now have a runtime home, because the owning
+    // NITRO lane needs one to correct the constants inside the single existing
+    // owner. Carrying the values is not the same as binding a second writer.
+    const energy = (try sourceParameters()).anaerobic_growth_energy.?;
+    try std.testing.expectEqual(@as(f64, 1.5), energy.acetotrophic_methanogenesis_energy_yield_kilojoule_per_g_c);
+    try std.testing.expectEqual(@as(f64, 37.5), energy.acetotrophic_methanogen_growth_energy_requirement_kilojoule_per_g_c);
+}
+
+test "NITRO 179-187 anaerobic ECHZ energetics reach a runtime owner" {
+    const energy = (try sourceParameters()).anaerobic_growth_energy.?;
+    // GCHX=3.00, GC4X=1.50, EOMF=EOMY=EOMH=37.5 at nitro.f 179--182.
+    try std.testing.expectEqual(@as(f64, 3.0), energy.fermentation_energy_yield_kilojoule_per_g_c);
+    try std.testing.expectEqual(@as(f64, 1.5), energy.acetotrophic_methanogenesis_energy_yield_kilojoule_per_g_c);
+    try std.testing.expectEqual(@as(f64, 37.5), energy.fermenter_growth_energy_requirement_kilojoule_per_g_c);
+    try std.testing.expectEqual(@as(f64, 37.5), energy.anaerobic_diazotroph_growth_energy_requirement_kilojoule_per_g_c);
+    try std.testing.expectEqual(@as(f64, 37.5), energy.acetotrophic_methanogen_growth_energy_requirement_kilojoule_per_g_c);
+    // EO2X=1/(1+GO2X/EOMC)=1/(1+37.5/25); ENFY=1/(1+GO2X/EOMY)=1/(1+37.5/37.5).
+    try std.testing.expectEqual(
+        1.0 / (1.0 + 37.5 / 25.0),
+        energy.minimum_growth_respiration_requirement_g_c_per_g_c,
+    );
+    try std.testing.expectEqual(
+        1.0 / (1.0 + 37.5 / 37.5),
+        energy.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c,
+    );
+}
+
+test "NITRO 924-928 and 1003-1004 ECHZ reproduce source operation order" {
+    const energy = (try sourceParameters()).anaerobic_growth_energy.?;
+
+    // Read the source form carefully. ECHZ is the growth RESPIRATION
+    // requirement, so growth yield is 1-ECHZ:
+    //   ECHZ = max(floor, min(1, 1/(1 + max(0, net)/EOM)))
+    // A LARGER net available energy makes the denominator larger and ECHZ
+    // SMALLER, i.e. more of the carbon becomes biomass. When net energy falls
+    // to zero the ratio is zero and ECHZ saturates at exactly 1: every gram
+    // respired, no growth. That is the correct self-limiting direction.
+
+    // Zero product feedback. fermenter N=4: 1/(1+max(0,3.0-0)/37.5).
+    try std.testing.expectApproxEqAbs(
+        1.0 / (1.0 + 3.0 / 37.5),
+        try energy.fermenterGrowthRespirationRequirement(0, false),
+        1e-15,
+    );
+    // acetotroph N=5: 1/(1+max(0,1.5+0)/37.5). Note the source ADDS the
+    // acetate feedback for this branch where the fermenter subtracts it.
+    try std.testing.expectApproxEqAbs(
+        1.0 / (1.0 + 1.5 / 37.5),
+        try energy.acetotrophicGrowthRespirationRequirement(0),
+        1e-15,
+    );
+
+    // Strong H2/acetate feedback cancels the fermentation energy yield, so the
+    // numerator clamps at zero and ECHZ saturates at 1. This is the mechanism
+    // that makes fermentation self-limiting as products accumulate.
+    try std.testing.expectEqual(
+        @as(f64, 1),
+        try energy.fermenterGrowthRespirationRequirement(3.0, false),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 1),
+        try energy.fermenterGrowthRespirationRequirement(100, false),
+    );
+    // Symmetrically, a strongly NEGATIVE acetate feedback drives the
+    // acetotroph numerator to zero, so it too saturates at 1, not at the floor.
+    try std.testing.expectEqual(
+        @as(f64, 1),
+        try energy.acetotrophicGrowthRespirationRequirement(-1000),
+    );
+
+    // The EO2X/ENFY floors bind only when net energy is LARGE. For the
+    // acetotroph, 1/(1+net/37.5) < EO2X=0.4 needs net > 37.5*1.5 = 56.25, so
+    // an acetate feedback above 54.75 reaches the floor.
+    try std.testing.expectEqual(
+        energy.minimum_growth_respiration_requirement_g_c_per_g_c,
+        try energy.acetotrophicGrowthRespirationRequirement(100),
+    );
+    // The diazotroph floor ENFY=0.5 binds sooner than the fermenter floor
+    // EO2X=0.4: it needs only net > 37.5, i.e. a feedback below 3.0-37.5.
+    try std.testing.expectEqual(
+        energy.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c,
+        try energy.fermenterGrowthRespirationRequirement(-100, true),
+    );
+    try std.testing.expectEqual(
+        energy.minimum_growth_respiration_requirement_g_c_per_g_c,
+        try energy.fermenterGrowthRespirationRequirement(-100, false),
+    );
+
+    // ECHZ is monotonically NON-DECREASING in the fermenter product feedback:
+    // more accumulated product means more respiration and less growth.
+    var previous: f64 = 0;
+    for ([_]f64{ -100, -50, -10, -1, 0, 1, 2, 3, 50 }) |feedback| {
+        const value = try energy.fermenterGrowthRespirationRequirement(feedback, false);
+        try std.testing.expect(value >= previous);
+        previous = value;
+    }
+
+    // Every result is a valid growth respiration fraction within its floor.
+    for ([_]f64{ -1000, -50, -1, 0, 1, 3, 50, 1000 }) |feedback| {
+        const fermenter = try energy.fermenterGrowthRespirationRequirement(feedback, false);
+        const diazotroph = try energy.fermenterGrowthRespirationRequirement(feedback, true);
+        const acetotroph = try energy.acetotrophicGrowthRespirationRequirement(feedback);
+        for ([_]f64{ fermenter, diazotroph, acetotroph }) |value| {
+            try std.testing.expect(value >= 0 and value <= 1);
+        }
+        try std.testing.expect(diazotroph >= energy.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c);
+        try std.testing.expect(fermenter >= energy.minimum_growth_respiration_requirement_g_c_per_g_c);
+        try std.testing.expect(acetotroph >= energy.minimum_growth_respiration_requirement_g_c_per_g_c);
+    }
+}
+
+test "production anaerobic constants differ from source ECHZ as recorded" {
+    // This is the defect BIND-NITRO-001 actually found, pinned so it cannot be
+    // silently "fixed" by editing a constant without a model_changes.md entry.
+    const energy = (try sourceParameters()).anaerobic_growth_energy.?;
+    const heterotrophic = (try sourceParameters()).heterotrophic_respiration;
+
+    // 0.42016806722689076 is EO2A = 1/(1+(GO2X-GCHX)/EOMC), the AEROBIC acetate
+    // requirement, not the acetotrophic methanogen's ECHZ. Exact to the last
+    // bit, so this is certainly its origin.
+    const aerobic_acetate_requirement = 1.0 / (1.0 + (37.5 - 3.0) / 25.0);
+    try std.testing.expectApproxEqAbs(
+        aerobic_acetate_requirement,
+        heterotrophic.acetate_respiration_requirement_g_c_per_g_c,
+        1e-15,
+    );
+    // The acetotroph's own source floor is EO2X, and at zero product feedback
+    // its ECHZ is far higher than the constant production applies, so the
+    // current path understates the anaerobic supply limit RGOGX.
+    try std.testing.expect(
+        heterotrophic.acetate_respiration_requirement_g_c_per_g_c <
+            try energy.acetotrophicGrowthRespirationRequirement(0),
+    );
+    // The fermenter constant 0.5 equals the DIAZOTROPH floor ENFY, applied to
+    // both N=4 and N=7, where the N=4 floor should be EO2X=0.4.
+    try std.testing.expectEqual(
+        energy.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c,
+        heterotrophic.doc_respiration_requirement_g_c_per_g_c,
+    );
+    try std.testing.expect(
+        heterotrophic.doc_respiration_requirement_g_c_per_g_c <
+            try energy.fermenterGrowthRespirationRequirement(0, false),
+    );
+}
+
+test "anaerobic growth energy record is optional and strictly validated" {
+    // Absent record keeps an existing runtime parameter file valid and leaves
+    // current production behaviour untouched. Every runscript in examples-ng
+    // still omits this record.
+    const without = try parse(source_parameter_text_without_anaerobic_growth_energy);
+    try std.testing.expect(without.anaerobic_growth_energy == null);
+    try std.testing.expect(without.methane != null);
+
+    // Case-insensitive label and any supported delimiter.
+    const with = try parse(
+        source_parameter_text_without_anaerobic_growth_energy ++
+            "\nSOIL_ANAEROBIC_GROWTH_ENERGY|4.0|2.0|38|39|40|0.41|0.51",
+    );
+    try std.testing.expectEqual(
+        @as(f64, 4),
+        with.anaerobic_growth_energy.?.fermentation_energy_yield_kilojoule_per_g_c,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.51),
+        with.anaerobic_growth_energy.?.anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c,
+    );
+
+    // Short record, and a floor above one, are both rejected.
+    try std.testing.expectError(
+        error.InvalidSoilNitrogenParameterRecordArity,
+        parse(source_parameter_text_without_anaerobic_growth_energy ++
+            "\nsoil_anaerobic_growth_energy 3.0 1.5 37.5"),
+    );
+    try std.testing.expectError(
+        error.InvalidSoilNitrogenParameter,
+        parse(source_parameter_text_without_anaerobic_growth_energy ++
+            "\nsoil_anaerobic_growth_energy 3.0 1.5 37.5 37.5 37.5 1.5 0.5"),
+    );
+    // A zero growth energy requirement would divide by zero inside ECHZ.
+    try std.testing.expectError(
+        error.InvalidSoilNitrogenParameter,
+        parse(source_parameter_text_without_anaerobic_growth_energy ++
+            "\nsoil_anaerobic_growth_energy 3.0 1.5 0 37.5 37.5 0.4 0.5"),
+    );
+    // A duplicate record is a configuration error, not a last-wins override.
+    try std.testing.expectError(
+        error.DuplicateSoilNitrogenParameter,
+        parse(source_parameter_text ++
+            "\nsoil_anaerobic_growth_energy 3.0 1.5 37.5 37.5 37.5 0.4 0.5"),
+    );
 }
 
 test "NITRO anaerobic energy defaults have isolated runtime owners" {

@@ -23,10 +23,10 @@ pub const View = struct {
     surface_boundary: ?SurfaceBoundary.View,
     surface_litter_geometry: *const SurfaceLitterGeometry,
     surface_litter_ice_m3: []const f64,
-    delayed_live_canopy_combustion_heat_mj: []const f64,
-    delayed_standing_dead_combustion_heat_mj: []const f64,
-    delayed_subsurface_combustion_heat_mj: []const f64,
-    delayed_surface_combustion_heat_mj: []const f64,
+    delayed_live_canopy_combustion_heat_megajoules: []const f64,
+    delayed_standing_dead_combustion_heat_megajoules: []const f64,
+    delayed_subsurface_combustion_heat_megajoules: []const f64,
+    delayed_surface_combustion_heat_megajoules: []const f64,
 };
 
 pub const Limits = struct {
@@ -49,20 +49,20 @@ pub const Owned = struct {
     surface_litter_geometry: SurfaceLitterGeometry,
     surface_litter_ice_m3: []f64,
     allocator: std.mem.Allocator,
-    delayed_live_canopy_combustion_heat_mj: []f64,
-    delayed_standing_dead_combustion_heat_mj: []f64,
-    delayed_subsurface_combustion_heat_mj: []f64,
-    delayed_surface_combustion_heat_mj: []f64,
+    delayed_live_canopy_combustion_heat_megajoules: []f64,
+    delayed_standing_dead_combustion_heat_megajoules: []f64,
+    delayed_subsurface_combustion_heat_megajoules: []f64,
+    delayed_surface_combustion_heat_megajoules: []f64,
 
     pub fn deinit(self: *Owned) void {
         self.surface_litter_geometry.deinit();
         self.surface_boundary.deinit();
         self.allocator.free(self.surface_litter_ice_m3);
         self.runtime.deinit();
-        self.allocator.free(self.delayed_surface_combustion_heat_mj);
-        self.allocator.free(self.delayed_subsurface_combustion_heat_mj);
-        self.allocator.free(self.delayed_standing_dead_combustion_heat_mj);
-        self.allocator.free(self.delayed_live_canopy_combustion_heat_mj);
+        self.allocator.free(self.delayed_surface_combustion_heat_megajoules);
+        self.allocator.free(self.delayed_subsurface_combustion_heat_megajoules);
+        self.allocator.free(self.delayed_standing_dead_combustion_heat_megajoules);
+        self.allocator.free(self.delayed_live_canopy_combustion_heat_megajoules);
         self.eroded_minerals.deinit();
         self.erosion.deinit();
         self.surface.deinit();
@@ -84,7 +84,7 @@ pub fn write(writer: anytype, view: View) !void {
     try writer.writeInt(u64, @intCast(view.hydrology.rows), .little);
     try writer.writeInt(u64, @intCast(view.hydrology.soil_layer_capacity), .little);
     try writer.writeInt(u64, @intCast(view.hydrology.snow_layer_capacity), .little);
-    try writer.writeInt(u64, @intCast(view.delayed_live_canopy_combustion_heat_mj.len), .little);
+    try writer.writeInt(u64, @intCast(view.delayed_live_canopy_combustion_heat_megajoules.len), .little);
     try writeUsizeSlice(writer, view.geometry.first_active_layer);
     try writeUsizeSlice(writer, view.geometry.active_layer_count);
     inline for (@typeInfo(Geometry).@"struct".fields) |field| {
@@ -104,8 +104,8 @@ pub fn write(writer: anytype, view: View) !void {
                 writer,
                 @field(view.surface_litter_geometry, field.name),
             );
-    try writeF64Slice(writer, view.erosion.surface_sediment_Mg);
-    try writeF64Slice(writer, view.erosion.surface_soil_mass_Mg);
+    try writeF64Slice(writer, view.erosion.surface_sediment_megagrams);
+    try writeF64Slice(writer, view.erosion.surface_soil_mass_megagrams);
     try writeBoolSlice(writer, view.erosion.surface_soil_mass_initialized);
     for (view.climate.modifiers) |modifier| inline for (@typeInfo(@TypeOf(modifier)).@"struct".fields) |field| {
         const value = @field(modifier, field.name);
@@ -115,10 +115,10 @@ pub fn write(writer: anytype, view: View) !void {
     try writer.writeByte(@intFromBool(view.eroded_minerals.initialized));
     try writeF64Slice(writer, view.eroded_minerals.workspace.pools);
     try writeF64Slice(writer, view.eroded_minerals.workspace.exported);
-    try writeF64Slice(writer, view.delayed_live_canopy_combustion_heat_mj);
-    try writeF64Slice(writer, view.delayed_standing_dead_combustion_heat_mj);
-    try writeF64Slice(writer, view.delayed_subsurface_combustion_heat_mj);
-    try writeF64Slice(writer, view.delayed_surface_combustion_heat_mj);
+    try writeF64Slice(writer, view.delayed_live_canopy_combustion_heat_megajoules);
+    try writeF64Slice(writer, view.delayed_standing_dead_combustion_heat_megajoules);
+    try writeF64Slice(writer, view.delayed_subsurface_combustion_heat_megajoules);
+    try writeF64Slice(writer, view.delayed_surface_combustion_heat_megajoules);
     try writeF64Slice(writer, view.surface_litter_ice_m3);
     try Runtime.write(writer, runtime);
     try SurfaceBoundary.write(writer, surface_boundary);
@@ -182,8 +182,8 @@ pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits
                 reader,
                 @field(surface_litter_geometry, field.name),
             );
-    try readF64Slice(reader, erosion.surface_sediment_Mg);
-    try readF64Slice(reader, erosion.surface_soil_mass_Mg);
+    try readF64Slice(reader, erosion.surface_sediment_megagrams);
+    try readF64Slice(reader, erosion.surface_soil_mass_megagrams);
     try readBoolSlice(reader, erosion.surface_soil_mass_initialized);
     for (&climate.modifiers) |*modifier| inline for (@typeInfo(@TypeOf(modifier.*)).@"struct".fields) |field| {
         @field(modifier.*, field.name) = @bitCast(try reader.takeInt(u64, .little));
@@ -211,8 +211,8 @@ pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits
         error.EndOfStream => {},
         else => return err,
     }
-    const result = Owned{ .geometry = geometry, .hydrology = hydrology, .surface = surface, .erosion = erosion, .climate = climate, .eroded_minerals = eroded_minerals, .runtime = runtime, .surface_boundary = surface_boundary, .surface_litter_geometry = surface_litter_geometry, .surface_litter_ice_m3 = surface_litter_ice_m3, .allocator = allocator, .delayed_live_canopy_combustion_heat_mj = delayed_live_heat, .delayed_standing_dead_combustion_heat_mj = delayed_dead_heat, .delayed_subsurface_combustion_heat_mj = delayed_subsurface_heat, .delayed_surface_combustion_heat_mj = delayed_surface_heat };
-    try validate(.{ .geometry = &result.geometry, .hydrology = &result.hydrology, .surface = &result.surface, .erosion = &result.erosion, .climate = &result.climate, .eroded_minerals = &result.eroded_minerals, .runtime = null, .surface_boundary = null, .surface_litter_geometry = &result.surface_litter_geometry, .surface_litter_ice_m3 = result.surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_mj = result.delayed_live_canopy_combustion_heat_mj, .delayed_standing_dead_combustion_heat_mj = result.delayed_standing_dead_combustion_heat_mj, .delayed_subsurface_combustion_heat_mj = result.delayed_subsurface_combustion_heat_mj, .delayed_surface_combustion_heat_mj = result.delayed_surface_combustion_heat_mj });
+    const result = Owned{ .geometry = geometry, .hydrology = hydrology, .surface = surface, .erosion = erosion, .climate = climate, .eroded_minerals = eroded_minerals, .runtime = runtime, .surface_boundary = surface_boundary, .surface_litter_geometry = surface_litter_geometry, .surface_litter_ice_m3 = surface_litter_ice_m3, .allocator = allocator, .delayed_live_canopy_combustion_heat_megajoules = delayed_live_heat, .delayed_standing_dead_combustion_heat_megajoules = delayed_dead_heat, .delayed_subsurface_combustion_heat_megajoules = delayed_subsurface_heat, .delayed_surface_combustion_heat_megajoules = delayed_surface_heat };
+    try validate(.{ .geometry = &result.geometry, .hydrology = &result.hydrology, .surface = &result.surface, .erosion = &result.erosion, .climate = &result.climate, .eroded_minerals = &result.eroded_minerals, .runtime = null, .surface_boundary = null, .surface_litter_geometry = &result.surface_litter_geometry, .surface_litter_ice_m3 = result.surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_megajoules = result.delayed_live_canopy_combustion_heat_megajoules, .delayed_standing_dead_combustion_heat_megajoules = result.delayed_standing_dead_combustion_heat_megajoules, .delayed_subsurface_combustion_heat_megajoules = result.delayed_subsurface_combustion_heat_megajoules, .delayed_surface_combustion_heat_megajoules = result.delayed_surface_combustion_heat_megajoules });
     return result;
 }
 
@@ -220,7 +220,7 @@ fn validate(view: View) !void {
     const geometry = view.geometry;
     const hydrology = view.hydrology;
     const cells = std.math.mul(usize, hydrology.columns, hydrology.rows) catch return error.InvalidSoilGeometryCheckpointDimensions;
-    if (hydrology.columns == 0 or hydrology.rows == 0 or hydrology.soil_layer_capacity == 0 or hydrology.snow_layer_capacity == 0 or geometry.cell_count != cells or geometry.layer_capacity != hydrology.soil_layer_capacity or view.surface.cell_count != cells or view.surface_litter_geometry.cell_count != cells or view.erosion.cell_count != cells or view.delayed_live_canopy_combustion_heat_mj.len == 0 or view.delayed_standing_dead_combustion_heat_mj.len != view.delayed_live_canopy_combustion_heat_mj.len or view.delayed_subsurface_combustion_heat_mj.len != try std.math.mul(usize, cells, hydrology.soil_layer_capacity) or view.delayed_surface_combustion_heat_mj.len != cells or view.surface_litter_ice_m3.len != cells) return error.InvalidSoilGeometryCheckpointDimensions;
+    if (hydrology.columns == 0 or hydrology.rows == 0 or hydrology.soil_layer_capacity == 0 or hydrology.snow_layer_capacity == 0 or geometry.cell_count != cells or geometry.layer_capacity != hydrology.soil_layer_capacity or view.surface.cell_count != cells or view.surface_litter_geometry.cell_count != cells or view.erosion.cell_count != cells or view.delayed_live_canopy_combustion_heat_megajoules.len == 0 or view.delayed_standing_dead_combustion_heat_megajoules.len != view.delayed_live_canopy_combustion_heat_megajoules.len or view.delayed_subsurface_combustion_heat_megajoules.len != try std.math.mul(usize, cells, hydrology.soil_layer_capacity) or view.delayed_surface_combustion_heat_megajoules.len != cells or view.surface_litter_ice_m3.len != cells) return error.InvalidSoilGeometryCheckpointDimensions;
     for (0..cells) |cell| {
         const first = geometry.first_active_layer[cell];
         const count = geometry.active_layer_count[cell];
@@ -241,10 +241,10 @@ fn validate(view: View) !void {
     if (view.eroded_minerals.workspace.cell_count != cells or view.eroded_minerals.workspace.component_count != @import("soil_erosion_mineral_bridge.zig").component_count) return error.InvalidSoilGeometryCheckpointDimensions;
     try validateFinite(view.eroded_minerals.workspace.pools);
     try validateFinite(view.eroded_minerals.workspace.exported);
-    try validateFinite(view.delayed_live_canopy_combustion_heat_mj);
-    try validateFinite(view.delayed_standing_dead_combustion_heat_mj);
-    try validateFinite(view.delayed_subsurface_combustion_heat_mj);
-    try validateFinite(view.delayed_surface_combustion_heat_mj);
+    try validateFinite(view.delayed_live_canopy_combustion_heat_megajoules);
+    try validateFinite(view.delayed_standing_dead_combustion_heat_megajoules);
+    try validateFinite(view.delayed_subsurface_combustion_heat_megajoules);
+    try validateFinite(view.delayed_surface_combustion_heat_megajoules);
     try validateFinite(view.surface_litter_ice_m3);
     inline for (@typeInfo(SurfaceLitterGeometry).@"struct".fields) |field|
         if (field.type == []f64)
@@ -255,7 +255,7 @@ fn validate(view: View) !void {
             litter.water_retention_capacity_m3[cell],
             litter.dry_litter_volume_m3[cell],
             litter.expanded_total_volume_m3[cell],
-            litter.dry_mass_Mg[cell],
+            litter.dry_mass_megagrams[cell],
             litter.pore_volume_m3[cell],
             litter.air_volume_m3[cell],
             litter.porosity_m3_per_m3[cell],
@@ -273,7 +273,7 @@ fn validate(view: View) !void {
                 litter.field_capacity_m3_per_m3[cell])
             return error.InvalidCheckpointSurfaceLitterGeometry;
     }
-    inline for (.{ view.delayed_live_canopy_combustion_heat_mj, view.delayed_standing_dead_combustion_heat_mj, view.delayed_subsurface_combustion_heat_mj, view.delayed_surface_combustion_heat_mj }) |values| for (values) |value| if (value < 0) return error.InvalidCheckpointDelayedCombustionHeat;
+    inline for (.{ view.delayed_live_canopy_combustion_heat_megajoules, view.delayed_standing_dead_combustion_heat_megajoules, view.delayed_subsurface_combustion_heat_megajoules, view.delayed_surface_combustion_heat_megajoules }) |values| for (values) |value| if (value < 0) return error.InvalidCheckpointDelayedCombustionHeat;
     for (view.surface_litter_ice_m3) |value| if (value < 0)
         return error.InvalidCheckpointSurfaceLitterIce;
     for (view.eroded_minerals.workspace.pools) |value| if (value < -1e-14) return error.InvalidSoilGeometryCheckpointInventory;
@@ -286,11 +286,11 @@ fn validate(view: View) !void {
     if (view.runtime) |runtime| try Runtime.validateView(runtime);
     if (view.surface_boundary) |surface_boundary|
         try SurfaceBoundary.validateView(surface_boundary);
-    try validateFinite(view.erosion.surface_sediment_Mg);
-    try validateFinite(view.erosion.surface_soil_mass_Mg);
+    try validateFinite(view.erosion.surface_sediment_megagrams);
+    try validateFinite(view.erosion.surface_soil_mass_megagrams);
     for (0..cells) |cell| {
-        if (view.erosion.surface_sediment_Mg[cell] < -1e-14 or view.erosion.surface_soil_mass_Mg[cell] < -1e-14) return error.InvalidSoilGeometryCheckpointInventory;
-        if (view.erosion.surface_soil_mass_initialized[cell] and view.erosion.surface_soil_mass_Mg[cell] <= 0) return error.InvalidCheckpointSurfaceSoilMass;
+        if (view.erosion.surface_sediment_megagrams[cell] < -1e-14 or view.erosion.surface_soil_mass_megagrams[cell] < -1e-14) return error.InvalidSoilGeometryCheckpointInventory;
+        if (view.erosion.surface_soil_mass_initialized[cell] and view.erosion.surface_soil_mass_megagrams[cell] <= 0) return error.InvalidCheckpointSurfaceSoilMass;
     }
     inline for (.{ hydrology.micropore_water_volume_m3, hydrology.macropore_water_volume_m3, hydrology.matrix_air_volume_m3, hydrology.macropore_air_volume_m3, hydrology.air_volume_m3, hydrology.water_vapor_volume_m3, hydrology.snow_surface_carrier_volume_m3, hydrology.snow_liquid_water_volume_m3 }) |values| {
         for (values) |value| if (value < -1e-14) return error.InvalidSoilGeometryCheckpointInventory;
@@ -396,11 +396,11 @@ const TestRuntime = struct {
         @memset(result.thermal.layer_volume_m3, 1);
         @memset(result.thermal.layer_thickness_m, 1);
         @memset(result.thermal.porosity_fraction, 0.5);
-        @memset(result.thermal.dry_solid_heat_capacity_mj_per_m3_k, 1);
-        @memset(result.thermal.solid_thermal_conductivity_numerator_m_mj_per_h_k, 1);
+        @memset(result.thermal.dry_solid_heat_capacity_megajoules_per_m3_k, 1);
+        @memset(result.thermal.solid_thermal_conductivity_numerator_m_megajoules_per_h_k, 1);
         @memset(result.thermal.solid_thermal_conductivity_denominator, 1);
-        @memset(result.thermal.total_heat_capacity_mj_per_m3_k, 2);
-        @memset(result.thermal.thermal_conductivity_m_mj_per_h_k, 0.5);
+        @memset(result.thermal.total_heat_capacity_megajoules_per_m3_k, 2);
+        @memset(result.thermal.thermal_conductivity_m_megajoules_per_h_k, 0.5);
         return result;
     }
 
@@ -459,7 +459,7 @@ const TestSurfaceBoundary = struct {
         result.ground_air.cell_count = cell_count;
         result.ground_air.temperature_k = result.ground_fields[0];
         result.ground_air.vapor_volume_fraction = result.ground_fields[1];
-        result.ground_air.heat_capacity_mj_per_k = result.ground_fields[2];
+        result.ground_air.heat_capacity_megajoules_per_k = result.ground_fields[2];
         result.ground_air.air_volume_m3 = result.ground_fields[3];
         result.ground_air.iteration_count = result.iterations;
         result.aerodynamics = undefined;
@@ -530,11 +530,11 @@ test "soil geometry checkpoint round trips arbitrary grid layers and flux ledger
     runtime.thermal.layer_volume_m3[41] = 0.44;
     runtime.thermal.layer_thickness_m[41] = 0.044;
     runtime.thermal.porosity_fraction[41] = 0.42;
-    runtime.thermal.dry_solid_heat_capacity_mj_per_m3_k[41] = 1.67;
-    runtime.thermal.total_heat_capacity_mj_per_m3_k[41] = 2.91;
-    runtime.thermal.thermal_conductivity_m_mj_per_h_k[41] = 0.0042;
+    runtime.thermal.dry_solid_heat_capacity_megajoules_per_m3_k[41] = 1.67;
+    runtime.thermal.total_heat_capacity_megajoules_per_m3_k[41] = 2.91;
+    runtime.thermal.thermal_conductivity_m_megajoules_per_h_k[41] = 0.0042;
     hydrology.micropore_water_volume_m3[41] = 2.5;
-    hydrology.heat_face_flux_mj_per_step[125] = -3.5;
+    hydrology.heat_face_flux_megajoules_per_step[125] = -3.5;
     hydrology.snow_liquid_water_volume_m3[23] = 0.4;
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer bytes.deinit();
@@ -545,8 +545,8 @@ test "soil geometry checkpoint round trips arbitrary grid layers and flux ledger
     surface_litter_geometry.porosity_m3_per_m3[5] = 0.63;
     surface_litter_geometry.field_capacity_m3_per_m3[5] = 0.31;
     surface_litter_geometry.wilting_point_m3_per_m3[5] = 0.12;
-    erosion.surface_sediment_Mg[5] = 0.25;
-    erosion.surface_soil_mass_Mg[5] = 4.5;
+    erosion.surface_sediment_megagrams[5] = 0.25;
+    erosion.surface_soil_mass_megagrams[5] = 4.5;
     erosion.surface_soil_mass_initialized[5] = true;
     climate.modifiers[2].precipitation = 1.25;
     eroded_minerals.initialized = true;
@@ -561,26 +561,26 @@ test "soil geometry checkpoint round trips arbitrary grid layers and flux ledger
     subsurface_heat[41] = 3.75;
     surface_heat[5] = 5;
     surface_ice[5] = 0.375;
-    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &surface_ice, .delayed_live_canopy_combustion_heat_mj = &live_heat, .delayed_standing_dead_combustion_heat_mj = &dead_heat, .delayed_subsurface_combustion_heat_mj = &subsurface_heat, .delayed_surface_combustion_heat_mj = &surface_heat });
+    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &surface_ice, .delayed_live_canopy_combustion_heat_megajoules = &live_heat, .delayed_standing_dead_combustion_heat_megajoules = &dead_heat, .delayed_subsurface_combustion_heat_megajoules = &subsurface_heat, .delayed_surface_combustion_heat_megajoules = &surface_heat });
     var reader: std.Io.Reader = .fixed(bytes.written());
     var restored = try read(std.testing.allocator, &reader, .{ .maximum_columns = 10, .maximum_rows = 10, .maximum_soil_layers = 20, .maximum_snow_layers = 10, .maximum_plants = 20 });
     defer restored.deinit();
     try std.testing.expectEqualSlices(usize, geometry.first_active_layer, restored.geometry.first_active_layer);
     try std.testing.expectEqualSlices(f64, geometry.boundary_depth_m, restored.geometry.boundary_depth_m);
-    try std.testing.expectEqualSlices(f64, hydrology.heat_face_flux_mj_per_step, restored.hydrology.heat_face_flux_mj_per_step);
+    try std.testing.expectEqualSlices(f64, hydrology.heat_face_flux_megajoules_per_step, restored.hydrology.heat_face_flux_megajoules_per_step);
     try std.testing.expectEqualSlices(f64, hydrology.snow_liquid_water_volume_m3, restored.hydrology.snow_liquid_water_volume_m3);
     try std.testing.expectEqualSlices(f64, surface.solid_snow_water_equivalent_m3, restored.surface.solid_snow_water_equivalent_m3);
     try std.testing.expectEqualSlices(f64, surface_litter_geometry.expanded_total_volume_m3, restored.surface_litter_geometry.expanded_total_volume_m3);
     try std.testing.expectEqualSlices(f64, surface_litter_geometry.air_volume_m3, restored.surface_litter_geometry.air_volume_m3);
-    try std.testing.expectEqualSlices(f64, erosion.surface_sediment_Mg, restored.erosion.surface_sediment_Mg);
-    try std.testing.expectEqualSlices(f64, erosion.surface_soil_mass_Mg, restored.erosion.surface_soil_mass_Mg);
+    try std.testing.expectEqualSlices(f64, erosion.surface_sediment_megagrams, restored.erosion.surface_sediment_megagrams);
+    try std.testing.expectEqualSlices(f64, erosion.surface_soil_mass_megagrams, restored.erosion.surface_soil_mass_megagrams);
     try std.testing.expectEqualSlices(bool, erosion.surface_soil_mass_initialized, restored.erosion.surface_soil_mass_initialized);
     try std.testing.expectEqual(climate.modifiers[2], restored.climate.modifiers[2]);
     try std.testing.expectEqualSlices(f64, eroded_minerals.workspace.pools, restored.eroded_minerals.workspace.pools);
-    try std.testing.expectEqualSlices(f64, &live_heat, restored.delayed_live_canopy_combustion_heat_mj);
-    try std.testing.expectEqualSlices(f64, &dead_heat, restored.delayed_standing_dead_combustion_heat_mj);
-    try std.testing.expectEqualSlices(f64, &subsurface_heat, restored.delayed_subsurface_combustion_heat_mj);
-    try std.testing.expectEqualSlices(f64, &surface_heat, restored.delayed_surface_combustion_heat_mj);
+    try std.testing.expectEqualSlices(f64, &live_heat, restored.delayed_live_canopy_combustion_heat_megajoules);
+    try std.testing.expectEqualSlices(f64, &dead_heat, restored.delayed_standing_dead_combustion_heat_megajoules);
+    try std.testing.expectEqualSlices(f64, &subsurface_heat, restored.delayed_subsurface_combustion_heat_megajoules);
+    try std.testing.expectEqualSlices(f64, &surface_heat, restored.delayed_surface_combustion_heat_megajoules);
     try std.testing.expectEqualSlices(f64, &surface_ice, restored.surface_litter_ice_m3);
     try std.testing.expectEqual(
         surface_boundary.ground_air.temperature_k[5],
@@ -618,10 +618,10 @@ test "soil geometry checkpoint round trips arbitrary grid layers and flux ledger
         ][41],
     );
     try std.testing.expectEqual(
-        runtime.thermal.dry_solid_heat_capacity_mj_per_m3_k[41],
+        runtime.thermal.dry_solid_heat_capacity_megajoules_per_m3_k[41],
         restored.runtime.thermal_fields[
             @intFromEnum(
-                Runtime.ThermalField.dry_solid_heat_capacity_mj_per_m3_k,
+                Runtime.ThermalField.dry_solid_heat_capacity_megajoules_per_m3_k,
             )
         ][41],
     );
@@ -636,8 +636,8 @@ test "soil geometry checkpoint round trips arbitrary grid layers and flux ledger
         target_runtime.properties.bulk_density_megagrams_per_m3[41],
     );
     try std.testing.expectEqual(
-        runtime.thermal.total_heat_capacity_mj_per_m3_k[41],
-        target_runtime.thermal.total_heat_capacity_mj_per_m3_k[41],
+        runtime.thermal.total_heat_capacity_megajoules_per_m3_k[41],
+        target_runtime.thermal.total_heat_capacity_megajoules_per_m3_k[41],
     );
     try std.testing.expectEqual(
         runtime.thermal.layer_thickness_m[41],
@@ -674,7 +674,7 @@ test "soil geometry checkpoint applies limits before allocation" {
     const plant_heat = [_]f64{0} ** 12;
     const subsurface_heat = [_]f64{0} ** 42;
     const surface_heat = [_]f64{0} ** 6;
-    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &surface_heat, .delayed_live_canopy_combustion_heat_mj = &plant_heat, .delayed_standing_dead_combustion_heat_mj = &plant_heat, .delayed_subsurface_combustion_heat_mj = &subsurface_heat, .delayed_surface_combustion_heat_mj = &surface_heat });
+    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &surface_heat, .delayed_live_canopy_combustion_heat_megajoules = &plant_heat, .delayed_standing_dead_combustion_heat_megajoules = &plant_heat, .delayed_subsurface_combustion_heat_megajoules = &subsurface_heat, .delayed_surface_combustion_heat_megajoules = &surface_heat });
     var reader: std.Io.Reader = .fixed(bytes.written());
     try std.testing.expectError(error.SoilGeometryCheckpointSoilLayerLimitExceeded, read(std.testing.allocator, &reader, .{ .maximum_columns = 3, .maximum_rows = 2, .maximum_soil_layers = 6, .maximum_snow_layers = 4, .maximum_plants = 12 }));
 }
@@ -703,11 +703,11 @@ test "soil geometry checkpoint rejects corruption and nonfinite state" {
     var invalid: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer invalid.deinit();
     const heat = [_]f64{0};
-    try std.testing.expectError(error.NonFiniteSoilGeometryCheckpoint, write(&invalid.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &heat, .delayed_live_canopy_combustion_heat_mj = &heat, .delayed_standing_dead_combustion_heat_mj = &heat, .delayed_subsurface_combustion_heat_mj = &heat, .delayed_surface_combustion_heat_mj = &heat }));
+    try std.testing.expectError(error.NonFiniteSoilGeometryCheckpoint, write(&invalid.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &heat, .delayed_live_canopy_combustion_heat_megajoules = &heat, .delayed_standing_dead_combustion_heat_megajoules = &heat, .delayed_subsurface_combustion_heat_megajoules = &heat, .delayed_surface_combustion_heat_megajoules = &heat }));
     geometry.boundary_depth_m[0] = 0;
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer bytes.deinit();
-    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &heat, .delayed_live_canopy_combustion_heat_mj = &heat, .delayed_standing_dead_combustion_heat_mj = &heat, .delayed_subsurface_combustion_heat_mj = &heat, .delayed_surface_combustion_heat_mj = &heat });
+    try write(&bytes.writer, .{ .geometry = &geometry, .hydrology = &hydrology, .surface = &surface, .erosion = &erosion, .climate = &climate, .eroded_minerals = &eroded_minerals, .runtime = runtime.view(), .surface_boundary = surface_boundary.view(), .surface_litter_geometry = &surface_litter_geometry, .surface_litter_ice_m3 = &heat, .delayed_live_canopy_combustion_heat_megajoules = &heat, .delayed_standing_dead_combustion_heat_megajoules = &heat, .delayed_subsurface_combustion_heat_megajoules = &heat, .delayed_surface_combustion_heat_megajoules = &heat });
     try bytes.writer.writeByte(0xff);
     var reader: std.Io.Reader = .fixed(bytes.written());
     try std.testing.expectError(error.TrailingSoilGeometryCheckpointData, read(std.testing.allocator, &reader, .{ .maximum_columns = 1, .maximum_rows = 1, .maximum_soil_layers = 1, .maximum_snow_layers = 1, .maximum_plants = 1 }));

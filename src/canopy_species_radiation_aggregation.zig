@@ -28,15 +28,15 @@ pub const Inputs = struct {
 };
 
 pub const Outputs = struct {
-    forward_shortwave_mj_per_m2_h: *f64,
+    forward_shortwave_megajoules_per_m2_h: *f64,
     forward_par_umol_per_m2_s: *f64,
-    backscattered_shortwave_mj_per_m2_h: *f64,
+    backscattered_shortwave_megajoules_per_m2_h: *f64,
     backscattered_par_umol_per_m2_s: *f64,
-    species_live_shortwave_mj_h: []f64,
-    species_dead_shortwave_mj_h: []f64,
+    species_live_shortwave_megajoules_h: []f64,
+    species_dead_shortwave_megajoules_h: []f64,
     species_live_par_umol_s: []f64,
     species_dead_par_umol_s: []f64,
-    cell_canopy_shortwave_mj_h: *f64,
+    cell_canopy_shortwave_megajoules_h: *f64,
     cell_canopy_par_umol_s: *f64,
 };
 
@@ -60,7 +60,7 @@ pub fn apply(inputs: Inputs, outputs: Outputs) !void {
             inputs.diffuse_forward_scattered,
             species,
         );
-        outputs.forward_shortwave_mj_per_m2_h.* +=
+        outputs.forward_shortwave_megajoules_per_m2_h.* +=
             (absorbed.leaf_shortwave *
                 inputs.leaf_shortwave_transmittance[species] +
                 forward_scattered.leaf_shortwave *
@@ -78,7 +78,7 @@ pub fn apply(inputs: Inputs, outputs: Outputs) !void {
                 forward_scattered.standing_dead_par *
                     inputs.standing_dead_par_albedo) *
             inputs.inverse_azimuth_area_per_m2;
-        outputs.backscattered_shortwave_mj_per_m2_h.* +=
+        outputs.backscattered_shortwave_megajoules_per_m2_h.* +=
             (backscattered.leaf_shortwave *
                 inputs.leaf_shortwave_albedo[species] +
                 backscattered.stalk_shortwave *
@@ -92,14 +92,14 @@ pub fn apply(inputs: Inputs, outputs: Outputs) !void {
                 backscattered.standing_dead_par *
                     inputs.standing_dead_par_albedo) *
             inputs.inverse_azimuth_area_per_m2;
-        outputs.species_live_shortwave_mj_h[species] +=
+        outputs.species_live_shortwave_megajoules_h[species] +=
             absorbed.leaf_shortwave + absorbed.stalk_shortwave;
-        outputs.species_dead_shortwave_mj_h[species] +=
+        outputs.species_dead_shortwave_megajoules_h[species] +=
             absorbed.standing_dead_shortwave;
         outputs.species_live_par_umol_s[species] +=
             absorbed.leaf_par + absorbed.stalk_par;
         outputs.species_dead_par_umol_s[species] += absorbed.standing_dead_par;
-        outputs.cell_canopy_shortwave_mj_h.* +=
+        outputs.cell_canopy_shortwave_megajoules_h.* +=
             absorbed.leaf_shortwave + absorbed.stalk_shortwave +
             absorbed.standing_dead_shortwave;
         outputs.cell_canopy_par_umol_s.* +=
@@ -151,8 +151,8 @@ fn validate(inputs: Inputs, outputs: Outputs) !usize {
         inputs.leaf_par_transmittance,
         inputs.leaf_shortwave_albedo,
         inputs.leaf_par_albedo,
-        outputs.species_live_shortwave_mj_h,
-        outputs.species_dead_shortwave_mj_h,
+        outputs.species_live_shortwave_megajoules_h,
+        outputs.species_dead_shortwave_megajoules_h,
         outputs.species_live_par_umol_s,
         outputs.species_dead_par_umol_s,
     }) |values| if (values.len != species_count)
@@ -162,8 +162,8 @@ fn validate(inputs: Inputs, outputs: Outputs) !usize {
         inputs.leaf_par_transmittance,
         inputs.leaf_shortwave_albedo,
         inputs.leaf_par_albedo,
-        outputs.species_live_shortwave_mj_h,
-        outputs.species_dead_shortwave_mj_h,
+        outputs.species_live_shortwave_megajoules_h,
+        outputs.species_dead_shortwave_megajoules_h,
         outputs.species_live_par_umol_s,
         outputs.species_dead_par_umol_s,
     }) |values| for (values) |value|
@@ -175,11 +175,11 @@ fn validate(inputs: Inputs, outputs: Outputs) !usize {
         inputs.stalk_par_albedo,
         inputs.standing_dead_par_albedo,
         inputs.inverse_azimuth_area_per_m2,
-        outputs.forward_shortwave_mj_per_m2_h.*,
+        outputs.forward_shortwave_megajoules_per_m2_h.*,
         outputs.forward_par_umol_per_m2_s.*,
-        outputs.backscattered_shortwave_mj_per_m2_h.*,
+        outputs.backscattered_shortwave_megajoules_per_m2_h.*,
         outputs.backscattered_par_umol_per_m2_s.*,
-        outputs.cell_canopy_shortwave_mj_h.*,
+        outputs.cell_canopy_shortwave_megajoules_h.*,
         outputs.cell_canopy_par_umol_s.*,
     }) |value| if (!std.math.isFinite(value) or value < 0)
         return error.InvalidCanopyAggregationInput;
@@ -227,15 +227,15 @@ test "species absorbed and scattered aggregation preserves source order" {
         .standing_dead_par_albedo = 0.4,
         .inverse_azimuth_area_per_m2 = 0.25,
     }, .{
-        .forward_shortwave_mj_per_m2_h = &forward_sw,
+        .forward_shortwave_megajoules_per_m2_h = &forward_sw,
         .forward_par_umol_per_m2_s = &forward_par,
-        .backscattered_shortwave_mj_per_m2_h = &back_sw,
+        .backscattered_shortwave_megajoules_per_m2_h = &back_sw,
         .backscattered_par_umol_per_m2_s = &back_par,
-        .species_live_shortwave_mj_h = &live_sw,
-        .species_dead_shortwave_mj_h = &dead_sw,
+        .species_live_shortwave_megajoules_h = &live_sw,
+        .species_dead_shortwave_megajoules_h = &dead_sw,
         .species_live_par_umol_s = &live_par,
         .species_dead_par_umol_s = &dead_par,
-        .cell_canopy_shortwave_mj_h = &cell_sw,
+        .cell_canopy_shortwave_megajoules_h = &cell_sw,
         .cell_canopy_par_umol_s = &cell_par,
     });
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), forward_sw, 1e-15);

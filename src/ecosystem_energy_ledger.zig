@@ -6,16 +6,16 @@ const std = @import("std");
 pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
-    ground_surface_net_radiation_mj: []f64,
-    ground_surface_latent_heat_mj: []f64,
-    ground_surface_sensible_heat_mj: []f64,
-    ground_surface_storage_heat_mj: []f64,
-    ecosystem_net_radiation_mj: []f64,
-    ecosystem_latent_heat_mj: []f64,
-    ecosystem_sensible_heat_mj: []f64,
-    ecosystem_storage_heat_mj: []f64,
-    canopy_water_energy_mj: []f64,
-    canopy_water_energy_change_mj_per_h: []f64,
+    ground_surface_net_radiation_megajoules: []f64,
+    ground_surface_latent_heat_megajoules: []f64,
+    ground_surface_sensible_heat_megajoules: []f64,
+    ground_surface_storage_heat_megajoules: []f64,
+    ecosystem_net_radiation_megajoules: []f64,
+    ecosystem_latent_heat_megajoules: []f64,
+    ecosystem_sensible_heat_megajoules: []f64,
+    ecosystem_storage_heat_megajoules: []f64,
+    canopy_water_energy_megajoules: []f64,
+    canopy_water_energy_change_megajoules_per_h: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
         if (cell_count == 0) return error.EmptyEcosystemEnergyLedger;
@@ -52,57 +52,57 @@ pub const State = struct {
 
 pub const Inputs = struct {
     cell_area_m2: []const f64,
-    ground_net_radiation_mj_per_m2: []const f64,
-    ground_latent_heat_mj_per_m2: []const f64,
-    ground_sensible_heat_mj_per_m2: []const f64,
-    ground_storage_heat_mj_per_m2: []const f64,
+    ground_net_radiation_megajoules_per_m2: []const f64,
+    ground_latent_heat_megajoules_per_m2: []const f64,
+    ground_sensible_heat_megajoules_per_m2: []const f64,
+    ground_storage_heat_megajoules_per_m2: []const f64,
     species_count: usize,
-    canopy_net_radiation_mj: []const f64,
-    canopy_latent_heat_mj: []const f64,
-    canopy_sensible_heat_mj: []const f64,
-    canopy_storage_heat_mj: []const f64,
-    canopy_convective_water_heat_mj: []const f64,
-    standing_dead_net_radiation_mj: []const f64,
-    standing_dead_latent_heat_mj: []const f64,
-    standing_dead_sensible_heat_mj: []const f64,
-    standing_dead_storage_heat_mj: []const f64,
-    standing_dead_convective_water_heat_mj: []const f64,
+    canopy_net_radiation_megajoules: []const f64,
+    canopy_latent_heat_megajoules: []const f64,
+    canopy_sensible_heat_megajoules: []const f64,
+    canopy_storage_heat_megajoules: []const f64,
+    canopy_convective_water_heat_megajoules: []const f64,
+    standing_dead_net_radiation_megajoules: []const f64,
+    standing_dead_latent_heat_megajoules: []const f64,
+    standing_dead_sensible_heat_megajoules: []const f64,
+    standing_dead_storage_heat_megajoules: []const f64,
+    standing_dead_convective_water_heat_megajoules: []const f64,
 };
 
 pub fn refresh(state: *State, inputs: Inputs) !void {
     if (inputs.species_count == 0) return error.InvalidEcosystemEnergySpeciesCount;
-    inline for (.{ inputs.cell_area_m2, inputs.ground_net_radiation_mj_per_m2, inputs.ground_latent_heat_mj_per_m2, inputs.ground_sensible_heat_mj_per_m2, inputs.ground_storage_heat_mj_per_m2 }) |values| if (values.len != state.cell_count) return error.EcosystemEnergyCellDimensionMismatch;
+    inline for (.{ inputs.cell_area_m2, inputs.ground_net_radiation_megajoules_per_m2, inputs.ground_latent_heat_megajoules_per_m2, inputs.ground_sensible_heat_megajoules_per_m2, inputs.ground_storage_heat_megajoules_per_m2 }) |values| if (values.len != state.cell_count) return error.EcosystemEnergyCellDimensionMismatch;
     const plants = try std.math.mul(usize, state.cell_count, inputs.species_count);
-    inline for (.{ inputs.canopy_net_radiation_mj, inputs.canopy_latent_heat_mj, inputs.canopy_sensible_heat_mj, inputs.canopy_storage_heat_mj, inputs.canopy_convective_water_heat_mj, inputs.standing_dead_net_radiation_mj, inputs.standing_dead_latent_heat_mj, inputs.standing_dead_sensible_heat_mj, inputs.standing_dead_storage_heat_mj, inputs.standing_dead_convective_water_heat_mj }) |values| if (values.len != plants) return error.EcosystemEnergyPlantDimensionMismatch;
+    inline for (.{ inputs.canopy_net_radiation_megajoules, inputs.canopy_latent_heat_megajoules, inputs.canopy_sensible_heat_megajoules, inputs.canopy_storage_heat_megajoules, inputs.canopy_convective_water_heat_megajoules, inputs.standing_dead_net_radiation_megajoules, inputs.standing_dead_latent_heat_megajoules, inputs.standing_dead_sensible_heat_megajoules, inputs.standing_dead_storage_heat_megajoules, inputs.standing_dead_convective_water_heat_megajoules }) |values| if (values.len != plants) return error.EcosystemEnergyPlantDimensionMismatch;
 
     for (0..state.cell_count) |cell| {
         const area = inputs.cell_area_m2[cell];
         if (!std.math.isFinite(area) or area <= 0) return error.InvalidEcosystemEnergyCellArea;
-        const ground_net = inputs.ground_net_radiation_mj_per_m2[cell] * area;
-        const ground_latent = inputs.ground_latent_heat_mj_per_m2[cell] * area;
-        const ground_sensible = inputs.ground_sensible_heat_mj_per_m2[cell] * area;
-        const ground_storage = inputs.ground_storage_heat_mj_per_m2[cell] * area;
-        state.ground_surface_net_radiation_mj[cell] = ground_net;
-        state.ground_surface_latent_heat_mj[cell] = ground_latent;
-        state.ground_surface_sensible_heat_mj[cell] = ground_sensible;
-        state.ground_surface_storage_heat_mj[cell] = ground_storage;
+        const ground_net = inputs.ground_net_radiation_megajoules_per_m2[cell] * area;
+        const ground_latent = inputs.ground_latent_heat_megajoules_per_m2[cell] * area;
+        const ground_sensible = inputs.ground_sensible_heat_megajoules_per_m2[cell] * area;
+        const ground_storage = inputs.ground_storage_heat_megajoules_per_m2[cell] * area;
+        state.ground_surface_net_radiation_megajoules[cell] = ground_net;
+        state.ground_surface_latent_heat_megajoules[cell] = ground_latent;
+        state.ground_surface_sensible_heat_megajoules[cell] = ground_sensible;
+        state.ground_surface_storage_heat_megajoules[cell] = ground_storage;
         var ecosystem_net = ground_net;
         var ecosystem_latent = ground_latent;
         var ecosystem_sensible = ground_sensible;
         var ecosystem_storage = ground_storage;
         for (cell * inputs.species_count..(cell + 1) * inputs.species_count) |plant| {
-            inline for (.{ inputs.canopy_net_radiation_mj[plant], inputs.canopy_latent_heat_mj[plant], inputs.canopy_sensible_heat_mj[plant], inputs.canopy_storage_heat_mj[plant], inputs.canopy_convective_water_heat_mj[plant], inputs.standing_dead_net_radiation_mj[plant], inputs.standing_dead_latent_heat_mj[plant], inputs.standing_dead_sensible_heat_mj[plant], inputs.standing_dead_storage_heat_mj[plant], inputs.standing_dead_convective_water_heat_mj[plant] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteEcosystemEnergyInput;
-            ecosystem_net += inputs.canopy_net_radiation_mj[plant] + inputs.standing_dead_net_radiation_mj[plant];
-            ecosystem_latent += inputs.canopy_latent_heat_mj[plant] + inputs.standing_dead_latent_heat_mj[plant];
-            ecosystem_sensible += inputs.canopy_sensible_heat_mj[plant] + inputs.standing_dead_sensible_heat_mj[plant];
+            inline for (.{ inputs.canopy_net_radiation_megajoules[plant], inputs.canopy_latent_heat_megajoules[plant], inputs.canopy_sensible_heat_megajoules[plant], inputs.canopy_storage_heat_megajoules[plant], inputs.canopy_convective_water_heat_megajoules[plant], inputs.standing_dead_net_radiation_megajoules[plant], inputs.standing_dead_latent_heat_megajoules[plant], inputs.standing_dead_sensible_heat_megajoules[plant], inputs.standing_dead_storage_heat_megajoules[plant], inputs.standing_dead_convective_water_heat_megajoules[plant] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteEcosystemEnergyInput;
+            ecosystem_net += inputs.canopy_net_radiation_megajoules[plant] + inputs.standing_dead_net_radiation_megajoules[plant];
+            ecosystem_latent += inputs.canopy_latent_heat_megajoules[plant] + inputs.standing_dead_latent_heat_megajoules[plant];
+            ecosystem_sensible += inputs.canopy_sensible_heat_megajoules[plant] + inputs.standing_dead_sensible_heat_megajoules[plant];
             // Exact EXTRACT convention: TGH -= HFLXC - VFLXC.
-            ecosystem_storage -= inputs.canopy_storage_heat_mj[plant] - inputs.canopy_convective_water_heat_mj[plant];
-            ecosystem_storage -= inputs.standing_dead_storage_heat_mj[plant] - inputs.standing_dead_convective_water_heat_mj[plant];
+            ecosystem_storage -= inputs.canopy_storage_heat_megajoules[plant] - inputs.canopy_convective_water_heat_megajoules[plant];
+            ecosystem_storage -= inputs.standing_dead_storage_heat_megajoules[plant] - inputs.standing_dead_convective_water_heat_megajoules[plant];
         }
-        state.ecosystem_net_radiation_mj[cell] = ecosystem_net;
-        state.ecosystem_latent_heat_mj[cell] = ecosystem_latent;
-        state.ecosystem_sensible_heat_mj[cell] = ecosystem_sensible;
-        state.ecosystem_storage_heat_mj[cell] = ecosystem_storage;
+        state.ecosystem_net_radiation_megajoules[cell] = ecosystem_net;
+        state.ecosystem_latent_heat_megajoules[cell] = ecosystem_latent;
+        state.ecosystem_sensible_heat_megajoules[cell] = ecosystem_sensible;
+        state.ecosystem_storage_heat_megajoules[cell] = ecosystem_storage;
     }
     try state.validateFinite();
 }
@@ -112,25 +112,25 @@ test "energy ledger reproduces REDIST ground and EXTRACT ecosystem accumulation"
     defer state.deinit();
     try refresh(&state, .{
         .cell_area_m2 = &.{10},
-        .ground_net_radiation_mj_per_m2 = &.{1},
-        .ground_latent_heat_mj_per_m2 = &.{2},
-        .ground_sensible_heat_mj_per_m2 = &.{3},
-        .ground_storage_heat_mj_per_m2 = &.{4},
+        .ground_net_radiation_megajoules_per_m2 = &.{1},
+        .ground_latent_heat_megajoules_per_m2 = &.{2},
+        .ground_sensible_heat_megajoules_per_m2 = &.{3},
+        .ground_storage_heat_megajoules_per_m2 = &.{4},
         .species_count = 2,
-        .canopy_net_radiation_mj = &.{ 1, 2 },
-        .canopy_latent_heat_mj = &.{ 3, 4 },
-        .canopy_sensible_heat_mj = &.{ 5, 6 },
-        .canopy_storage_heat_mj = &.{ 7, 8 },
-        .canopy_convective_water_heat_mj = &.{ 0.5, 1 },
-        .standing_dead_net_radiation_mj = &.{ 0.1, 0.2 },
-        .standing_dead_latent_heat_mj = &.{ 0.3, 0.4 },
-        .standing_dead_sensible_heat_mj = &.{ 0.5, 0.6 },
-        .standing_dead_storage_heat_mj = &.{ 0.7, 0.8 },
-        .standing_dead_convective_water_heat_mj = &.{ 0.05, 0.1 },
+        .canopy_net_radiation_megajoules = &.{ 1, 2 },
+        .canopy_latent_heat_megajoules = &.{ 3, 4 },
+        .canopy_sensible_heat_megajoules = &.{ 5, 6 },
+        .canopy_storage_heat_megajoules = &.{ 7, 8 },
+        .canopy_convective_water_heat_megajoules = &.{ 0.5, 1 },
+        .standing_dead_net_radiation_megajoules = &.{ 0.1, 0.2 },
+        .standing_dead_latent_heat_megajoules = &.{ 0.3, 0.4 },
+        .standing_dead_sensible_heat_megajoules = &.{ 0.5, 0.6 },
+        .standing_dead_storage_heat_megajoules = &.{ 0.7, 0.8 },
+        .standing_dead_convective_water_heat_megajoules = &.{ 0.05, 0.1 },
     });
-    try std.testing.expectEqual(@as(f64, 10), state.ground_surface_net_radiation_mj[0]);
-    try std.testing.expectApproxEqAbs(@as(f64, 13.3), state.ecosystem_net_radiation_mj[0], 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 27.7), state.ecosystem_latent_heat_mj[0], 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 42.1), state.ecosystem_sensible_heat_mj[0], 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 25.15), state.ecosystem_storage_heat_mj[0], 1e-14);
+    try std.testing.expectEqual(@as(f64, 10), state.ground_surface_net_radiation_megajoules[0]);
+    try std.testing.expectApproxEqAbs(@as(f64, 13.3), state.ecosystem_net_radiation_megajoules[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 27.7), state.ecosystem_latent_heat_megajoules[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.1), state.ecosystem_sensible_heat_megajoules[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 25.15), state.ecosystem_storage_heat_megajoules[0], 1e-14);
 }

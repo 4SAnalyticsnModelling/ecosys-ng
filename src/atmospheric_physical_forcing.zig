@@ -1,10 +1,10 @@
 const std = @import("std");
 
 pub const Carriers = struct {
-    direct_shortwave_mj_per_m2_h: f64,
-    diffuse_shortwave_mj_per_m2_h: f64,
-    direct_par_mj_per_m2_h: f64,
-    diffuse_par_mj_per_m2_h: f64,
+    direct_shortwave_megajoules_per_m2_h: f64,
+    diffuse_shortwave_megajoules_per_m2_h: f64,
+    direct_par_megajoules_per_m2_h: f64,
+    diffuse_par_megajoules_per_m2_h: f64,
     wind_travel_m_per_h: f64,
     ambient_vapor_pressure_kpa: f64,
     saturated_vapor_pressure_kpa: f64,
@@ -34,13 +34,13 @@ pub fn apply(carriers: *Carriers, multipliers: Multipliers) !void {
     }
 
     const next: Carriers = .{
-        .direct_shortwave_mj_per_m2_h = carriers.direct_shortwave_mj_per_m2_h *
+        .direct_shortwave_megajoules_per_m2_h = carriers.direct_shortwave_megajoules_per_m2_h *
             multipliers.radiation_fraction,
-        .diffuse_shortwave_mj_per_m2_h = carriers.diffuse_shortwave_mj_per_m2_h *
+        .diffuse_shortwave_megajoules_per_m2_h = carriers.diffuse_shortwave_megajoules_per_m2_h *
             multipliers.radiation_fraction,
-        .direct_par_mj_per_m2_h = carriers.direct_par_mj_per_m2_h *
+        .direct_par_megajoules_per_m2_h = carriers.direct_par_megajoules_per_m2_h *
             multipliers.radiation_fraction,
-        .diffuse_par_mj_per_m2_h = carriers.diffuse_par_mj_per_m2_h *
+        .diffuse_par_megajoules_per_m2_h = carriers.diffuse_par_megajoules_per_m2_h *
             multipliers.radiation_fraction,
         .wind_travel_m_per_h = carriers.wind_travel_m_per_h * multipliers.wind_fraction,
         .ambient_vapor_pressure_kpa = @min(
@@ -58,10 +58,10 @@ pub fn apply(carriers: *Carriers, multipliers: Multipliers) !void {
 
 fn exampleCarriers() Carriers {
     return .{
-        .direct_shortwave_mj_per_m2_h = 2,
-        .diffuse_shortwave_mj_per_m2_h = 1,
-        .direct_par_mj_per_m2_h = 0.8,
-        .diffuse_par_mj_per_m2_h = 0.4,
+        .direct_shortwave_megajoules_per_m2_h = 2,
+        .diffuse_shortwave_megajoules_per_m2_h = 1,
+        .direct_par_megajoules_per_m2_h = 0.8,
+        .diffuse_par_megajoules_per_m2_h = 0.4,
         .wind_travel_m_per_h = 3600,
         .ambient_vapor_pressure_kpa = 1,
         .saturated_vapor_pressure_kpa = 2,
@@ -77,19 +77,19 @@ test "radiation multiplier scales all four beams and no other carrier" {
     });
     try std.testing.expectEqual(
         @as(f64, 4),
-        carriers.direct_shortwave_mj_per_m2_h,
+        carriers.direct_shortwave_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         @as(f64, 2),
-        carriers.diffuse_shortwave_mj_per_m2_h,
+        carriers.diffuse_shortwave_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         @as(f64, 1.6),
-        carriers.direct_par_mj_per_m2_h,
+        carriers.direct_par_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         @as(f64, 0.8),
-        carriers.diffuse_par_mj_per_m2_h,
+        carriers.diffuse_par_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(@as(f64, 3600), carriers.wind_travel_m_per_h);
 }
@@ -121,7 +121,7 @@ test "wind multiplier remains independent of radiation and humidity" {
     try std.testing.expectEqual(@as(f64, 1800), carriers.wind_travel_m_per_h);
     try std.testing.expectEqual(
         @as(f64, 2),
-        carriers.direct_shortwave_mj_per_m2_h,
+        carriers.direct_shortwave_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(
         @as(f64, 1),
@@ -145,7 +145,7 @@ test "invalid late multiplier leaves every physical carrier unchanged" {
 
 test "overflow leaves every physical carrier unchanged" {
     var carriers = exampleCarriers();
-    carriers.diffuse_par_mj_per_m2_h = std.math.floatMax(f64);
+    carriers.diffuse_par_megajoules_per_m2_h = std.math.floatMax(f64);
     const before = carriers;
     try std.testing.expectError(
         error.AtmosphericPhysicalForcingOverflow,

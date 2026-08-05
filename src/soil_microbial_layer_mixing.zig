@@ -66,7 +66,7 @@ pub const ApplyContext = struct {
     microbial_state: *microbial.State,
     active_layer_count: []const usize,
     layer_volume_m3: []const f64,
-    dry_bulk_density_Mg_per_m3: []const f64,
+    dry_bulk_density_megagrams_per_m3: []const f64,
     layer_thickness_m: []const f64,
     total_organic_carbon_g_per_megagram: []const f64,
     substrate_unlimited_oxygen_limited_activity_g_c: []const f64,
@@ -139,8 +139,8 @@ fn validatePairPools(
 fn mixingFraction(context: ApplyContext, upper: usize, lower: usize) !f64 {
     // NITRO `BKDS(L)>ZERO .AND. BKDS(LL)>ZERO`; with positive layer volume,
     // dry bulk density has the same presence predicate as dry soil mass.
-    if (context.dry_bulk_density_Mg_per_m3[upper] <= 0 or
-        context.dry_bulk_density_Mg_per_m3[lower] <= 0) return 0;
+    if (context.dry_bulk_density_megagrams_per_m3[upper] <= 0 or
+        context.dry_bulk_density_megagrams_per_m3[lower] <= 0) return 0;
     // NITRO.F 4189 tests DLYR(3,L) against DLYRM before selecting LL.
     // A thin upper layer therefore contributes no pairwise mixing.
     if (context.layer_thickness_m[upper] <=
@@ -177,7 +177,7 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
         state.substrate_count < source_complex_count or
         state.population_count < source_population_count or
         context.active_layer_count.len != state.cell_count or
-        context.layer_volume_m3.len != layers or context.dry_bulk_density_Mg_per_m3.len != layers or context.layer_thickness_m.len != layers or
+        context.layer_volume_m3.len != layers or context.dry_bulk_density_megagrams_per_m3.len != layers or context.layer_thickness_m.len != layers or
         context.total_organic_carbon_g_per_megagram.len != layers or
         context.substrate_unlimited_oxygen_limited_activity_g_c.len != layers)
         return error.InvalidMicrobialLayerMixingDimensions;
@@ -189,7 +189,7 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
         for (first..first + context.active_layer_count[cell]) |layer| {
             inline for (.{ context.layer_volume_m3[layer], context.layer_thickness_m[layer] }) |value|
                 if (!std.math.isFinite(value) or value <= 0) return error.InvalidMicrobialLayerMixingGeometry;
-            if (!std.math.isFinite(context.dry_bulk_density_Mg_per_m3[layer]) or context.dry_bulk_density_Mg_per_m3[layer] < 0)
+            if (!std.math.isFinite(context.dry_bulk_density_megagrams_per_m3[layer]) or context.dry_bulk_density_megagrams_per_m3[layer] < 0)
                 return error.InvalidMicrobialLayerMixingGeometry;
             inline for (.{ context.total_organic_carbon_g_per_megagram[layer], context.substrate_unlimited_oxygen_limited_activity_g_c[layer] }) |value|
                 if (!std.math.isFinite(value) or value < 0) return error.InvalidMicrobialLayerMixingInput;
@@ -215,7 +215,7 @@ test "activity-gradient mixing conserves all microbial C N P components" {
         .microbial_state = &state,
         .active_layer_count = &active,
         .layer_volume_m3 = &volume,
-        .dry_bulk_density_Mg_per_m3 = &volume,
+        .dry_bulk_density_megagrams_per_m3 = &volume,
         .layer_thickness_m = &thickness,
         .total_organic_carbon_g_per_megagram = &organic_carbon,
         .substrate_unlimited_oxygen_limited_activity_g_c = &activity,
@@ -239,7 +239,7 @@ test "unsafe source mixing fraction fails before mutating any pool" {
     const ones = [_]f64{ 1, 1 };
     const organic_carbon = [_]f64{ 1.0e6, 1.0e6 };
     const activity = [_]f64{ 100, 0 };
-    var context: ApplyContext = .{ .microbial_state = &state, .active_layer_count = &active, .layer_volume_m3 = &ones, .dry_bulk_density_Mg_per_m3 = &ones, .layer_thickness_m = &ones, .total_organic_carbon_g_per_megagram = &organic_carbon, .substrate_unlimited_oxygen_limited_activity_g_c = &activity, .parameters = .{ .mixing_rate_per_h = 1, .timestep_h = 1 } };
+    var context: ApplyContext = .{ .microbial_state = &state, .active_layer_count = &active, .layer_volume_m3 = &ones, .dry_bulk_density_megagrams_per_m3 = &ones, .layer_thickness_m = &ones, .total_organic_carbon_g_per_megagram = &organic_carbon, .substrate_unlimited_oxygen_limited_activity_g_c = &activity, .parameters = .{ .mixing_rate_per_h = 1, .timestep_h = 1 } };
     try std.testing.expectError(error.MicrobialLayerMixingFractionExceedsInventory, applyTile(&context, .{ .first = 0, .end = 1 }));
     try std.testing.expectEqual(@as(f64, 1), state.nonstructural[0].carbon_g_c);
     try std.testing.expectEqual(@as(f64, 0), state.nonstructural[1].carbon_g_c);
@@ -259,7 +259,7 @@ test "NITRO DLYRM gate leaves a thin upper-layer pair unchanged" {
         .microbial_state = &state,
         .active_layer_count = &active,
         .layer_volume_m3 = &volume,
-        .dry_bulk_density_Mg_per_m3 = &volume,
+        .dry_bulk_density_megagrams_per_m3 = &volume,
         .layer_thickness_m = &thickness,
         .total_organic_carbon_g_per_megagram = &organic_carbon,
         .substrate_unlimited_oxygen_limited_activity_g_c = &activity,
@@ -289,7 +289,7 @@ test "NITRO BKDS gate leaves a zero-dry-mass pair unchanged" {
         .microbial_state = &state,
         .active_layer_count = &active,
         .layer_volume_m3 = &ones,
-        .dry_bulk_density_Mg_per_m3 = &density,
+        .dry_bulk_density_megagrams_per_m3 = &density,
         .layer_thickness_m = &ones,
         .total_organic_carbon_g_per_megagram = &organic_carbon,
         .substrate_unlimited_oxygen_limited_activity_g_c = &activity,
@@ -316,7 +316,7 @@ test "runtime microbial roles beyond source K and N bounds remain unchanged" {
         .microbial_state = &state,
         .active_layer_count = &active,
         .layer_volume_m3 = &ones,
-        .dry_bulk_density_Mg_per_m3 = &ones,
+        .dry_bulk_density_megagrams_per_m3 = &ones,
         .layer_thickness_m = &ones,
         .total_organic_carbon_g_per_megagram = &organic_carbon,
         .substrate_unlimited_oxygen_limited_activity_g_c = &activity,
@@ -343,7 +343,7 @@ test "invalid late source pool fails before any adjacent-layer mutation" {
         .microbial_state = &state,
         .active_layer_count = &active,
         .layer_volume_m3 = &ones,
-        .dry_bulk_density_Mg_per_m3 = &ones,
+        .dry_bulk_density_megagrams_per_m3 = &ones,
         .layer_thickness_m = &ones,
         .total_organic_carbon_g_per_megagram = &organic_carbon,
         .substrate_unlimited_oxygen_limited_activity_g_c = &activity,

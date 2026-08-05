@@ -116,7 +116,11 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
 }
 
 fn exchange(demand: f64, amount: f64, concentration: f64, minimum_concentration: f64, half_saturation: f64, uptake_capacity: f64, share: f64, water_m3: f64) f64 {
-    if (demand <= 0) return demand;
+    if (demand <= 0) {
+        // Mineralization (N/P surplus): cap release at the same enzymatic rate capacity
+        // as immobilization so surplus does not flush into the aqueous pool all at once.
+        return -@min(-demand, uptake_capacity);
+    }
     const available_concentration = @max(0, concentration - minimum_concentration);
     const unlimited = @min(demand, uptake_capacity) * available_concentration / (available_concentration + half_saturation);
     const reserve = minimum_concentration * water_m3;

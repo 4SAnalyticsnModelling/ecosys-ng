@@ -4,7 +4,7 @@ pub const Inputs = struct {
     pH: f64,
     water_dissociation_product_mol2_per_m6: f64,
     mol_per_liter_to_mol_per_m3: f64,
-    dry_state_mass_per_water_sentinel_Mg_per_m3: f64,
+    dry_state_mass_per_water_sentinel_megagrams_per_m3: f64,
 };
 
 pub const FertilizerDissolutionRates = struct {
@@ -31,8 +31,8 @@ pub const NitrogenState = struct {
     ammonia_input_g_n_per_step: f64,
     ammonium_concentration_mol_n_per_m3: f64,
     ammonia_concentration_mol_n_per_m3: f64,
-    exchangeable_ammonium_mol_n_per_Mg: f64,
-    ammonium_exchange_mol_n_per_Mg_step: f64,
+    exchangeable_ammonium_mol_n_per_megagram: f64,
+    ammonium_exchange_mol_n_per_megagram_step: f64,
     ammonium_association_mol_n_per_m3_step: f64,
 };
 
@@ -45,14 +45,14 @@ pub const PhosphorusState = struct {
 };
 
 pub const CationExchangeRates = struct {
-    hydrogen_mol_per_Mg_step: f64,
-    aluminum_mol_per_Mg_step: f64,
-    iron_mol_per_Mg_step: f64,
-    calcium_mol_per_Mg_step: f64,
-    magnesium_mol_per_Mg_step: f64,
-    sodium_mol_per_Mg_step: f64,
-    potassium_mol_per_Mg_step: f64,
-    carboxyl_hydrogen_mol_per_Mg_step: f64,
+    hydrogen_mol_per_megagram_step: f64,
+    aluminum_mol_per_megagram_step: f64,
+    iron_mol_per_megagram_step: f64,
+    calcium_mol_per_megagram_step: f64,
+    magnesium_mol_per_megagram_step: f64,
+    sodium_mol_per_megagram_step: f64,
+    potassium_mol_per_megagram_step: f64,
+    carboxyl_hydrogen_mol_per_megagram_step: f64,
 };
 
 pub const CarbonateReactionRates = struct {
@@ -68,7 +68,7 @@ pub const SolidConcentrations = struct {
 };
 
 pub const Result = struct {
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
     hydrogen_hydroxide_equilibration_mol_per_m3_step: f64,
     external_hydrogen_mol_per_m3_step: f64,
     hydrogen_activity_mol_per_m3: f64,
@@ -80,7 +80,7 @@ pub const Result = struct {
     cation_exchange: CationExchangeRates,
     carbonate: CarbonateReactionRates,
     solids: SolidConcentrations,
-    litter_mass_per_water_volume_Mg_per_m3: f64,
+    litter_mass_per_water_volume_megagrams_per_m3: f64,
 };
 
 /// Direct source-order translation of SOLUTE.F lines 4931--4976.
@@ -91,7 +91,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
     try validateInputs(inputs);
 
     // SOLUTE.F 4931--4935.
-    const litter_dry_mass_Mg = 0.0;
+    const litter_dry_mass_megagrams = 0.0;
     const hydrogen_hydroxide_equilibration = 0.0;
     const external_hydrogen = 0.0;
     const hydrogen_activity = std.math.pow(f64, 10.0, -inputs.pH) *
@@ -142,7 +142,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
     const calcite_concentration = 0.0;
     const gypsum_concentration = 0.0;
     const litter_mass_per_water =
-        inputs.dry_state_mass_per_water_sentinel_Mg_per_m3;
+        inputs.dry_state_mass_per_water_sentinel_megagrams_per_m3;
 
     const fertilizer: FertilizerDissolutionRates = .{
         .ammonium_mol_n_per_step = broadcast_ammonium_dissolution,
@@ -166,8 +166,8 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         .ammonia_input_g_n_per_step = ammonia_input,
         .ammonium_concentration_mol_n_per_m3 = ammonium_concentration,
         .ammonia_concentration_mol_n_per_m3 = ammonia_concentration,
-        .exchangeable_ammonium_mol_n_per_Mg = exchangeable_ammonium,
-        .ammonium_exchange_mol_n_per_Mg_step = ammonium_exchange,
+        .exchangeable_ammonium_mol_n_per_megagram = exchangeable_ammonium,
+        .ammonium_exchange_mol_n_per_megagram_step = ammonium_exchange,
         .ammonium_association_mol_n_per_m3_step = ammonium_association,
     };
     const phosphorus: PhosphorusState = .{
@@ -182,14 +182,14 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         .carbon_dioxide_association_mol_c_per_m3_step = carbon_dioxide_association,
     };
     const cation_exchange: CationExchangeRates = .{
-        .hydrogen_mol_per_Mg_step = hydrogen_exchange,
-        .aluminum_mol_per_Mg_step = aluminum_exchange,
-        .iron_mol_per_Mg_step = iron_exchange,
-        .calcium_mol_per_Mg_step = calcium_exchange,
-        .magnesium_mol_per_Mg_step = magnesium_exchange,
-        .sodium_mol_per_Mg_step = sodium_exchange,
-        .potassium_mol_per_Mg_step = potassium_exchange,
-        .carboxyl_hydrogen_mol_per_Mg_step = carboxyl_hydrogen_exchange,
+        .hydrogen_mol_per_megagram_step = hydrogen_exchange,
+        .aluminum_mol_per_megagram_step = aluminum_exchange,
+        .iron_mol_per_megagram_step = iron_exchange,
+        .calcium_mol_per_megagram_step = calcium_exchange,
+        .magnesium_mol_per_megagram_step = magnesium_exchange,
+        .sodium_mol_per_megagram_step = sodium_exchange,
+        .potassium_mol_per_megagram_step = potassium_exchange,
+        .carboxyl_hydrogen_mol_per_megagram_step = carboxyl_hydrogen_exchange,
     };
     const solids: SolidConcentrations = .{
         .aluminum_hydroxide_mol_per_m3 = aluminum_hydroxide_concentration,
@@ -198,7 +198,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         .gypsum_mol_per_m3 = gypsum_concentration,
     };
     const result: Result = .{
-        .litter_dry_mass_Mg = litter_dry_mass_Mg,
+        .litter_dry_mass_megagrams = litter_dry_mass_megagrams,
         .hydrogen_hydroxide_equilibration_mol_per_m3_step = hydrogen_hydroxide_equilibration,
         .external_hydrogen_mol_per_m3_step = external_hydrogen,
         .hydrogen_activity_mol_per_m3 = hydrogen_activity,
@@ -210,7 +210,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         .cation_exchange = cation_exchange,
         .carbonate = carbonate,
         .solids = solids,
-        .litter_mass_per_water_volume_Mg_per_m3 = litter_mass_per_water,
+        .litter_mass_per_water_volume_megagrams_per_m3 = litter_mass_per_water,
     };
     try validateResult(result);
     return result;
@@ -223,7 +223,7 @@ fn validateInputs(inputs: Inputs) !void {
     }
     if (inputs.water_dissociation_product_mol2_per_m6 <= 0 or
         inputs.mol_per_liter_to_mol_per_m3 <= 0 or
-        inputs.dry_state_mass_per_water_sentinel_Mg_per_m3 <= 0)
+        inputs.dry_state_mass_per_water_sentinel_megagrams_per_m3 <= 0)
     {
         return error.InvalidSurfaceLitterDryStateInput;
     }
@@ -231,12 +231,12 @@ fn validateInputs(inputs: Inputs) !void {
 
 fn validateResult(result: Result) !void {
     inline for (.{
-        result.litter_dry_mass_Mg,
+        result.litter_dry_mass_megagrams,
         result.hydrogen_hydroxide_equilibration_mol_per_m3_step,
         result.external_hydrogen_mol_per_m3_step,
         result.hydrogen_activity_mol_per_m3,
         result.hydroxide_activity_mol_per_m3,
-        result.litter_mass_per_water_volume_Mg_per_m3,
+        result.litter_mass_per_water_volume_megagrams_per_m3,
     }) |value| {
         if (!std.math.isFinite(value))
             return error.NonFiniteSurfaceLitterDryStateResult;
@@ -253,7 +253,7 @@ fn testInputs() Inputs {
         .pH = 7,
         .water_dissociation_product_mol2_per_m6 = 1.0e-8,
         .mol_per_liter_to_mol_per_m3 = 1.0e3,
-        .dry_state_mass_per_water_sentinel_Mg_per_m3 = 1,
+        .dry_state_mass_per_water_sentinel_megagrams_per_m3 = 1,
     };
 }
 
@@ -283,7 +283,7 @@ test "SOLUTE dry surface reset preserves pH activity source expressions" {
 test "dry surface reset clears every source state group" {
     const result = try calculateSourceOrder(testInputs());
 
-    try std.testing.expectEqual(@as(f64, 0), result.litter_dry_mass_Mg);
+    try std.testing.expectEqual(@as(f64, 0), result.litter_dry_mass_megagrams);
     try std.testing.expectEqual(
         @as(f64, 0),
         result.hydrogen_hydroxide_equilibration_mol_per_m3_step,
@@ -324,12 +324,12 @@ test "dry surface reset clears every source state group" {
 
 test "dry surface reset uses runtime mass-to-water sentinel" {
     var inputs = testInputs();
-    inputs.dry_state_mass_per_water_sentinel_Mg_per_m3 = 2.5;
+    inputs.dry_state_mass_per_water_sentinel_megagrams_per_m3 = 2.5;
     const result = try calculateSourceOrder(inputs);
 
     try std.testing.expectEqual(
         @as(f64, 2.5),
-        result.litter_mass_per_water_volume_Mg_per_m3,
+        result.litter_mass_per_water_volume_megagrams_per_m3,
     );
 }
 

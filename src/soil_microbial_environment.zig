@@ -10,7 +10,7 @@ pub const Inputs = struct {
     thermal_adaptation_offset_k: f64,
     aqueous_oxygen_concentration_g_o_per_m3: f64,
     soil_organic_carbon_g_c: f64,
-    soil_dry_mass_Mg: f64,
+    soil_dry_mass_megagrams: f64,
 };
 
 pub const Result = struct {
@@ -39,7 +39,7 @@ pub fn calculate(inputs: Inputs) !Result {
         inputs.soil_temperature_k + inputs.thermal_adaptation_offset_k <= 0 or
         inputs.aqueous_oxygen_concentration_g_o_per_m3 < 0 or
         inputs.soil_organic_carbon_g_c < 0 or
-        inputs.soil_dry_mass_Mg < 0)
+        inputs.soil_dry_mass_megagrams < 0)
         return error.InvalidSoilMicrobialEnvironment;
 
     const retained_water_fraction = @min(
@@ -73,7 +73,7 @@ pub fn calculate(inputs: Inputs) !Result {
     const oxygen_inhibition =
         1 - 1 / (1 + @exp(-inputs.aqueous_oxygen_concentration_g_o_per_m3 + 2.5));
     const density_limited_carbon_g_c = @min(
-        1.0e5 * inputs.soil_dry_mass_Mg,
+        1.0e5 * inputs.soil_dry_mass_megagrams,
         inputs.soil_organic_carbon_g_c,
     );
 
@@ -152,7 +152,7 @@ test "mineral layer environment reproduces NITRO water temperature oxygen and ca
         .thermal_adaptation_offset_k = 0,
         .aqueous_oxygen_concentration_g_o_per_m3 = 1.5,
         .soil_organic_carbon_g_c = 300_000,
-        .soil_dry_mass_Mg = 2,
+        .soil_dry_mass_megagrams = 2,
     };
     const result = try calculate(inputs);
     const expected_active_fraction: f64 = 0.275;
@@ -194,7 +194,7 @@ test "runtime state owns arbitrary layer count on heap" {
         .thermal_adaptation_offset_k = 2,
         .aqueous_oxygen_concentration_g_o_per_m3 = 0,
         .soil_organic_carbon_g_c = 10,
-        .soil_dry_mass_Mg = 1,
+        .soil_dry_mass_megagrams = 1,
     });
     try state.set(36, result);
     try std.testing.expectEqual(result.biologically_active_water_m3, state.biologically_active_water_m3[36]);
@@ -212,6 +212,6 @@ test "invalid microbial environment fails explicitly" {
         .thermal_adaptation_offset_k = -280,
         .aqueous_oxygen_concentration_g_o_per_m3 = 0,
         .soil_organic_carbon_g_c = 10,
-        .soil_dry_mass_Mg = 1,
+        .soil_dry_mass_megagrams = 1,
     }));
 }

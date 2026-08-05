@@ -1,3 +1,27 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 3596--3622. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: architecturally superseded. Production stores the same physics in a
+//! different representation, deliberately, with the deviation recorded in
+//! `docs/model_changes.md`. Binding this kernel would reintroduce the
+//! formulation the project chose to leave behind, as a second writer.
+//!
+//! Superseded by: `soil_solver_properties` + `soil_water_heat_step`, both
+//! verified production bound. See the correction note in
+//! `soil_solid_thermal_porosity.zig`: `mineral_layer_phase_initialization` was
+//! originally named here too and was removed because it is itself unbound.
+//!
+//! Same dual-domain reason as `soil_solid_thermal_porosity`: the legacy
+//! single-domain air/water/ice fractions have no place to record the macropore
+//! phase split that production transports through.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const Inputs = struct {
@@ -6,7 +30,7 @@ pub const Inputs = struct {
     layer_thickness_m: f64,
     horizontal_area_m2: f64,
     micropore_volume_fraction: f64, // FMPR
-    bulk_density_mg_m3: f64,
+    bulk_density_megagrams_m3: f64,
     micropore_capacity_m3: f64, // VOLA
     micropore_water_m3: f64,
     micropore_ice_m3: f64,
@@ -15,7 +39,7 @@ pub const Inputs = struct {
     macropore_ice_m3: f64,
     porosity_m3_m3: f64,
     volume_threshold_m3: f64,
-    bulk_density_threshold_mg_m3: f64,
+    bulk_density_threshold_megagrams_m3: f64,
 };
 
 pub const Result = struct {
@@ -57,7 +81,7 @@ pub fn calculate(inputs: Inputs) CalculationError!Result {
     const effective_soil_volume_m3 = rock_excluded_volume_m3;
 
     const air_filled_pore_volume_m3 =
-        if (inputs.bulk_density_mg_m3 > inputs.bulk_density_threshold_mg_m3)
+        if (inputs.bulk_density_megagrams_m3 > inputs.bulk_density_threshold_megagrams_m3)
             @max(
                 0.0,
                 inputs.micropore_capacity_m3 -
@@ -130,7 +154,7 @@ test "soil layer geometry and phase fractions preserve legacy equations" {
         .layer_thickness_m = 0.5,
         .horizontal_area_m2 = 200.0,
         .micropore_volume_fraction = 0.8,
-        .bulk_density_mg_m3 = 1.2,
+        .bulk_density_megagrams_m3 = 1.2,
         .micropore_capacity_m3 = 40.0,
         .micropore_water_m3 = 20.0,
         .micropore_ice_m3 = 4.0,
@@ -139,7 +163,7 @@ test "soil layer geometry and phase fractions preserve legacy equations" {
         .macropore_ice_m3 = 0.0,
         .porosity_m3_m3 = 0.5,
         .volume_threshold_m3 = 1.0e-12,
-        .bulk_density_threshold_mg_m3 = 1.0e-12,
+        .bulk_density_threshold_megagrams_m3 = 1.0e-12,
     });
     try std.testing.expectEqual(@as(f64, 10.0), result.lateral_area_x_m2);
     try std.testing.expectEqual(@as(f64, 5.0), result.lateral_area_y_m2);
@@ -155,7 +179,7 @@ test "negligible effective volume uses saturated legacy fallback" {
         .layer_thickness_m = 0.0,
         .horizontal_area_m2 = 1.0,
         .micropore_volume_fraction = 0.0,
-        .bulk_density_mg_m3 = 0.0,
+        .bulk_density_megagrams_m3 = 0.0,
         .micropore_capacity_m3 = 0.0,
         .micropore_water_m3 = 0.0,
         .micropore_ice_m3 = 0.0,
@@ -164,7 +188,7 @@ test "negligible effective volume uses saturated legacy fallback" {
         .macropore_ice_m3 = 0.0,
         .porosity_m3_m3 = 0.6,
         .volume_threshold_m3 = 0.0,
-        .bulk_density_threshold_mg_m3 = 0.0,
+        .bulk_density_threshold_megagrams_m3 = 0.0,
     });
     try std.testing.expectEqual(@as(f64, 0.6), result.micropore_water_fraction_m3_m3);
     try std.testing.expectEqual(@as(f64, 0.0), result.total_air_fraction_m3_m3);

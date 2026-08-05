@@ -46,7 +46,7 @@ pub const OwnedParameters = struct {
     reference_accumulation_fraction: f64,
     maximum_reference_humus_g_c_per_m2: f64,
     fraction_at_reference_accumulation: f64,
-    surface_litter_dry_mass_Mg_per_g_c: f64,
+    surface_litter_dry_mass_megagrams_per_g_c: f64,
     surface_litter_water_capacity_m3_per_g_c: f64,
     microbial_kinetic_fraction: []f64,
     microbial_residue_fraction: []f64,
@@ -177,7 +177,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !OwnedParameters 
                 result.reference_accumulation_fraction = try nextFinite(&tokens);
                 result.maximum_reference_humus_g_c_per_m2 = try nextFinite(&tokens);
                 result.fraction_at_reference_accumulation = try nextFinite(&tokens);
-                result.surface_litter_dry_mass_Mg_per_g_c = try nextFinite(&tokens);
+                result.surface_litter_dry_mass_megagrams_per_g_c = try nextFinite(&tokens);
                 result.surface_litter_water_capacity_m3_per_g_c = try nextFinite(&tokens);
                 if (tokens.next() != null) return error.TooManyOrganicParameterValues;
             },
@@ -248,7 +248,7 @@ pub fn sourceParameters(allocator: std.mem.Allocator) !OwnedParameters {
     result.reference_accumulation_fraction = 0.25;
     result.maximum_reference_humus_g_c_per_m2 = 5.0e3;
     result.fraction_at_reference_accumulation = 0.5;
-    result.surface_litter_dry_mass_Mg_per_g_c = 1.82e-6;
+    result.surface_litter_dry_mass_megagrams_per_g_c = 1.82e-6;
     result.surface_litter_water_capacity_m3_per_g_c = 8.0e-6;
     @memcpy(result.microbial_kinetic_fraction[0..15], &[_]f64{
         0.010, 0.050, 0.005, 0.050, 0.050, 0.005, 0.050, 0.050, 0.005,
@@ -324,13 +324,13 @@ pub fn sourceParameters(allocator: std.mem.Allocator) !OwnedParameters {
 }
 
 fn validate(parameters: *const OwnedParameters) !void {
-    inline for (.{ parameters.residue_microbial_fraction, parameters.humus_microbial_half_saturation_g_c_per_megagram, parameters.less_resistant_humus_fraction_at_surface, parameters.nutrient_protection_exponent, parameters.phosphorus_nutrient_weight, parameters.reference_accumulation_fraction, parameters.maximum_reference_humus_g_c_per_m2, parameters.fraction_at_reference_accumulation, parameters.surface_litter_dry_mass_Mg_per_g_c, parameters.surface_litter_water_capacity_m3_per_g_c, parameters.soil_organic_sorption_rate_per_h, parameters.soil_organic_adsorption_coefficient }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
+    inline for (.{ parameters.residue_microbial_fraction, parameters.humus_microbial_half_saturation_g_c_per_megagram, parameters.less_resistant_humus_fraction_at_surface, parameters.nutrient_protection_exponent, parameters.phosphorus_nutrient_weight, parameters.reference_accumulation_fraction, parameters.maximum_reference_humus_g_c_per_m2, parameters.fraction_at_reference_accumulation, parameters.surface_litter_dry_mass_megagrams_per_g_c, parameters.surface_litter_water_capacity_m3_per_g_c, parameters.soil_organic_sorption_rate_per_h, parameters.soil_organic_adsorption_coefficient }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
     for (parameters.soil_organic_decomposition.structural_rate_g_c_per_g_activity_h) |rates| for (rates) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
     for (parameters.soil_organic_decomposition.microbial_residue_rate_g_c_per_g_activity_h) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
     inline for (.{ parameters.soil_organic_decomposition.sorbed_organic_rate_g_c_per_g_activity_h, parameters.soil_organic_decomposition.sorbed_acetate_rate_g_c_per_g_activity_h }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
     inline for (.{ parameters.soil_dissolved_priming_rate_per_h, parameters.soil_microbial_priming_rate_per_h }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicParameter;
     inline for (@typeInfo(@TypeOf(parameters.soil_organic_decomposition.environment)).@"struct".fields) |field| if (!std.math.isFinite(@field(parameters.soil_organic_decomposition.environment, field.name)) or @field(parameters.soil_organic_decomposition.environment, field.name) <= 0) return error.InvalidOrganicParameter;
-    if (parameters.humus_microbial_half_saturation_g_c_per_megagram <= 0 or parameters.less_resistant_humus_fraction_at_surface > 1 or parameters.reference_accumulation_fraction > 1 or parameters.fraction_at_reference_accumulation <= 0 or parameters.fraction_at_reference_accumulation > 1 or parameters.surface_litter_dry_mass_Mg_per_g_c <= 0 or parameters.surface_litter_water_capacity_m3_per_g_c <= 0) return error.InvalidOrganicParameter;
+    if (parameters.humus_microbial_half_saturation_g_c_per_megagram <= 0 or parameters.less_resistant_humus_fraction_at_surface > 1 or parameters.reference_accumulation_fraction > 1 or parameters.fraction_at_reference_accumulation <= 0 or parameters.fraction_at_reference_accumulation > 1 or parameters.surface_litter_dry_mass_megagrams_per_g_c <= 0 or parameters.surface_litter_water_capacity_m3_per_g_c <= 0) return error.InvalidOrganicParameter;
     inline for (@typeInfo(OwnedParameters).@"struct".fields) |field| if (field.type == []f64) for (@field(parameters, field.name)) |value| if (!std.math.isFinite(value) or value < 0 or value > 1) return error.InvalidOrganicParameter;
     for (0..3) |substrate| {
         var sum: f64 = 0;

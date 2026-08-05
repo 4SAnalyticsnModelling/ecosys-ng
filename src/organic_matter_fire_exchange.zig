@@ -25,12 +25,18 @@ pub const State = struct {
     carbon_dioxide_emission_g_c: []f64,
     methane_emission_g_c: []f64,
     oxygen_consumption_g_o: []f64,
+    /// Source ROGOX (trnsfr.f 1111/1292), the aerobic oxygen-limited part of
+    /// oxygen_consumption_g_o, consumed separately by redist.f 4499/4837.
+    oxygen_limited_uptake_g_o: []f64,
+    /// Source RC4OX (trnsfr.f 1114--1116/1295--1297), methane oxidised by the
+    /// residual oxygen, in g C. Its oxygen demand is this times 2.667.
+    methane_combustion_g_c: []f64,
     charcoal_production_g_c: []f64,
     ammonium_production_g_n: []f64,
     gaseous_nitrogen_emission_g_n: []f64,
     phosphate_production_g_p: []f64,
     gaseous_phosphorus_emission_g_p: []f64,
-    heat_release_mj: []f64,
+    heat_release_megajoules: []f64,
     pending_surface_ammonium_mol_n: []f64,
     pending_surface_phosphate_mol_p: []f64,
     pending_surface_salt_mol: []f64,
@@ -56,12 +62,14 @@ pub const State = struct {
             "carbon_dioxide_emission_g_c",
             "methane_emission_g_c",
             "oxygen_consumption_g_o",
+            "oxygen_limited_uptake_g_o",
+            "methane_combustion_g_c",
             "charcoal_production_g_c",
             "ammonium_production_g_n",
             "gaseous_nitrogen_emission_g_n",
             "phosphate_production_g_p",
             "gaseous_phosphorus_emission_g_p",
-            "heat_release_mj",
+            "heat_release_megajoules",
         }) |field_name| {
             @field(result, field_name) = try allocateZeroed(allocator, layer_count);
             errdefer allocator.free(@field(result, field_name));
@@ -79,13 +87,15 @@ pub const State = struct {
         self.allocator.free(self.pending_surface_phosphate_mol_p);
         self.allocator.free(self.pending_surface_ammonium_mol_n);
         inline for (.{
-            "heat_release_mj",
+            "heat_release_megajoules",
             "gaseous_phosphorus_emission_g_p",
             "phosphate_production_g_p",
             "gaseous_nitrogen_emission_g_n",
             "ammonium_production_g_n",
             "charcoal_production_g_c",
             "oxygen_consumption_g_o",
+            "oxygen_limited_uptake_g_o",
+            "methane_combustion_g_c",
             "methane_emission_g_c",
             "carbon_dioxide_emission_g_c",
             "combustion_temperature_response",
@@ -108,12 +118,14 @@ pub const State = struct {
         @memset(self.carbon_dioxide_emission_g_c, 0);
         @memset(self.methane_emission_g_c, 0);
         @memset(self.oxygen_consumption_g_o, 0);
+        @memset(self.oxygen_limited_uptake_g_o, 0);
+        @memset(self.methane_combustion_g_c, 0);
         @memset(self.charcoal_production_g_c, 0);
         @memset(self.ammonium_production_g_n, 0);
         @memset(self.gaseous_nitrogen_emission_g_n, 0);
         @memset(self.phosphate_production_g_p, 0);
         @memset(self.gaseous_phosphorus_emission_g_p, 0);
-        @memset(self.heat_release_mj, 0);
+        @memset(self.heat_release_megajoules, 0);
     }
 
     /// Adds any extensive surface ammonium/phosphate source to the persistent
@@ -202,8 +214,8 @@ pub const State = struct {
     }
 
     /// Atomically publishes one combined NITRO+GROSUB layer transaction.
-    pub fn finalizeLayer(self: *State, layer: usize, gas: *GasTransport.State, nutrients: *PlantNutrients.State, organic: *SoilOrganic.State, micropore_solutes: *SoluteTransport.State, dynamic_salts: bool, delayed_heat_mj: []f64, negligible_carbon_g_c: f64, parameters: PlantSoilExchange.SubsurfaceFireParameters) !void {
-        if (layer >= self.layer_count or gas.cell_count != self.layer_count or nutrients.layer_count != self.layer_count or organic.layer_count != self.layer_count or micropore_solutes.cell_count != self.layer_count or micropore_solutes.species_count != SoluteSpecies.AqueousSpecies.count or delayed_heat_mj.len != self.layer_count or self.substrate_count != SoilOrganic.microbial_substrate_count) return error.OrganicMatterFireDimensionMismatch;
+    pub fn finalizeLayer(self: *State, layer: usize, gas: *GasTransport.State, nutrients: *PlantNutrients.State, organic: *SoilOrganic.State, micropore_solutes: *SoluteTransport.State, dynamic_salts: bool, delayed_heat_megajoules: []f64, negligible_carbon_g_c: f64, parameters: PlantSoilExchange.SubsurfaceFireParameters) !void {
+        if (layer >= self.layer_count or gas.cell_count != self.layer_count or nutrients.layer_count != self.layer_count or organic.layer_count != self.layer_count or micropore_solutes.cell_count != self.layer_count or micropore_solutes.species_count != SoluteSpecies.AqueousSpecies.count or delayed_heat_megajoules.len != self.layer_count or self.substrate_count != SoilOrganic.microbial_substrate_count) return error.OrganicMatterFireDimensionMismatch;
         if (!std.math.isFinite(negligible_carbon_g_c) or negligible_carbon_g_c < 0) return error.InvalidOrganicMatterFireFinalization;
         const oxygen_index = try GasTransport.massIndex(layer, .oxygen, gas.cell_count);
         const methane_index = try GasTransport.massIndex(layer, .methane, gas.cell_count);
@@ -238,7 +250,7 @@ pub const State = struct {
         const next_methane = methane_content_g_c + products.methane_emitted_g_carbon;
         const next_ammonium = nutrients.mineral_g_element[ammonium_index] + ammonium_g_n;
         const next_phosphate = nutrients.mineral_g_element[phosphate_index] + phosphate_g_p;
-        const next_heat = delayed_heat_mj[layer] + products.heat_released_mj;
+        const next_heat = delayed_heat_megajoules[layer] + products.heat_released_megajoules;
         inline for (.{ next_oxygen, next_carbon_dioxide, next_methane, next_ammonium, next_phosphate, next_heat }) |value| if (!std.math.isFinite(value) or value < 0) return error.NonFiniteOrganicMatterFireFinalization;
         var next_charcoal_g_c: [SoilOrganic.substrate_count]f64 = undefined;
         for (&next_charcoal_g_c, 0..) |*next_charcoal, destination_substrate| {
@@ -268,7 +280,7 @@ pub const State = struct {
         gas.gaseous_mass_g[methane_index] = next_methane;
         nutrients.mineral_g_element[ammonium_index] = next_ammonium;
         nutrients.mineral_g_element[phosphate_index] = next_phosphate;
-        delayed_heat_mj[layer] = next_heat;
+        delayed_heat_megajoules[layer] = next_heat;
         for (next_charcoal_g_c, 0..) |charcoal, substrate| {
             const structural_index = ((layer * SoilOrganic.substrate_count + substrate) * SoilOrganic.structural_fraction_count) + SoilOrganic.structural_fraction_count - 1;
             organic.structural[structural_index].carbon_g_c = charcoal;
@@ -280,12 +292,14 @@ pub const State = struct {
         self.carbon_dioxide_emission_g_c[layer] = products.carbon_dioxide_emitted_g_carbon;
         self.methane_emission_g_c[layer] = products.methane_emitted_g_carbon;
         self.oxygen_consumption_g_o[layer] = products.oxygen_consumed_g;
+        self.oxygen_limited_uptake_g_o[layer] = products.oxygen_limited_uptake_g;
+        self.methane_combustion_g_c[layer] = products.methane_combustion_g_carbon;
         self.charcoal_production_g_c[layer] = products.charcoal_produced_g_carbon;
         self.ammonium_production_g_n[layer] = ammonium_g_n;
         self.gaseous_nitrogen_emission_g_n[layer] = gaseous_nitrogen_g_n;
         self.phosphate_production_g_p[layer] = phosphate_g_p;
         self.gaseous_phosphorus_emission_g_p[layer] = gaseous_phosphorus_g_p;
-        self.heat_release_mj[layer] = products.heat_released_mj;
+        self.heat_release_megajoules[layer] = products.heat_released_megajoules;
     }
 
     /// Atomically publishes the NITRO `L=0` fire products. Mineral products
@@ -300,13 +314,13 @@ pub const State = struct {
         organic: *SoilOrganic.State,
         litter_water_m3: []const f64,
         dynamic_salts: bool,
-        delayed_surface_heat_mj: []f64,
+        delayed_surface_heat_megajoules: []f64,
         negligible_carbon_g_c: f64,
         nitrogen_molar_mass_g_per_mol: f64,
         phosphorus_molar_mass_g_per_mol: f64,
         parameters: PlantSoilExchange.SubsurfaceFireParameters,
     ) !void {
-        if (cell >= self.layer_count or gas.cell_count != self.layer_count or chemistry.cells.len != self.layer_count or organic.layer_count != self.layer_count or litter_water_m3.len != self.layer_count or delayed_surface_heat_mj.len != self.layer_count or self.substrate_count != SoilOrganic.microbial_substrate_count) return error.OrganicMatterFireDimensionMismatch;
+        if (cell >= self.layer_count or gas.cell_count != self.layer_count or chemistry.cells.len != self.layer_count or organic.layer_count != self.layer_count or litter_water_m3.len != self.layer_count or delayed_surface_heat_megajoules.len != self.layer_count or self.substrate_count != SoilOrganic.microbial_substrate_count) return error.OrganicMatterFireDimensionMismatch;
         inline for (.{ negligible_carbon_g_c, nitrogen_molar_mass_g_per_mol, phosphorus_molar_mass_g_per_mol }) |value| if (!std.math.isFinite(value) or value <= 0) return error.InvalidOrganicMatterFireFinalization;
         const water_m3 = litter_water_m3[cell];
         if (!std.math.isFinite(water_m3) or water_m3 < 0) return error.InvalidOrganicMatterFireFinalization;
@@ -336,7 +350,7 @@ pub const State = struct {
         const next_oxygen = oxygen_g_o - products.oxygen_consumed_g;
         const next_carbon_dioxide = gas.gaseous_mass_g[carbon_dioxide_index] + products.carbon_dioxide_emitted_g_carbon;
         const next_methane = methane_g_c + products.methane_emitted_g_carbon;
-        const next_heat = delayed_surface_heat_mj[cell] + products.heat_released_mj;
+        const next_heat = delayed_surface_heat_megajoules[cell] + products.heat_released_megajoules;
         inline for (.{ next_pending_ammonium, next_pending_phosphate, next_oxygen, next_carbon_dioxide, next_methane, next_heat }) |value| if (!std.math.isFinite(value) or value < 0) return error.NonFiniteOrganicMatterFireFinalization;
 
         var next_charcoal_g_c: [SoilOrganic.substrate_count]f64 = undefined;
@@ -383,7 +397,7 @@ pub const State = struct {
         gas.gaseous_mass_g[oxygen_index] = next_oxygen;
         gas.gaseous_mass_g[carbon_dioxide_index] = next_carbon_dioxide;
         gas.gaseous_mass_g[methane_index] = next_methane;
-        delayed_surface_heat_mj[cell] = next_heat;
+        delayed_surface_heat_megajoules[cell] = next_heat;
         chemistry.cells[cell] = next_chemistry;
         self.pending_surface_ammonium_mol_n[cell] = if (water_m3 > negligible_carbon_g_c) 0 else next_pending_ammonium;
         self.pending_surface_phosphate_mol_p[cell] = if (water_m3 > negligible_carbon_g_c) 0 else next_pending_phosphate;
@@ -395,12 +409,14 @@ pub const State = struct {
         self.carbon_dioxide_emission_g_c[cell] = products.carbon_dioxide_emitted_g_carbon;
         self.methane_emission_g_c[cell] = products.methane_emitted_g_carbon;
         self.oxygen_consumption_g_o[cell] = products.oxygen_consumed_g;
+        self.oxygen_limited_uptake_g_o[cell] = products.oxygen_limited_uptake_g;
+        self.methane_combustion_g_c[cell] = products.methane_combustion_g_carbon;
         self.charcoal_production_g_c[cell] = products.charcoal_produced_g_carbon;
         self.ammonium_production_g_n[cell] = ammonium_mol_n * nitrogen_molar_mass_g_per_mol;
         self.gaseous_nitrogen_emission_g_n[cell] = self.combusted_nitrogen_g_n[cell] - self.ammonium_production_g_n[cell];
         self.phosphate_production_g_p[cell] = phosphate_mol_p * phosphorus_molar_mass_g_per_mol;
         self.gaseous_phosphorus_emission_g_p[cell] = self.combusted_phosphorus_g_p[cell] - self.phosphate_production_g_p[cell];
-        self.heat_release_mj[cell] = products.heat_released_mj;
+        self.heat_release_megajoules[cell] = products.heat_released_megajoules;
     }
 };
 
@@ -449,14 +465,28 @@ test "combined soil root fire finalization atomically conserves products" {
     try state.finalizeLayer(0, &gas, &nutrients, &organic, &micropore_solutes, true, &delayed_heat, 1e-12, .{
         .oxygen_half_saturation_g_o_per_m3 = 2.8,
         .methane_half_saturation_g_c_per_m3 = 0.005,
-        .aerobic_combustion_energy_mj_per_g_carbon = 0.0375,
-        .anaerobic_combustion_energy_mj_per_g_carbon = 0.0125,
-        .methane_combustion_energy_mj_per_g_carbon = 0.0743,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.0743,
     });
     try std.testing.expectApproxEqAbs(@as(f64, 10), state.carbon_dioxide_emission_g_c[0] + state.methane_emission_g_c[0] + state.charcoal_production_g_c[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 1), state.ammonium_production_g_n[0] + state.gaseous_nitrogen_emission_g_n[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.phosphate_production_g_p[0] + state.gaseous_phosphorus_emission_g_p[0], 1e-12);
     try std.testing.expect(state.oxygen_consumption_g_o[0] <= 20);
+    // ROGOX/RC4OX export: the parts must reconstruct the aggregate exactly, or
+    // redist.f 4499/4837 would double count or lose oxygen against the same
+    // gas debit finalizeLayer already applied.
+    try std.testing.expectApproxEqAbs(
+        state.oxygen_consumption_g_o[0],
+        state.oxygen_limited_uptake_g_o[0] + state.methane_combustion_g_c[0] * 2.667,
+        1e-12,
+    );
+    try std.testing.expect(state.oxygen_limited_uptake_g_o[0] >= 0);
+    try std.testing.expect(state.methane_combustion_g_c[0] >= 0);
+    // RC4OX is bounded by the methane actually present and by the oxygen left
+    // after the aerobic branch: both source AMIN1 arms, checked independently.
+    try std.testing.expect(state.methane_combustion_g_c[0] <= 0.1 + 1e-12);
+    try std.testing.expect(state.methane_combustion_g_c[0] * 2.667 <= 20 - state.oxygen_limited_uptake_g_o[0] + 1e-12);
     try std.testing.expect(delayed_heat[0] > 0);
     const charcoal_index = SoilOrganic.structural_fraction_count - 1;
     try std.testing.expectApproxEqAbs(state.charcoal_production_g_c[0], organic.structural[charcoal_index].carbon_g_c, 1e-12);
@@ -480,17 +510,17 @@ test "surface fire conserves products while dry and dissolves pending minerals w
     var organic = try SoilOrganic.State.init(std.testing.allocator, 1);
     defer organic.deinit();
     var water_m3 = [_]f64{0};
-    var delayed_heat_mj = [_]f64{0};
+    var delayed_heat_megajoules = [_]f64{0};
     try state.setCombustionTemperatureResponse(0, 0.4);
     try state.addCombustedPoolsForSubstrate(0, 2, 10, 1.4, 0.31, &.{ 1, 2, 3, 4, 5, 6, 7, 8 });
     const parameters: PlantSoilExchange.SubsurfaceFireParameters = .{
         .oxygen_half_saturation_g_o_per_m3 = 2.8,
         .methane_half_saturation_g_c_per_m3 = 0.005,
-        .aerobic_combustion_energy_mj_per_g_carbon = 0.0375,
-        .anaerobic_combustion_energy_mj_per_g_carbon = 0.0125,
-        .methane_combustion_energy_mj_per_g_carbon = 0.0743,
+        .aerobic_combustion_energy_megajoules_per_g_carbon = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_carbon = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_carbon = 0.0743,
     };
-    try state.finalizeSurfaceCell(0, &gas, &chemistry, &organic, &water_m3, true, &delayed_heat_mj, 1e-12, 14, 31, parameters);
+    try state.finalizeSurfaceCell(0, &gas, &chemistry, &organic, &water_m3, true, &delayed_heat_megajoules, 1e-12, 14, 31, parameters);
     try std.testing.expect(chemistry.cells[0].ammonium_mol_per_m3 == 0);
     try std.testing.expect(state.pending_surface_ammonium_mol_n[0] > 0);
     try std.testing.expect(state.pending_surface_phosphate_mol_p[0] > 0);
@@ -499,13 +529,13 @@ test "surface fire conserves products while dry and dissolves pending minerals w
     try std.testing.expectApproxEqAbs(@as(f64, 0.31), state.phosphate_production_g_p[0] + state.gaseous_phosphorus_emission_g_p[0], 1e-12);
     try std.testing.expect(gas.gaseous_mass_g[oxygen_index] >= 0);
     try std.testing.expect(gas.gaseous_mass_g[carbon_dioxide_index] > 0);
-    try std.testing.expect(delayed_heat_mj[0] > 0);
+    try std.testing.expect(delayed_heat_megajoules[0] > 0);
 
     const pending_ammonium = state.pending_surface_ammonium_mol_n[0];
     const pending_phosphate = state.pending_surface_phosphate_mol_p[0];
     state.resetHourly();
     water_m3[0] = 2;
-    try state.finalizeSurfaceCell(0, &gas, &chemistry, &organic, &water_m3, true, &delayed_heat_mj, 1e-12, 14, 31, parameters);
+    try state.finalizeSurfaceCell(0, &gas, &chemistry, &organic, &water_m3, true, &delayed_heat_megajoules, 1e-12, 14, 31, parameters);
     try std.testing.expectApproxEqAbs(pending_ammonium / 2, chemistry.cells[0].ammonium_mol_per_m3, 1e-12);
     try std.testing.expectApproxEqAbs(pending_phosphate / 2, chemistry.cells[0].h2po4_mol_p_per_m3, 1e-12);
     try std.testing.expectEqual(@as(f64, 0), state.pending_surface_ammonium_mol_n[0]);

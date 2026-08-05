@@ -1,3 +1,28 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 2408--2432. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: diagnostic-only. This kernel resets legacy running totals that no
+//! production module accumulates and no production module reads. Production
+//! reconstructs the equivalent totals on demand in
+//! `landscape_mass_balance_runtime.reconstruct`, which cannot drift from the
+//! state it summarizes. Binding a reset for an accumulator that nothing
+//! accumulates would add cost and no behaviour.
+//!
+//! Superseded by: `landscape_mass_balance_runtime.reconstruct`, called at `ecosys_ng.zig:5906`.
+//!
+//! Verified by field census (`tools/a5_hour1_field_census.ps1`): of its 31
+//! fields, `soil_co2_carbon_g`, `total_organic_matter_g`,
+//! `ionic_charge_equivalents`, and `canopy_evapotranspiration_m3_timestep`
+//! appear in NO other `src/*.zig` file at all. Production does not accumulate
+//! these legacy `UCO2S`/`TOMT`/`UNH4`-style grid-cell running totals.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 /// Per-grid-cell values reset by HOUR1 before hourly process accumulation.
@@ -29,6 +54,12 @@ pub const GridCellAccumulators = struct {
     canopy_co2_exchange_g_c_timestep: f64, // XCNET
     canopy_ch4_exchange_g_c_timestep: f64, // XHNET
     canopy_o2_exchange_g_o_timestep: f64, // XONET
+    redist_carbon_surface_input_g_c_timestep: f64, // CO2GIN
+    redist_carbon_subsurface_output_g_c_timestep: f64, // TCOU
+    redist_oxygen_surface_input_g_o_timestep: f64, // OXYGIN
+    redist_oxygen_subsurface_output_g_o_timestep: f64, // OXYGOU
+    redist_hydrogen_surface_input_g_h_timestep: f64, // H2GIN
+    redist_hydrogen_subsurface_output_g_h_timestep: f64, // H2GOU
     canopy_combustion_g_c_timestep: f64, // RCGCK
 };
 
@@ -58,6 +89,12 @@ pub fn reset(accumulators: *GridCellAccumulators) void {
     accumulators.canopy_co2_exchange_g_c_timestep = 0.0;
     accumulators.canopy_ch4_exchange_g_c_timestep = 0.0;
     accumulators.canopy_o2_exchange_g_o_timestep = 0.0;
+    accumulators.redist_carbon_surface_input_g_c_timestep = 0.0;
+    accumulators.redist_carbon_subsurface_output_g_c_timestep = 0.0;
+    accumulators.redist_oxygen_surface_input_g_o_timestep = 0.0;
+    accumulators.redist_oxygen_subsurface_output_g_o_timestep = 0.0;
+    accumulators.redist_hydrogen_surface_input_g_h_timestep = 0.0;
+    accumulators.redist_hydrogen_subsurface_output_g_h_timestep = 0.0;
     accumulators.canopy_combustion_g_c_timestep = 0.0;
 }
 

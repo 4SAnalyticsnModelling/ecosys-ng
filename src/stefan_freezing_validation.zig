@@ -622,7 +622,7 @@ test "production Dall'Amico constitutive path resolves the Appendix C ice front"
             .porous_medium_volume_m3 = cell_thickness_m,
             .unfrozen_pressure_head_m = 0,
             .gravitational_water_potential_mpa_per_m = 0.00980665,
-            .latent_heat_of_fusion_mj_per_m3 = 333.7,
+            .latent_heat_of_fusion_megajoules_per_m3 = 333.7,
             .pure_water_melting_temperature_k = 273.15,
             .mualem_van_genuchten = production_retention,
         });

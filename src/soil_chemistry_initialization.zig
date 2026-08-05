@@ -4,17 +4,18 @@ const phosphate_exchange = @import("solute_phosphate_exchange.zig");
 const cation_exchange = @import("solute_cation_exchange.zig");
 const charge_classification = @import("solute_charge_classification.zig");
 const surface_litter = @import("surface_litter_chemistry.zig");
+const carboxyl_exchange_initialization = @import("soil_carboxyl_exchange_initialization.zig");
 
 /// STARTE surface CEC: COOH (mol/Mg C) times litter carbon converted from g C
 /// to Mg C, divided by litter dry mass. The result is mol charge/Mg litter.
-pub fn surfaceLitterCationExchangeCapacity_mol_charge_per_Mg_litter(
+pub fn surfaceLitterCationExchangeCapacity_mol_charge_per_megagram_litter(
     litter_carbon_g_c: f64,
-    litter_dry_mass_Mg: f64,
-    carboxyl_sites_mol_per_Mg_c: f64,
+    litter_dry_mass_megagrams: f64,
+    carboxyl_sites_mol_per_megagram_c: f64,
 ) !f64 {
-    inline for (.{ litter_carbon_g_c, litter_dry_mass_Mg, carboxyl_sites_mol_per_Mg_c }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSurfaceLitterChemistryInitialization;
-    if (litter_dry_mass_Mg == 0) return if (litter_carbon_g_c == 0) 0 else error.InvalidSurfaceLitterChemistryInitialization;
-    const capacity = carboxyl_sites_mol_per_Mg_c * 1.0e-6 * litter_carbon_g_c / litter_dry_mass_Mg;
+    inline for (.{ litter_carbon_g_c, litter_dry_mass_megagrams, carboxyl_sites_mol_per_megagram_c }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSurfaceLitterChemistryInitialization;
+    if (litter_dry_mass_megagrams == 0) return if (litter_carbon_g_c == 0) 0 else error.InvalidSurfaceLitterChemistryInitialization;
+    const capacity = carboxyl_sites_mol_per_megagram_c * 1.0e-6 * litter_carbon_g_c / litter_dry_mass_megagrams;
     if (!std.math.isFinite(capacity)) return error.NonFiniteSurfaceLitterChemistryInitialization;
     return capacity;
 }
@@ -45,11 +46,11 @@ pub fn seedSurfaceLitterFromTopsoil(
     cell.hpo4_mol_p_per_m3 = phosphate.dissolved_hpo4_mol_p_per_m3;
     cell.h2po4_mol_p_per_m3 = phosphate.dissolved_h2po4_mol_p_per_m3;
     cell.phosphate_surface = .{
-        .deprotonated_site_mol_per_Mg = phosphate.deprotonated_site_mol_per_Mg,
-        .hydroxyl_site_mol_per_Mg = phosphate.hydroxyl_site_mol_per_Mg,
-        .protonated_site_mol_per_Mg = phosphate.protonated_site_mol_per_Mg,
-        .adsorbed_hpo4_mol_p_per_Mg = phosphate.adsorbed_hpo4_mol_p_per_Mg,
-        .adsorbed_h2po4_mol_p_per_Mg = phosphate.adsorbed_h2po4_mol_p_per_Mg,
+        .deprotonated_site_mol_per_megagram = phosphate.deprotonated_site_mol_per_megagram,
+        .hydroxyl_site_mol_per_megagram = phosphate.hydroxyl_site_mol_per_megagram,
+        .protonated_site_mol_per_megagram = phosphate.protonated_site_mol_per_megagram,
+        .adsorbed_hpo4_mol_p_per_megagram = phosphate.adsorbed_hpo4_mol_p_per_megagram,
+        .adsorbed_h2po4_mol_p_per_megagram = phosphate.adsorbed_h2po4_mol_p_per_megagram,
     };
     cell.hydrogen_mol_per_m3 = hydrogen;
     cell.hydroxide_mol_per_m3 = hydroxide;
@@ -84,10 +85,10 @@ pub fn seedSurfaceLitterFromTopsoil(
 }
 
 test "STARTE surface litter carboxyl sites convert carbon and litter mass units" {
-    const capacity = try surfaceLitterCationExchangeCapacity_mol_charge_per_Mg_litter(400_000, 2, 250);
+    const capacity = try surfaceLitterCationExchangeCapacity_mol_charge_per_megagram_litter(400_000, 2, 250);
     try std.testing.expectApproxEqAbs(@as(f64, 50), capacity, 1e-14);
-    try std.testing.expectEqual(@as(f64, 0), try surfaceLitterCationExchangeCapacity_mol_charge_per_Mg_litter(0, 0, 250));
-    try std.testing.expectError(error.InvalidSurfaceLitterChemistryInitialization, surfaceLitterCationExchangeCapacity_mol_charge_per_Mg_litter(1, 0, 250));
+    try std.testing.expectEqual(@as(f64, 0), try surfaceLitterCationExchangeCapacity_mol_charge_per_megagram_litter(0, 0, 250));
+    try std.testing.expectError(error.InvalidSurfaceLitterChemistryInitialization, surfaceLitterCationExchangeCapacity_mol_charge_per_megagram_litter(1, 0, 250));
 }
 
 test "STARTE surface litter inherits topsoil ions but retains surface pH" {
@@ -320,7 +321,7 @@ pub fn seedProfilePrimaryState(state: *ChemistryState, layer: usize, inputs: Pro
     staged.non_band_phosphate[0] = state.non_band_phosphate[layer];
     staged.band_phosphate[0] = state.band_phosphate[layer];
     staged.water_mol_per_m3[0] = state.water_mol_per_m3[layer];
-    staged.cation_exchange_mol_per_Mg[0] = state.cation_exchange_mol_per_Mg[layer];
+    staged.cation_exchange_mol_per_megagram[0] = state.cation_exchange_mol_per_megagram[layer];
     staged.geochemistry_solids[0] = state.geochemistry_solids[layer];
     try seedProfilePhosphate(&staged, 0, inputs.soil_ph, inputs.phosphate_g_p_per_megagram, parameters.soluble);
     const masses = parameters.molar_mass_g_per_mol;
@@ -362,13 +363,13 @@ pub fn seedProfilePrimaryState(state: *ChemistryState, layer: usize, inputs: Pro
 pub fn seedProfilePhosphateSurfaceSites(
     state: *ChemistryState,
     layer: usize,
-    total_profile_phosphate_mol_p_per_Mg: f64,
-    anion_exchange_capacity_mol_charge_per_Mg: f64,
+    total_profile_phosphate_mol_p_per_megagram: f64,
+    anion_exchange_capacity_mol_charge_per_megagram: f64,
     surface: phosphate_exchange.Parameters,
     h2po4_dissociation_constant_mol_per_m3: f64,
 ) !void {
     if (layer >= state.cell_count) return error.ChemistryCellIndexOutOfBounds;
-    inline for (.{ total_profile_phosphate_mol_p_per_Mg, anion_exchange_capacity_mol_charge_per_Mg, h2po4_dissociation_constant_mol_per_m3 }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidProfileChemistryInitialization;
+    inline for (.{ total_profile_phosphate_mol_p_per_megagram, anion_exchange_capacity_mol_charge_per_megagram, h2po4_dissociation_constant_mol_per_m3 }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidProfileChemistryInitialization;
     if (h2po4_dissociation_constant_mol_per_m3 <= 0 or surface.protonated_site_equilibrium_constant <= 0 or surface.hydroxyl_site_equilibrium_constant <= 0 or surface.h2po4_exchange_equilibrium_constant <= 0 or surface.hpo4_exchange_equilibrium_constant <= 0) return error.InvalidProfileChemistryInitialization;
     const hydrogen = state.aqueous[layer].hydrogen;
     if (!std.math.isFinite(hydrogen) or hydrogen <= 0) return error.InvalidProfileChemistryInitialization;
@@ -378,18 +379,18 @@ pub fn seedProfilePhosphateSurfaceSites(
     const hydroxyl_weight = surface.protonated_site_equilibrium_constant / hydrogen;
     const deprotonated_weight = hydroxyl_weight * surface.hydroxyl_site_equilibrium_constant / hydrogen;
     const site_weight_sum = protonated_weight + hydroxyl_weight + deprotonated_weight;
-    const adsorbed_total = @min(anion_exchange_capacity_mol_charge_per_Mg, total_profile_phosphate_mol_p_per_Mg);
-    const unoccupied_total = anion_exchange_capacity_mol_charge_per_Mg - adsorbed_total;
+    const adsorbed_total = @min(anion_exchange_capacity_mol_charge_per_megagram, total_profile_phosphate_mol_p_per_megagram);
+    const unoccupied_total = anion_exchange_capacity_mol_charge_per_megagram - adsorbed_total;
     const hpo4_to_h2po4_ratio = surface.h2po4_exchange_equilibrium_constant * h2po4_dissociation_constant_mol_per_m3 /
         (surface.hpo4_exchange_equilibrium_constant * hydrogen);
     const adsorbed_h2po4 = adsorbed_total / (1 + hpo4_to_h2po4_ratio);
     const adsorbed_hpo4 = adsorbed_total - adsorbed_h2po4;
     inline for (.{ &state.non_band_phosphate[layer], &state.band_phosphate[layer] }) |zone| {
-        zone.protonated_site_mol_per_Mg = unoccupied_total * protonated_weight / site_weight_sum;
-        zone.hydroxyl_site_mol_per_Mg = unoccupied_total * hydroxyl_weight / site_weight_sum;
-        zone.deprotonated_site_mol_per_Mg = unoccupied_total * deprotonated_weight / site_weight_sum;
-        zone.adsorbed_h2po4_mol_p_per_Mg = adsorbed_h2po4;
-        zone.adsorbed_hpo4_mol_p_per_Mg = adsorbed_hpo4;
+        zone.protonated_site_mol_per_megagram = unoccupied_total * protonated_weight / site_weight_sum;
+        zone.hydroxyl_site_mol_per_megagram = unoccupied_total * hydroxyl_weight / site_weight_sum;
+        zone.deprotonated_site_mol_per_megagram = unoccupied_total * deprotonated_weight / site_weight_sum;
+        zone.adsorbed_h2po4_mol_p_per_megagram = adsorbed_h2po4;
+        zone.adsorbed_hpo4_mol_p_per_megagram = adsorbed_hpo4;
     }
 }
 
@@ -399,15 +400,15 @@ pub fn seedProfilePhosphateSurfaceSites(
 pub fn seedProfileCationExchange(
     state: *ChemistryState,
     layer: usize,
-    capacity_mol_charge_per_Mg: f64,
+    capacity_mol_charge_per_megagram: f64,
     selectivity: cation_exchange.Selectivity,
     fractions: charge_classification.ZoneFractions,
 ) !void {
     if (layer >= state.cell_count) return error.ChemistryCellIndexOutOfBounds;
-    if (!std.math.isFinite(capacity_mol_charge_per_Mg) or capacity_mol_charge_per_Mg < 0) return error.InvalidProfileChemistryInitialization;
+    if (!std.math.isFinite(capacity_mol_charge_per_megagram) or capacity_mol_charge_per_megagram < 0) return error.InvalidProfileChemistryInitialization;
     inline for (@typeInfo(cation_exchange.Selectivity).@"struct".fields) |field| if (!std.math.isFinite(@field(selectivity, field.name)) or @field(selectivity, field.name) < 0) return error.InvalidProfileChemistryInitialization;
-    if (capacity_mol_charge_per_Mg == 0) {
-        state.cation_exchange_mol_per_Mg[layer] = std.mem.zeroes(cation_exchange.Cations);
+    if (capacity_mol_charge_per_megagram == 0) {
+        state.cation_exchange_mol_per_megagram[layer] = std.mem.zeroes(cation_exchange.Cations);
         return;
     }
     const coefficients = try state.activityCoefficients(layer, fractions);
@@ -428,8 +429,8 @@ pub fn seedProfileCationExchange(
         s.calcium_sodium * aqueous.sodium * monovalent / calcium_root +
         s.calcium_potassium * aqueous.potassium * monovalent / calcium_root;
     if (!std.math.isFinite(denominator) or denominator <= 0) return error.InvalidCationExchangeEquilibrium;
-    const calcium_basis = capacity_mol_charge_per_Mg / denominator;
-    state.cation_exchange_mol_per_Mg[layer] = .{
+    const calcium_basis = capacity_mol_charge_per_megagram / denominator;
+    state.cation_exchange_mol_per_megagram[layer] = .{
         .ammonium_non_band = calcium_basis * s.calcium_ammonium * aqueous.ammonium_non_band * monovalent / calcium_root,
         .ammonium_band = calcium_basis * s.calcium_ammonium * aqueous.ammonium_band * monovalent / calcium_root,
         .hydrogen = calcium_basis * s.calcium_hydrogen * aqueous.hydrogen * monovalent / calcium_root,
@@ -440,13 +441,50 @@ pub fn seedProfileCationExchange(
         .sodium = calcium_basis * s.calcium_sodium * aqueous.sodium * monovalent / calcium_root,
         .potassium = calcium_basis * s.calcium_potassium * aqueous.potassium * monovalent / calcium_root,
     };
-    const exchange = &state.cation_exchange_mol_per_Mg[layer];
+    const exchange = &state.cation_exchange_mol_per_megagram[layer];
     var charge = exchange.ammonium_non_band * fractions.ammonium_non_band + exchange.ammonium_band * fractions.ammonium_band + exchange.hydrogen + 3 * (exchange.aluminum + exchange.iron) + 2 * (exchange.calcium + exchange.magnesium) + exchange.sodium + exchange.potassium;
     if (!std.math.isFinite(charge) or charge <= 0) return error.InvalidCationExchangeEquilibrium;
-    const source_normalization = capacity_mol_charge_per_Mg / charge;
+    const source_normalization = capacity_mol_charge_per_megagram / charge;
     inline for (@typeInfo(cation_exchange.Cations).@"struct".fields) |field| @field(exchange.*, field.name) *= source_normalization;
     charge = exchange.ammonium_non_band * fractions.ammonium_non_band + exchange.ammonium_band * fractions.ammonium_band + exchange.hydrogen + 3 * (exchange.aluminum + exchange.iron) + 2 * (exchange.calcium + exchange.magnesium) + exchange.sodium + exchange.potassium;
-    if (!std.math.isFinite(charge) or @abs(charge - capacity_mol_charge_per_Mg) > 1e-10 * @max(1.0, capacity_mol_charge_per_Mg)) return error.NonConservativeCationExchangeInitialization;
+    if (!std.math.isFinite(charge) or @abs(charge - capacity_mol_charge_per_megagram) > 1e-10 * @max(1.0, capacity_mol_charge_per_megagram)) return error.NonConservativeCationExchangeInitialization;
+}
+
+/// STARTE line 403, `XHC1=XCOOH*AMIN1(1.0,CHY1/DPCOH)`. Establishes the
+/// hydrogen-occupied carboxyl pool for one runtime soil layer before the
+/// initial per-layer equilibrium solve, exactly as the source does before its
+/// `DO 1000 M=1,MRXN` reaction loop.
+///
+/// This seed is not an optimization. `State.init` zeroes
+/// `carboxyl_bound_hydrogen_mol_per_megagram`, and zero occupancy is an
+/// absorbing state for the SOLUTE carboxyl reaction: its substrate limit
+/// `FIONX/BKVLW*XHC1` is proportional to the occupied pool, so with a zero pool
+/// every carboxyl exchange extent clamps to exactly zero for every iteration
+/// and the organic proton buffer contributes identically nothing to the proton
+/// balance. Without this seed the buffer is structurally dead on the
+/// initialization path regardless of soil organic carbon or pH.
+///
+/// The formula itself is owned by
+/// `soil_carboxyl_exchange_initialization.protonatedSites`; this function only
+/// commits it to the runtime layer, so there is one owner of the science.
+pub fn seedProfileCarboxylOccupancy(
+    state: *ChemistryState,
+    layer: usize,
+    total_carboxyl_sites_mol_per_megagram: f64,
+    carboxyl_dissociation_constant_mol_per_m3: f64,
+) !void {
+    if (layer >= state.cell_count) return error.ChemistryCellIndexOutOfBounds;
+    const hydrogen = state.aqueous[layer].hydrogen;
+    if (!std.math.isFinite(hydrogen) or hydrogen < 0)
+        return error.InvalidProfileChemistryInitialization;
+    const occupied = try carboxyl_exchange_initialization.protonatedSites(
+        total_carboxyl_sites_mol_per_megagram,
+        hydrogen,
+        carboxyl_dissociation_constant_mol_per_m3,
+    );
+    if (occupied > total_carboxyl_sites_mol_per_megagram)
+        return error.InvalidProfileChemistryInitialization;
+    state.carboxyl_bound_hydrogen_mol_per_megagram[layer] = occupied;
 }
 
 test "STARTE phosphate protonation is conservative and source equivalent" {
@@ -586,14 +624,142 @@ test "STARTE surface sites and Gapon exchange seed exact conserved capacities" {
     state.aqueous[0].magnesium = 1;
     state.aqueous[0].sodium = 0.5;
     state.aqueous[0].potassium = 0.1;
-    const surface = phosphate_exchange.Parameters{ .protonated_site_equilibrium_constant = 0.45, .hydroxyl_site_equilibrium_constant = 8.1e-4, .h2po4_exchange_equilibrium_constant = 5e5, .hpo4_exchange_equilibrium_constant = 5e3, .water_activity_product_mol2_per_m6 = 1e-8, .h2po4_dissociation_constant = 6.2e-5, .maximum_exchange_mol_per_Mg_step = 0.1, .substrate_limit_fraction = 0.2 };
+    const surface = phosphate_exchange.Parameters{ .protonated_site_equilibrium_constant = 0.45, .hydroxyl_site_equilibrium_constant = 8.1e-4, .h2po4_exchange_equilibrium_constant = 5e5, .hpo4_exchange_equilibrium_constant = 5e3, .water_activity_product_mol2_per_m6 = 1e-8, .h2po4_dissociation_constant = 6.2e-5, .maximum_exchange_mol_per_megagram_step = 0.1, .substrate_limit_fraction = 0.2 };
     try seedProfilePhosphateSurfaceSites(&state, 0, 3, 2, surface, 6.2e-5);
     const zone = state.non_band_phosphate[0];
-    const sites = zone.protonated_site_mol_per_Mg + zone.hydroxyl_site_mol_per_Mg + zone.deprotonated_site_mol_per_Mg + zone.adsorbed_h2po4_mol_p_per_Mg + zone.adsorbed_hpo4_mol_p_per_Mg;
+    const sites = zone.protonated_site_mol_per_megagram + zone.hydroxyl_site_mol_per_megagram + zone.deprotonated_site_mol_per_megagram + zone.adsorbed_h2po4_mol_p_per_megagram + zone.adsorbed_hpo4_mol_p_per_megagram;
     try std.testing.expectApproxEqAbs(@as(f64, 2), sites, 1e-12);
     const fractions = charge_classification.ZoneFractions{ .ammonium_non_band = 0.75, .ammonium_band = 0.25, .nitrate_non_band = 0.6, .nitrate_band = 0.4, .phosphate_non_band = 0.8, .phosphate_band = 0.2 };
     try seedProfileCationExchange(&state, 0, 100, .{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }, fractions);
-    const exchange = state.cation_exchange_mol_per_Mg[0];
+    const exchange = state.cation_exchange_mol_per_megagram[0];
     const charge = exchange.ammonium_non_band * fractions.ammonium_non_band + exchange.ammonium_band * fractions.ammonium_band + exchange.hydrogen + 3 * (exchange.aluminum + exchange.iron) + 2 * (exchange.calcium + exchange.magnesium) + exchange.sodium + exchange.potassium;
     try std.testing.expectApproxEqAbs(@as(f64, 100), charge, 1e-10);
+}
+
+test "STARTE carboxyl occupancy seed reproduces source line 403" {
+    var state = try ChemistryState.init(std.testing.allocator, 2);
+    defer state.deinit();
+    state.aqueous[1].hydrogen = 2.5e-3;
+    try seedProfileCarboxylOccupancy(&state, 1, 5, 1.0e-2);
+    // XHC1 = XCOOH * AMIN1(1, CHY1/DPCOH) = 5 * 0.25.
+    try std.testing.expectEqual(
+        @as(f64, 1.25),
+        state.carboxyl_bound_hydrogen_mol_per_megagram[1],
+    );
+    // Unseeded layers are untouched, so the seed owns exactly one layer.
+    try std.testing.expectEqual(
+        @as(f64, 0),
+        state.carboxyl_bound_hydrogen_mol_per_megagram[0],
+    );
+}
+
+test "STARTE carboxyl occupancy saturates at all sites and never exceeds them" {
+    var state = try ChemistryState.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.aqueous[0].hydrogen = 1;
+    try seedProfileCarboxylOccupancy(&state, 0, 4, 1.0e-2);
+    try std.testing.expectEqual(
+        @as(f64, 4),
+        state.carboxyl_bound_hydrogen_mol_per_megagram[0],
+    );
+}
+
+test "zero carboxyl occupancy is an absorbing state that the seed escapes" {
+    const carboxyl = @import("solute_carboxyl_exchange.zig");
+    const parameters: carboxyl.Parameters = .{
+        .dissociation_constant_mol_per_m3 = 1.0e-2,
+        .maximum_exchange_mol_per_m3_per_iteration = 1.0e-2,
+        .substrate_limit_fraction_per_iteration = 0.2,
+    };
+    // An acidic organic horizon: many sites, low pH, so the buffer must be
+    // active. With the occupied pool left at the `State.init` zero, the
+    // substrate limit `FIONX/BKVLW*XHC1` is zero and the reaction extent is
+    // clamped to exactly zero no matter how many iterations are spent. That is
+    // the `carboxyl=0e0` signature reported for four wave-1 examples.
+    const unseeded = try carboxyl.calculateChangeMolPerMg(.{
+        .total_carboxyl_sites_mol_per_megagram = 5,
+        .hydrogen_occupied_sites_mol_per_megagram = 0,
+        .hydrogen_activity_mol_per_m3 = 1.0e-2,
+        .soil_mass_per_water_volume_megagrams_per_m3 = 2,
+    }, parameters);
+    try std.testing.expectEqual(@as(f64, 0), unseeded);
+
+    var state = try ChemistryState.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.aqueous[0].hydrogen = 1.0e-2;
+    try seedProfileCarboxylOccupancy(&state, 0, 5, 1.0e-2);
+    const seeded_occupancy = state.carboxyl_bound_hydrogen_mol_per_megagram[0];
+    try std.testing.expect(seeded_occupancy > 0);
+    const seeded = try carboxyl.calculateChangeMolPerMg(.{
+        .total_carboxyl_sites_mol_per_megagram = 5,
+        .hydrogen_occupied_sites_mol_per_megagram = seeded_occupancy,
+        .hydrogen_activity_mol_per_m3 = 1.0e-2,
+        .soil_mass_per_water_volume_megagrams_per_m3 = 2,
+    }, parameters);
+    // A nonzero extent is a descent direction for the proton balance, which the
+    // zero-occupancy state provably cannot supply.
+    try std.testing.expect(@abs(seeded) > 0);
+}
+
+test "carboxyl occupancy seed rejects invalid inputs" {
+    var state = try ChemistryState.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.aqueous[0].hydrogen = 1.0e-2;
+    try std.testing.expectError(
+        error.InvalidCarboxylExchangeInput,
+        seedProfileCarboxylOccupancy(&state, 0, 5, 0),
+    );
+    try std.testing.expectError(
+        error.ChemistryCellIndexOutOfBounds,
+        seedProfileCarboxylOccupancy(&state, 7, 5, 1.0e-2),
+    );
+}
+
+test "SOLUTE-036: STARTE and SOLUTE carboxyl substrate limits differ by orders of magnitude in an acidic organic horizon" {
+    const starte = @import("soil_carboxyl_proton_exchange.zig");
+
+    // Conditions representative of the Cool Temperate Oak MA forest floor, the
+    // regime where four wave-1 examples fail: surface pH 5, so
+    // AHY1 ~ 1e-2 mol m-3, a thick organic horizon giving many carboxyl sites,
+    // and the runtime `cation_kinetics,0.2,0.0025` limits from that example's
+    // `soil_chemistry_reaction_parameters.txt`.
+    const hydrogen_activity_mol_per_m3: f64 = 1.0e-2;
+    const total_sites_mol_per_megagram: f64 = 5;
+    const occupied_mol_per_megagram: f64 = 5; // saturated at this pH: min(1, AHY1/DPCOH)=1
+    const soil_mass_per_water_volume_megagrams_per_m3: f64 = 2;
+    const substrate_fraction: f64 = 0.2;
+
+    // `solute.f:1418`  XMIN = FIONX/BKVLW*XHC1        -- ignores H+ activity.
+    const solute_substrate_limit = substrate_fraction /
+        soil_mass_per_water_volume_megagrams_per_m3 * occupied_mol_per_megagram;
+
+    // `starte.f:813`   XMIN = FION*AMIN1(XHC1,AHY1)   -- throttled by H+ activity.
+    const starte_substrate_limit = substrate_fraction *
+        @min(occupied_mol_per_megagram, hydrogen_activity_mol_per_m3);
+
+    // The STARTE limit is far smaller here, because AMIN1 selects AHY1 when the
+    // horizon is acidic and site-rich. This is the quantitative basis of
+    // SOLUTE-036: production runs the SOLUTE form on the initialization path, so
+    // it permits a carboxyl step ~50x larger than the source's own initial
+    // equilibrium would allow in exactly the regime that currently fails.
+    try std.testing.expectEqual(@as(f64, 0.5), solute_substrate_limit);
+    try std.testing.expectEqual(@as(f64, 2.0e-3), starte_substrate_limit);
+    try std.testing.expect(solute_substrate_limit > 100 * starte_substrate_limit);
+
+    // The STARTE kernel is an exact translation and is reachable, so the
+    // formulation is available; only the call site is missing.
+    var state: starte.State = .{
+        .total_carboxyl_sites_mol_per_megagram = total_sites_mol_per_megagram,
+        .protonated_carboxyl_sites_mol_per_megagram = occupied_mol_per_megagram,
+    };
+    const result = try starte.step(.soil, hydrogen_activity_mol_per_m3, .{
+        .substrate_limit_fraction = substrate_fraction,
+        .minimum_unprotonated_sites_mol_per_megagram = 1.0e-48,
+        .carboxyl_dissociation_mol_per_m3 = 1.0e-2,
+        .maximum_exchange_mol_per_megagram_iteration = 2.5e-3,
+    }, &state);
+    try std.testing.expectEqual(
+        starte_substrate_limit,
+        result.diagnostics.?.substrate_limit_mol_per_megagram_iteration,
+    );
 }

@@ -2,8 +2,8 @@ const std = @import("std");
 
 pub const Inputs = struct {
     outdoors: bool,
-    extraterrestrial_shortwave_mj_per_m2_h: f64,
-    incoming_shortwave_mj_per_m2_h: f64,
+    extraterrestrial_shortwave_megajoules_per_m2_h: f64,
+    incoming_shortwave_megajoules_per_m2_h: f64,
     atmospheric_vapor_pressure_kpa: f64,
     air_temperature_k: f64,
     minimum_outdoor_cloudiness_fraction: f64 = 0.2,
@@ -24,8 +24,8 @@ pub fn derive(inputs: Inputs) !Properties {
         if (!std.math.isFinite(value))
             return error.NonFiniteSkyRadiativePropertyInput;
     }
-    if (inputs.extraterrestrial_shortwave_mj_per_m2_h < 0 or
-        inputs.incoming_shortwave_mj_per_m2_h < 0 or
+    if (inputs.extraterrestrial_shortwave_megajoules_per_m2_h < 0 or
+        inputs.incoming_shortwave_megajoules_per_m2_h < 0 or
         inputs.atmospheric_vapor_pressure_kpa < 0 or
         inputs.air_temperature_k <= 0 or
         inputs.minimum_outdoor_cloudiness_fraction < 0 or
@@ -44,11 +44,11 @@ pub fn derive(inputs: Inputs) !Properties {
         };
     }
 
-    const cloudiness = if (inputs.extraterrestrial_shortwave_mj_per_m2_h > 0)
+    const cloudiness = if (inputs.extraterrestrial_shortwave_megajoules_per_m2_h > 0)
         std.math.clamp(
             2.33 - 3.33 *
-                inputs.incoming_shortwave_mj_per_m2_h /
-                inputs.extraterrestrial_shortwave_mj_per_m2_h,
+                inputs.incoming_shortwave_megajoules_per_m2_h /
+                inputs.extraterrestrial_shortwave_megajoules_per_m2_h,
             inputs.minimum_outdoor_cloudiness_fraction,
             inputs.maximum_outdoor_cloudiness_fraction,
         )
@@ -77,8 +77,8 @@ pub fn derive(inputs: Inputs) !Properties {
 test "clear outdoor sky clamps cloudiness to source minimum" {
     const result = try derive(.{
         .outdoors = true,
-        .extraterrestrial_shortwave_mj_per_m2_h = 4,
-        .incoming_shortwave_mj_per_m2_h = 4,
+        .extraterrestrial_shortwave_megajoules_per_m2_h = 4,
+        .incoming_shortwave_megajoules_per_m2_h = 4,
         .atmospheric_vapor_pressure_kpa = 1,
         .air_temperature_k = 290,
     });
@@ -92,8 +92,8 @@ test "clear outdoor sky clamps cloudiness to source minimum" {
 test "dark outdoor hour uses source minimum cloudiness branch" {
     const result = try derive(.{
         .outdoors = true,
-        .extraterrestrial_shortwave_mj_per_m2_h = 0,
-        .incoming_shortwave_mj_per_m2_h = 0,
+        .extraterrestrial_shortwave_megajoules_per_m2_h = 0,
+        .incoming_shortwave_megajoules_per_m2_h = 0,
         .atmospheric_vapor_pressure_kpa = 0,
         .air_temperature_k = 270,
     });
@@ -106,8 +106,8 @@ test "dark outdoor hour uses source minimum cloudiness branch" {
 test "opaque outdoor sky clamps cloudiness to one" {
     const result = try derive(.{
         .outdoors = true,
-        .extraterrestrial_shortwave_mj_per_m2_h = 4,
-        .incoming_shortwave_mj_per_m2_h = 0,
+        .extraterrestrial_shortwave_megajoules_per_m2_h = 4,
+        .incoming_shortwave_megajoules_per_m2_h = 0,
         .atmospheric_vapor_pressure_kpa = 1,
         .air_temperature_k = 290,
     });
@@ -117,8 +117,8 @@ test "opaque outdoor sky clamps cloudiness to one" {
 test "phytotron uses exact fixed source properties" {
     const result = try derive(.{
         .outdoors = false,
-        .extraterrestrial_shortwave_mj_per_m2_h = 0,
-        .incoming_shortwave_mj_per_m2_h = 0,
+        .extraterrestrial_shortwave_megajoules_per_m2_h = 0,
+        .incoming_shortwave_megajoules_per_m2_h = 0,
         .atmospheric_vapor_pressure_kpa = 0,
         .air_temperature_k = 290,
     });
@@ -134,8 +134,8 @@ test "nonfinite late input fails before returning sky properties" {
         error.NonFiniteSkyRadiativePropertyInput,
         derive(.{
             .outdoors = true,
-            .extraterrestrial_shortwave_mj_per_m2_h = 1,
-            .incoming_shortwave_mj_per_m2_h = 0.5,
+            .extraterrestrial_shortwave_megajoules_per_m2_h = 1,
+            .incoming_shortwave_megajoules_per_m2_h = 0.5,
             .atmospheric_vapor_pressure_kpa = std.math.nan(f64),
             .air_temperature_k = 290,
         }),

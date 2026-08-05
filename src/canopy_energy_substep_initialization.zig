@@ -11,16 +11,16 @@ pub fn compatibilityIterationPolicy() IterationPolicy {
 
 pub const Inputs = struct {
     canopy_air_temperature_k: f64,
-    canopy_air_heat_capacity_mj_per_k: f64,
-    negligible_canopy_air_heat_capacity_mj_per_k: f64,
+    canopy_air_heat_capacity_megajoules_per_k: f64,
+    negligible_canopy_air_heat_capacity_megajoules_per_k: f64,
     canopy_radiation_share: f64,
     negligible_canopy_radiation_share: f64,
-    previous_combustion_heat_mj_per_step: f64,
+    previous_combustion_heat_megajoules_per_step: f64,
     legacy_substep_multiplier: f64,
     canopy_surface_water_m3: f64,
     retained_foliar_water_m3_per_step: f64,
     canopy_surface_temperature_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const Result = struct {
@@ -28,7 +28,7 @@ pub const Result = struct {
     temperature_direction: f64,
     canopy_air_temperature_k: f64,
     canopy_surface_water_m3: f64,
-    retained_foliar_water_heat_mj_per_step: f64,
+    retained_foliar_water_heat_megajoules_per_step: f64,
 };
 
 /// UPTAKE.F 849--858. Initializes one local canopy energy/root-water
@@ -36,15 +36,15 @@ pub const Result = struct {
 pub fn calculate(inputs: Inputs) !Result {
     try validate(inputs);
     var canopy_air_temperature_k = inputs.canopy_air_temperature_k;
-    if (inputs.canopy_air_heat_capacity_mj_per_k >
-        inputs.negligible_canopy_air_heat_capacity_mj_per_k and
+    if (inputs.canopy_air_heat_capacity_megajoules_per_k >
+        inputs.negligible_canopy_air_heat_capacity_megajoules_per_k and
         inputs.canopy_radiation_share >
             inputs.negligible_canopy_radiation_share)
     {
         canopy_air_temperature_k =
             canopy_air_temperature_k +
-            inputs.previous_combustion_heat_mj_per_step /
-                (inputs.canopy_air_heat_capacity_mj_per_k *
+            inputs.previous_combustion_heat_megajoules_per_step /
+                (inputs.canopy_air_heat_capacity_megajoules_per_k *
                     inputs.canopy_radiation_share) *
                 inputs.legacy_substep_multiplier;
     }
@@ -53,14 +53,14 @@ pub fn calculate(inputs: Inputs) !Result {
         inputs.retained_foliar_water_m3_per_step;
     const retained_heat =
         inputs.retained_foliar_water_m3_per_step *
-        inputs.liquid_water_heat_capacity_mj_per_m3_k *
+        inputs.liquid_water_heat_capacity_megajoules_per_m3_k *
         inputs.canopy_surface_temperature_k;
     const result = Result{
         .convergence_check = 0,
         .temperature_direction = 1,
         .canopy_air_temperature_k = canopy_air_temperature_k,
         .canopy_surface_water_m3 = canopy_surface_water_m3,
-        .retained_foliar_water_heat_mj_per_step = retained_heat,
+        .retained_foliar_water_heat_megajoules_per_step = retained_heat,
     };
     inline for (@typeInfo(Result).@"struct".fields) |field|
         if (field.type == f64 and !std.math.isFinite(@field(result, field.name)))
@@ -73,31 +73,31 @@ fn validate(inputs: Inputs) !void {
         if (!std.math.isFinite(@field(inputs, field.name)))
             return error.InvalidCanopyEnergySubstepInput;
     if (inputs.canopy_air_temperature_k <= 0 or
-        inputs.canopy_air_heat_capacity_mj_per_k < 0 or
-        inputs.negligible_canopy_air_heat_capacity_mj_per_k < 0 or
+        inputs.canopy_air_heat_capacity_megajoules_per_k < 0 or
+        inputs.negligible_canopy_air_heat_capacity_megajoules_per_k < 0 or
         inputs.canopy_radiation_share < 0 or
         inputs.negligible_canopy_radiation_share < 0 or
         inputs.legacy_substep_multiplier < 0 or
         inputs.canopy_surface_water_m3 < 0 or
         inputs.retained_foliar_water_m3_per_step < 0 or
         inputs.canopy_surface_temperature_k <= 0 or
-        inputs.liquid_water_heat_capacity_mj_per_m3_k < 0)
+        inputs.liquid_water_heat_capacity_megajoules_per_m3_k < 0)
         return error.InvalidCanopyEnergySubstepInput;
 }
 
 test "UPTAKE substep initializes combustion precipitation and retained heat" {
     const result = try calculate(.{
         .canopy_air_temperature_k = 290,
-        .canopy_air_heat_capacity_mj_per_k = 2,
-        .negligible_canopy_air_heat_capacity_mj_per_k = 1e-12,
+        .canopy_air_heat_capacity_megajoules_per_k = 2,
+        .negligible_canopy_air_heat_capacity_megajoules_per_k = 1e-12,
         .canopy_radiation_share = 0.5,
         .negligible_canopy_radiation_share = 1e-12,
-        .previous_combustion_heat_mj_per_step = 4,
+        .previous_combustion_heat_megajoules_per_step = 4,
         .legacy_substep_multiplier = 0.25,
         .canopy_surface_water_m3 = 0.1,
         .retained_foliar_water_m3_per_step = 0.02,
         .canopy_surface_temperature_k = 300,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     });
     try std.testing.expectEqual(@as(usize, 0), result.convergence_check);
     try std.testing.expectEqual(@as(f64, 1), result.temperature_direction);
@@ -105,7 +105,7 @@ test "UPTAKE substep initializes combustion precipitation and retained heat" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.12), result.canopy_surface_water_m3, 1e-15);
     try std.testing.expectApproxEqAbs(
         @as(f64, 0.02 * 4.19 * 300),
-        result.retained_foliar_water_heat_mj_per_step,
+        result.retained_foliar_water_heat_megajoules_per_step,
         1e-14,
     );
 }
@@ -113,16 +113,16 @@ test "UPTAKE substep initializes combustion precipitation and retained heat" {
 test "strict heat and radiation gates skip combustion adjustment" {
     const result = try calculate(.{
         .canopy_air_temperature_k = 290,
-        .canopy_air_heat_capacity_mj_per_k = 1,
-        .negligible_canopy_air_heat_capacity_mj_per_k = 1,
+        .canopy_air_heat_capacity_megajoules_per_k = 1,
+        .negligible_canopy_air_heat_capacity_megajoules_per_k = 1,
         .canopy_radiation_share = 0.5,
         .negligible_canopy_radiation_share = 0.5,
-        .previous_combustion_heat_mj_per_step = 100,
+        .previous_combustion_heat_megajoules_per_step = 100,
         .legacy_substep_multiplier = 1,
         .canopy_surface_water_m3 = 0,
         .retained_foliar_water_m3_per_step = 0,
         .canopy_surface_temperature_k = 300,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     });
     try std.testing.expectEqual(@as(f64, 290), result.canopy_air_temperature_k);
 }

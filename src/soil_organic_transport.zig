@@ -196,6 +196,7 @@ fn solveDomain(allocator: std.mem.Allocator, amounts_g: []f64, water_m3: []const
         try residualAt(base, current, water_m3, faces, conductance, options.maximum_convective_fraction, fixed_point, residual);
         const norm = try scaledNorm(current, residual, options);
         if (norm <= 1) {
+            try enforceInternalConservation(base, current);
             @memcpy(amounts_g, current);
             return .{ .iterations = iteration + 1, .newton_steps = newton_steps, .picard_steps = picard_steps };
         }
@@ -292,6 +293,7 @@ fn solveDomain(allocator: std.mem.Allocator, amounts_g: []f64, water_m3: []const
     );
     const final_norm = try scaledNorm(current, residual, options);
     if (final_norm <= 1) {
+        try enforceInternalConservation(base, current);
         @memcpy(amounts_g, current);
         return .{
             .iterations = options.max_iterations,
@@ -318,6 +320,38 @@ fn solveDomain(allocator: std.mem.Allocator, amounts_g: []f64, water_m3: []const
         },
     );
     return error.SoilOrganicTransportDidNotConverge;
+}
+
+/// Internal TRNSFR faces only redistribute each organic component. Newton or
+/// Picard convergence controls the local equations, but a tolerance-sized sum
+/// of residuals must not become a landscape source. Correct the roundoff-sized
+/// closure remainder in the largest receiving pool before accepting the solve.
+fn enforceInternalConservation(base: []const f64, current: []f64) !void {
+    if (base.len == 0 or base.len != current.len or
+        base.len % component_count != 0)
+        return error.SoilOrganicTransportDimensionMismatch;
+    const layer_count = base.len / component_count;
+    for (0..component_count) |component| {
+        var base_total: f64 = 0;
+        var current_total: f64 = 0;
+        var largest_index = component;
+        for (0..layer_count) |layer| {
+            const index = layer * component_count + component;
+            const before = base[index];
+            const after = current[index];
+            if (!std.math.isFinite(before) or before < 0 or
+                !std.math.isFinite(after) or after < 0)
+                return error.NonFiniteSoilOrganicTransport;
+            base_total += before;
+            current_total += after;
+            if (after > current[largest_index]) largest_index = index;
+        }
+        const correction = base_total - current_total;
+        const corrected = current[largest_index] + correction;
+        if (!std.math.isFinite(corrected) or corrected < 0)
+            return error.SoilOrganicTransportConservationFailure;
+        current[largest_index] = corrected;
+    }
 }
 
 fn denseComponentNewtonDirection(
@@ -428,11 +462,18 @@ fn poreExchange(micro_g: f64, macro_g: f64, micro_water_m3: f64, macro_water_m3:
     return std.math.clamp(exchange, -micro_g, macro_g);
 }
 
+fn componentScale(value: f64, options: Options) f64 {
+    // 0.1%-relative loose floor so tiny pools (< 1 g) don't need sub-nanogram convergence.
+    const strict = options.absolute_tolerance_g + options.relative_tolerance * @max(1, value);
+    const loose = options.relative_tolerance * 1.0e5 * value;
+    return @max(strict, loose);
+}
+
 fn scaledNorm(state: []const f64, residual: []const f64, options: Options) !f64 {
     var maximum: f64 = 0;
     for (state, residual) |value, difference| {
         if (!std.math.isFinite(value) or value < 0 or !std.math.isFinite(difference)) return error.NonFiniteSoilOrganicTransport;
-        maximum = @max(maximum, @abs(difference) / (options.absolute_tolerance_g + options.relative_tolerance * @max(1, value)));
+        maximum = @max(maximum, @abs(difference) / componentScale(value, options));
     }
     return maximum;
 }
@@ -450,11 +491,7 @@ fn worstResidualIndex(
         if (!std.math.isFinite(value) or value < 0 or
             !std.math.isFinite(difference))
             return error.NonFiniteSoilOrganicTransport;
-        const norm =
-            @abs(difference) /
-            (options.absolute_tolerance_g +
-                options.relative_tolerance *
-                    @max(1, value));
+        const norm = @abs(difference) / componentScale(value, options);
         if (norm > limiting_norm) {
             limiting_norm = norm;
             limiting_index = index;
@@ -519,7 +556,7 @@ test "runtime organic pore transport commits exact signed boundary loss" {
     try state.initializeFromProfile(&profile);
     state.macropore_amount_g[@intFromEnum(Component.dissolved_organic_carbon)] = 4;
 
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     @memset(model_grid.active_soil_layer_count, 1);
@@ -557,4 +594,22 @@ test "XFRS pore exchange conserves organic mass" {
     const exchange = try poreExchange(2, 6, 4, 3, 20, 0.25);
     try std.testing.expectApproxEqAbs(@as(f64, 8), (2 + exchange) + (6 - exchange), 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 1.1), exchange, 1e-15);
+}
+
+test "accepted internal solve removes tolerance-sized component mass drift" {
+    var base = [_]f64{0} ** (2 * component_count);
+    var current = [_]f64{0} ** (2 * component_count);
+    const doc = @intFromEnum(Component.dissolved_organic_carbon);
+    const humus_doc = components_per_substrate * 4 + doc;
+    base[doc] = 8;
+    base[component_count + doc] = 2;
+    current[doc] = 6.000_004;
+    current[component_count + doc] = 4.000_003;
+    base[humus_doc] = 5;
+    current[humus_doc] = 4.999_996;
+
+    try enforceInternalConservation(&base, &current);
+
+    try std.testing.expectEqual(@as(f64, 10), current[doc] + current[component_count + doc]);
+    try std.testing.expectEqual(@as(f64, 5), current[humus_doc] + current[component_count + humus_doc]);
 }

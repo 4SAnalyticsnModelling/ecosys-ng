@@ -1,8 +1,8 @@
 const std = @import("std");
 
 pub const CombustionHeat = struct {
-    living_canopy_mj_per_timestep: []f64,
-    standing_dead_mj_per_timestep: []f64,
+    living_canopy_megajoules_per_timestep: []f64,
+    standing_dead_megajoules_per_timestep: []f64,
 };
 
 pub const InitializationError = error{
@@ -11,15 +11,15 @@ pub const InitializationError = error{
 
 /// Translates STARTQ lines 912-915 for runtime active plant species.
 pub fn initialize(heat: CombustionHeat) InitializationError!void {
-    if (heat.living_canopy_mj_per_timestep.len !=
-        heat.standing_dead_mj_per_timestep.len)
+    if (heat.living_canopy_megajoules_per_timestep.len !=
+        heat.standing_dead_megajoules_per_timestep.len)
     {
         return error.SpeciesCountMismatch;
     }
 
-    for (0..heat.living_canopy_mj_per_timestep.len) |species| {
-        heat.living_canopy_mj_per_timestep[species] = 0.0;
-        heat.standing_dead_mj_per_timestep[species] = 0.0;
+    for (0..heat.living_canopy_megajoules_per_timestep.len) |species| {
+        heat.living_canopy_megajoules_per_timestep[species] = 0.0;
+        heat.standing_dead_megajoules_per_timestep[species] = 0.0;
     }
 }
 
@@ -28,8 +28,8 @@ test "runtime active species combustion heat resets in STARTQ order" {
     var standing_dead = [_]f64{ 4.0, 5.0, 6.0 };
 
     try initialize(.{
-        .living_canopy_mj_per_timestep = &living_canopy,
-        .standing_dead_mj_per_timestep = &standing_dead,
+        .living_canopy_megajoules_per_timestep = &living_canopy,
+        .standing_dead_megajoules_per_timestep = &standing_dead,
     });
 
     try std.testing.expectEqualSlices(f64, &.{ 0.0, 0.0, 0.0 }, &living_canopy);
@@ -41,8 +41,8 @@ test "species mismatch fails before either heat ledger mutates" {
     var standing_dead = [_]f64{3.0};
 
     try std.testing.expectError(error.SpeciesCountMismatch, initialize(.{
-        .living_canopy_mj_per_timestep = &living_canopy,
-        .standing_dead_mj_per_timestep = &standing_dead,
+        .living_canopy_megajoules_per_timestep = &living_canopy,
+        .standing_dead_megajoules_per_timestep = &standing_dead,
     }));
     try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0 }, &living_canopy);
     try std.testing.expectEqualSlices(f64, &.{3.0}, &standing_dead);

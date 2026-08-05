@@ -10,6 +10,7 @@ const biochemistry = @import("canopy_biochemistry.zig");
 const stomatal = @import("canopy_stomatal_resistance.zig");
 const solver = @import("leaf_co2_solver.zig");
 const CarbonExchange = @import("canopy_carbon_exchange.zig").State;
+const c4_node_exchange_admission = @import("canopy_c4_node_exchange_admission.zig");
 
 pub const ApplyContext = struct {
     canopy: *Canopy,
@@ -25,6 +26,7 @@ pub const ApplyContext = struct {
     minimum_stomatal_resistance_h_per_m_by_plant: []const f64,
     shallow_root_profile_by_plant: []const u8,
     canopy_turgor_potential_mpa_by_plant: []const f64,
+    leaf_carbon_presence_threshold_g_c_per_plant: f64,
     minimum_turgor_potential_mpa: f64,
     atmospheric_co2_umol_per_mol: f64,
     picard_relaxation: f64,
@@ -51,6 +53,11 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         context.canopy_turgor_potential_mpa_by_plant,
     }) |values| if (values.len != plant_count) return error.CanopyCarboxylationDimensionMismatch;
     if (range.end > canopy.cell_count or context.layers.cell_count != canopy.cell_count or context.interception.cell_count != canopy.cell_count or context.optics.cell_count != canopy.cell_count or context.direct_incidence_fraction.len != canopy.cell_count * angular_count) return error.CanopyCarboxylationDimensionMismatch;
+    if (!std.math.isFinite(context.leaf_carbon_presence_threshold_g_c_per_plant) or
+        context.leaf_carbon_presence_threshold_g_c_per_plant < 0)
+        return error.InvalidCanopyC4LeafCarbonThreshold;
+    for (canopy.plant_population_count) |population| if (!std.math.isFinite(population) or population < 0)
+        return error.InvalidCanopyPlantPopulation;
     for (range.first..range.end) |cell| for (0..canopy.species_count) |species| {
         const plant = try canopy.plantIndex(cell, species);
         canopy.plant_carboxylation_umol_per_s[plant] = 0;
@@ -160,7 +167,11 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
                     canopy.plant_carboxylation_umol_per_s[plant] += fixation_umol_per_s;
                     canopy.branch_carboxylation_umol_per_s[branch] += fixation_umol_per_s;
                 };
-                if (context.parameters_by_plant[plant].pathway == .c4) {
+                if (try c4_node_exchange_admission.admitsNode(
+                    context.parameters_by_plant[plant].pathway == .c4,
+                    canopy.node_leaf_carbon_g[node],
+                    context.leaf_carbon_presence_threshold_g_c_per_plant * canopy.plant_population_count[plant],
+                )) {
                     const intercellular_co2_umol_per_mol = if (node_active_area_m2 > 0)
                         node_intercellular_co2_area_sum / node_active_area_m2
                     else
@@ -222,8 +233,8 @@ test "runtime sample uses bounded leaf CO2 convergence and publishes fixation" {
         .leaf_par_albedo = &zero,
         .leaf_shortwave_transmission = &zero,
         .leaf_par_transmission = &zero,
-        .direct_leaf_shortwave_mj_per_m2 = &zero,
-        .diffuse_leaf_shortwave_mj_per_m2 = &zero,
+        .direct_leaf_shortwave_megajoules_per_m2 = &zero,
+        .diffuse_leaf_shortwave_megajoules_per_m2 = &zero,
         .direct_leaf_par_micromol_per_m2_per_s = &direct_par,
         .diffuse_leaf_par_micromol_per_m2_per_s = &zero,
     };
@@ -272,6 +283,7 @@ test "runtime sample uses bounded leaf CO2 convergence and publishes fixation" {
         .minimum_stomatal_resistance_h_per_m_by_plant = &minimum_resistance_h_per_m,
         .shallow_root_profile_by_plant = &root_profile,
         .canopy_turgor_potential_mpa_by_plant = &turgor_mpa,
+        .leaf_carbon_presence_threshold_g_c_per_plant = 0,
         .minimum_turgor_potential_mpa = 0.1,
         .atmospheric_co2_umol_per_mol = 420,
         .picard_relaxation = 0.5,

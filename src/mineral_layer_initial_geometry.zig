@@ -10,8 +10,8 @@ pub const Inputs = struct {
     horizontal_cell_width_m: []const f64,
     vertical_cell_width_m: []const f64,
     matrix_volume_fraction: []const f64,
-    bulk_density_Mg_per_m3: []const f64,
-    initial_bulk_density_Mg_per_m3: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
+    initial_bulk_density_megagrams_per_m3: []const f64,
     calculation_floor: f64,
 };
 
@@ -25,7 +25,7 @@ pub const State = struct {
     matrix_volume_m3: []f64,
     reference_matrix_volume_m3: []f64,
     initial_total_volume_m3: []f64,
-    dry_soil_mass_Mg: []f64,
+    dry_soil_mass_megagrams: []f64,
     total_root_density_m_per_m3: []f64,
     east_west_face_area_m2: []f64,
     north_south_face_area_m2: []f64,
@@ -58,8 +58,8 @@ pub fn initialize(state: State, inputs: Inputs) !void {
         inputs.horizontal_cell_width_m.len != inputs.cell_count or
         inputs.vertical_cell_width_m.len != inputs.cell_count or
         inputs.matrix_volume_fraction.len != layer_count or
-        inputs.bulk_density_Mg_per_m3.len != layer_count or
-        inputs.initial_bulk_density_Mg_per_m3.len != layer_count)
+        inputs.bulk_density_megagrams_per_m3.len != layer_count or
+        inputs.initial_bulk_density_megagrams_per_m3.len != layer_count)
         return error.MineralLayerGeometryDimensionMismatch;
     inline for (@typeInfo(State).@"struct".fields) |field| {
         const expected = if (std.mem.eql(
@@ -106,8 +106,8 @@ pub fn initialize(state: State, inputs: Inputs) !void {
                 top_m,
                 bottom_m,
                 inputs.matrix_volume_fraction[index],
-                inputs.bulk_density_Mg_per_m3[index],
-                inputs.initial_bulk_density_Mg_per_m3[index],
+                inputs.bulk_density_megagrams_per_m3[index],
+                inputs.initial_bulk_density_megagrams_per_m3[index],
                 state.macropore_fraction[index],
             }) |value| {
                 if (!std.math.isFinite(value))
@@ -116,8 +116,8 @@ pub fn initialize(state: State, inputs: Inputs) !void {
             if (bottom_m <= top_m or
                 inputs.matrix_volume_fraction[index] < 0 or
                 inputs.matrix_volume_fraction[index] > 1 or
-                inputs.bulk_density_Mg_per_m3[index] < 0 or
-                inputs.initial_bulk_density_Mg_per_m3[index] < 0 or
+                inputs.bulk_density_megagrams_per_m3[index] < 0 or
+                inputs.initial_bulk_density_megagrams_per_m3[index] < 0 or
                 state.macropore_fraction[index] < 0 or
                 state.macropore_fraction[index] > 1)
                 return error.InvalidMineralLayerGeometryInput;
@@ -144,7 +144,7 @@ pub fn initialize(state: State, inputs: Inputs) !void {
                 relative_midpoint_m,
                 total_volume_m3,
                 matrix_volume_m3,
-                inputs.bulk_density_Mg_per_m3[index] * matrix_volume_m3,
+                inputs.bulk_density_megagrams_per_m3[index] * matrix_volume_m3,
                 thickness_m * inputs.vertical_cell_width_m[cell],
                 thickness_m * inputs.horizontal_cell_width_m[cell],
             }) |candidate| {
@@ -162,7 +162,7 @@ pub fn initialize(state: State, inputs: Inputs) !void {
         var previous_relative_bottom_m: f64 = 0.0;
         for (first..first + count) |layer| {
             const index = cell * inputs.layer_capacity + layer;
-            if (inputs.initial_bulk_density_Mg_per_m3[index] <=
+            if (inputs.initial_bulk_density_megagrams_per_m3[index] <=
                 inputs.calculation_floor)
                 state.macropore_fraction[index] = 0.0;
             const top_m = inputs.boundary_depth_m[boundary_base + layer];
@@ -195,8 +195,8 @@ pub fn initialize(state: State, inputs: Inputs) !void {
                 state.matrix_volume_m3[index];
             state.initial_total_volume_m3[index] =
                 state.total_volume_m3[index];
-            state.dry_soil_mass_Mg[index] =
-                inputs.bulk_density_Mg_per_m3[index] *
+            state.dry_soil_mass_megagrams[index] =
+                inputs.bulk_density_megagrams_per_m3[index] *
                 state.matrix_volume_m3[index];
             state.total_root_density_m_per_m3[index] = 0.0;
             state.east_west_face_area_m2[index] =
@@ -229,7 +229,7 @@ test "STARTS mineral geometry reproduces volume mass depth and face equations" {
         .matrix_volume_m3 = layer_fields[12..14],
         .reference_matrix_volume_m3 = layer_fields[14..16],
         .initial_total_volume_m3 = layer_fields[16..18],
-        .dry_soil_mass_Mg = layer_fields[18..20],
+        .dry_soil_mass_megagrams = layer_fields[18..20],
         .total_root_density_m_per_m3 = layer_fields[20..22],
         .east_west_face_area_m2 = layer_fields[22..24],
         .north_south_face_area_m2 = layer_fields[24..26],
@@ -245,15 +245,15 @@ test "STARTS mineral geometry reproduces volume mass depth and face equations" {
         .horizontal_cell_width_m = &.{10},
         .vertical_cell_width_m = &.{20},
         .matrix_volume_fraction = &.{ 0.8, 0.7 },
-        .bulk_density_Mg_per_m3 = &.{ 1.2, 1.3 },
-        .initial_bulk_density_Mg_per_m3 = &.{ 0.0, 1.3 },
+        .bulk_density_megagrams_per_m3 = &.{ 1.2, 1.3 },
+        .initial_bulk_density_megagrams_per_m3 = &.{ 0.0, 1.3 },
         .calculation_floor = 1e-15,
     });
     try std.testing.expectEqual(@as(f64, 0.0), state.macropore_fraction[0]);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.layer_thickness_m[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 40), state.total_volume_m3[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 32), state.matrix_volume_m3[0], 1e-15);
-    try std.testing.expectApproxEqAbs(@as(f64, 38.4), state.dry_soil_mass_Mg[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 38.4), state.dry_soil_mass_megagrams[0], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.layer_bottom_depth_from_surface_m[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0.35), state.layer_midpoint_depth_from_surface_m[1], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, -0.1), state.surface_boundary_depth_m[0], 1e-15);
@@ -273,7 +273,7 @@ test "invalid late layer leaves all geometry unchanged" {
         .matrix_volume_m3 = layer_fields[12..14],
         .reference_matrix_volume_m3 = layer_fields[14..16],
         .initial_total_volume_m3 = layer_fields[16..18],
-        .dry_soil_mass_Mg = layer_fields[18..20],
+        .dry_soil_mass_megagrams = layer_fields[18..20],
         .total_root_density_m_per_m3 = layer_fields[20..22],
         .east_west_face_area_m2 = layer_fields[22..24],
         .north_south_face_area_m2 = layer_fields[24..26],
@@ -291,8 +291,8 @@ test "invalid late layer leaves all geometry unchanged" {
             .horizontal_cell_width_m = &.{10},
             .vertical_cell_width_m = &.{20},
             .matrix_volume_fraction = &.{ 0.8, 1.2 },
-            .bulk_density_Mg_per_m3 = &.{ 1.2, 1.3 },
-            .initial_bulk_density_Mg_per_m3 = &.{ 1.2, 1.3 },
+            .bulk_density_megagrams_per_m3 = &.{ 1.2, 1.3 },
+            .initial_bulk_density_megagrams_per_m3 = &.{ 1.2, 1.3 },
             .calculation_floor = 1e-15,
         }),
     );

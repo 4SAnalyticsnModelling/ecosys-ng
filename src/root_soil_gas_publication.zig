@@ -71,8 +71,8 @@ const transport_slot_by_output_gas =
     [gas_count]?usize{ 0, null, 1, 2, 4 };
 
 /// Exact EXTRACT lines 792–795 and 798. All five totals use source addition
-/// and retain gas-specific elemental units. Lines 796–797 remain unbound
-/// because the accepted ammonia owner currently coalesces band/non-band.
+/// and retain gas-specific elemental units. Lines 796–797 are handled by
+/// root_soil_ammonia_exchange_publication using separate per-root band arrays.
 pub fn refresh(state: *State, inputs: Inputs) !void {
     const plant_count = try std.math.mul(
         usize,

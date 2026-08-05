@@ -144,7 +144,7 @@ test "negative outward loss fails instead of silently increasing TNBP" {
 }
 
 test "runtime cell finalization sums arbitrary plant populations into exact TNPP and TNBP" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     var exports = try export_module.State.init(std.testing.allocator, 1);

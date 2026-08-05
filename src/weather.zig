@@ -566,9 +566,9 @@ pub const HourlyForcing = struct {
     precipitation_m: f64,
     rainfall_m: f64 = 0,
     snowfall_water_equivalent_m: f64 = 0,
-    shortwave_radiation_mj_per_m2: f64,
+    shortwave_radiation_megajoules_per_m2: f64,
     wind_speed_m_per_h: f64,
-    longwave_radiation_mj_per_m2: ?f64,
+    longwave_radiation_megajoules_per_m2: ?f64,
 };
 
 pub const DailyForcing = struct {
@@ -577,7 +577,7 @@ pub const DailyForcing = struct {
     mean_vapor_pressure_kpa: f64,
     saturation_vapor_pressure_at_minimum_kpa: f64,
     precipitation_m_per_day: f64,
-    shortwave_radiation_mj_per_m2_per_day: f64,
+    shortwave_radiation_megajoules_per_m2_per_day: f64,
     wind_speed_m_per_h: f64,
 };
 
@@ -600,7 +600,7 @@ pub fn normalizeDaily(header: Header, real_values: []const f64, altitude_m: f64)
         .mean_vapor_pressure_kpa = vapor.mean,
         .saturation_vapor_pressure_at_minimum_kpa = vapor.at_minimum,
         .precipitation_m_per_day = try precipitationM(real_values[precipitation_index], header.weather_unit_codes[precipitation_index], 'D'),
-        .shortwave_radiation_mj_per_m2_per_day = try dailyRadiation(real_values[radiation_index], header.weather_unit_codes[radiation_index]),
+        .shortwave_radiation_megajoules_per_m2_per_day = try dailyRadiation(real_values[radiation_index], header.weather_unit_codes[radiation_index]),
         .wind_speed_m_per_h = try dailyWind(real_values[wind_index], header.weather_unit_codes[wind_index]),
     };
     inline for (@typeInfo(DailyForcing).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name))) return error.NonFiniteNormalizedWeather;
@@ -685,11 +685,11 @@ pub fn normalizeHourlyWithPhase(header: Header, real_values: []const f64, altitu
         .precipitation_m = if (requires_three_hour_infill) precipitation_m else if (is_rain) precipitation_m else snowfall_m,
         .rainfall_m = if (requires_three_hour_infill) precipitation_m else if (is_rain) precipitation_m else 0,
         .snowfall_water_equivalent_m = if (requires_three_hour_infill) 0 else snowfall_m,
-        .shortwave_radiation_mj_per_m2 = try radiationMjPerM2(real_values[shortwave_index.?], header.weather_unit_codes[shortwave_index.?]),
+        .shortwave_radiation_megajoules_per_m2 = try radiationMjPerM2(real_values[shortwave_index.?], header.weather_unit_codes[shortwave_index.?]),
         // WTHR enforces UA=AMAX1(3600,WIND); retain the one-metre-per-second
         // aerodynamic floor, including for signed sonic-anemometer records.
         .wind_speed_m_per_h = @max(3600.0, try windMPerH(real_values[wind_index.?], header.weather_unit_codes[wind_index.?])),
-        .longwave_radiation_mj_per_m2 = if (longwave_index) |index| try radiationMjPerM2(real_values[index], header.weather_unit_codes[index]) else null,
+        .longwave_radiation_megajoules_per_m2 = if (longwave_index) |index| try radiationMjPerM2(real_values[index], header.weather_unit_codes[index]) else null,
     };
     inline for (@typeInfo(HourlyForcing).@"struct".fields) |field| {
         if (field.type == f64 and !std.math.isFinite(@field(result, field.name))) return error.NonFiniteNormalizedWeather;
@@ -971,7 +971,7 @@ test "normalize daily crop weather in descriptor order" {
     const forcing = try normalizeDaily(summary.header, &values, 645);
     try std.testing.expectEqual(@as(f64, -2.12), forcing.maximum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, -9.22), forcing.minimum_air_temperature_c);
-    try std.testing.expectEqual(@as(f64, 2.55), forcing.shortwave_radiation_mj_per_m2_per_day);
+    try std.testing.expectEqual(@as(f64, 2.55), forcing.shortwave_radiation_megajoules_per_m2_per_day);
     try std.testing.expectEqual(@as(f64, 4050), forcing.wind_speed_m_per_h);
 }
 
@@ -1033,7 +1033,7 @@ test "normalize hourly forcing by descriptor rather than column position" {
     };
     const forcing = try normalizeHourly(header, &.{ 20, 50, 10, 100, 2 }, 500);
     try std.testing.expectApproxEqAbs(@as(f64, 0.01), forcing.precipitation_m, 1.0e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.36), forcing.shortwave_radiation_mj_per_m2, 1.0e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.36), forcing.shortwave_radiation_megajoules_per_m2, 1.0e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 7200), forcing.wind_speed_m_per_h, 1.0e-12);
     var lowercase_header = header;
     lowercase_header.temporal_code = .{ 'h', 'j' };

@@ -9,28 +9,28 @@ pub const AllocationError = error{
 
 /// Translates HOUR1 lines 2910-2911 (EHUM).
 ///
-/// `surface_clay_mg_mg` is Mg clay per Mg soil,
-/// `soil_organic_carbon_g_mg` is g C per Mg soil, and the result is the
+/// `surface_clay_megagrams_megagrams` is Mg clay per Mg soil,
+/// `soil_organic_carbon_g_per_megagram` is g C per Mg soil, and the result is the
 /// dimensionless fraction of microbial decomposition product sent to humus.
 pub fn humusAllocationFraction(
-    surface_clay_mg_mg: f64,
-    soil_organic_carbon_g_mg: f64,
+    surface_clay_megagrams_megagrams: f64,
+    soil_organic_carbon_g_per_megagram: f64,
 ) AllocationError!f64 {
-    if (!std.math.isFinite(surface_clay_mg_mg) or
-        !std.math.isFinite(soil_organic_carbon_g_mg))
+    if (!std.math.isFinite(surface_clay_megagrams_megagrams) or
+        !std.math.isFinite(soil_organic_carbon_g_per_megagram))
     {
         return error.NonFiniteInput;
     }
-    if (surface_clay_mg_mg < 0.0 or surface_clay_mg_mg > 1.0) {
+    if (surface_clay_megagrams_megagrams < 0.0 or surface_clay_megagrams_megagrams > 1.0) {
         return error.InvalidClayMassFraction;
     }
-    if (soil_organic_carbon_g_mg < 0.0) {
+    if (soil_organic_carbon_g_per_megagram < 0.0) {
         return error.InvalidOrganicCarbonConcentration;
     }
 
     const allocation_fraction = 0.150 +
-        0.300 * @min(0.333, surface_clay_mg_mg) +
-        0.182e-6 * soil_organic_carbon_g_mg;
+        0.300 * @min(0.333, surface_clay_megagrams_megagrams) +
+        0.182e-6 * soil_organic_carbon_g_per_megagram;
     if (!std.math.isFinite(allocation_fraction) or
         allocation_fraction < 0.0 or allocation_fraction > 1.0)
     {

@@ -11,9 +11,9 @@ pub const Inputs = struct {
     external_water_table_depth_m: f64,
     deepest_layer_depth_m: f64,
     maximum_profile_surface_elevation_m: f64,
-    humus_carbon_g_c_per_Mg: f64,
-    humus_nitrogen_g_n_per_Mg: f64,
-    humus_phosphorus_g_p_per_Mg: f64,
+    humus_carbon_g_c_per_megagram: f64,
+    humus_nitrogen_g_n_per_megagram: f64,
+    humus_phosphorus_g_p_per_megagram: f64,
     accumulated_humus_g_c_per_m2: f64,
     partitioning_humus_scale_g_c_per_m2: f64,
     calculation_floor: f64,
@@ -33,12 +33,12 @@ const Candidate = struct {
 
 fn nutrientAdjustedSurfaceFraction(inputs: Inputs) f64 {
     const surface_fraction = 0.20;
-    if (inputs.humus_carbon_g_c_per_Mg > inputs.calculation_floor) {
+    if (inputs.humus_carbon_g_c_per_megagram > inputs.calculation_floor) {
         return surface_fraction * @exp(
             -5.0 * (@min(
-                inputs.humus_nitrogen_g_n_per_Mg,
-                10.0 * inputs.humus_phosphorus_g_p_per_Mg,
-            ) / inputs.humus_carbon_g_c_per_Mg),
+                inputs.humus_nitrogen_g_n_per_megagram,
+                10.0 * inputs.humus_phosphorus_g_p_per_megagram,
+            ) / inputs.humus_carbon_g_c_per_megagram),
         );
     }
     return surface_fraction;
@@ -107,9 +107,9 @@ fn validateInputs(inputs: Inputs) !void {
             !std.math.isFinite(@field(inputs, field.name)))
             return error.NonFiniteHumusPartitionInput;
     }
-    if (inputs.humus_carbon_g_c_per_Mg < 0.0 or
-        inputs.humus_nitrogen_g_n_per_Mg < 0.0 or
-        inputs.humus_phosphorus_g_p_per_Mg < 0.0 or
+    if (inputs.humus_carbon_g_c_per_megagram < 0.0 or
+        inputs.humus_nitrogen_g_n_per_megagram < 0.0 or
+        inputs.humus_phosphorus_g_p_per_megagram < 0.0 or
         inputs.accumulated_humus_g_c_per_m2 < 0.0 or
         inputs.partitioning_humus_scale_g_c_per_m2 < 0.0 or
         inputs.calculation_floor < 0.0)
@@ -158,9 +158,9 @@ test "STARTS natural dryland humus partition follows nutrient and depth effects"
         .external_water_table_depth_m = 2.0,
         .deepest_layer_depth_m = 3.0,
         .maximum_profile_surface_elevation_m = 1.0,
-        .humus_carbon_g_c_per_Mg = 100.0,
-        .humus_nitrogen_g_n_per_Mg = 2.0,
-        .humus_phosphorus_g_p_per_Mg = 0.1,
+        .humus_carbon_g_c_per_megagram = 100.0,
+        .humus_nitrogen_g_n_per_megagram = 2.0,
+        .humus_phosphorus_g_p_per_megagram = 0.1,
         .accumulated_humus_g_c_per_m2 = 1000.0,
         .partitioning_humus_scale_g_c_per_m2 = 2000.0,
         .calculation_floor = 1.0e-12,
@@ -192,9 +192,9 @@ test "STARTS natural wetland uses invariant twenty percent partition" {
         .external_water_table_depth_m = 0.5,
         .deepest_layer_depth_m = 1.0,
         .maximum_profile_surface_elevation_m = 0.0,
-        .humus_carbon_g_c_per_Mg = 100.0,
-        .humus_nitrogen_g_n_per_Mg = 20.0,
-        .humus_phosphorus_g_p_per_Mg = 2.0,
+        .humus_carbon_g_c_per_megagram = 100.0,
+        .humus_nitrogen_g_n_per_megagram = 20.0,
+        .humus_phosphorus_g_p_per_megagram = 2.0,
         .accumulated_humus_g_c_per_m2 = 5000.0,
         .partitioning_humus_scale_g_c_per_m2 = 1000.0,
         .calculation_floor = 1.0e-12,
@@ -218,9 +218,9 @@ test "invalid input leaves partition state unchanged" {
             .external_water_table_depth_m = 2.0,
             .deepest_layer_depth_m = 3.0,
             .maximum_profile_surface_elevation_m = 1.0,
-            .humus_carbon_g_c_per_Mg = -1.0,
-            .humus_nitrogen_g_n_per_Mg = 1.0,
-            .humus_phosphorus_g_p_per_Mg = 1.0,
+            .humus_carbon_g_c_per_megagram = -1.0,
+            .humus_nitrogen_g_n_per_megagram = 1.0,
+            .humus_phosphorus_g_p_per_megagram = 1.0,
             .accumulated_humus_g_c_per_m2 = 1.0,
             .partitioning_humus_scale_g_c_per_m2 = 1.0,
             .calculation_floor = 1.0e-12,

@@ -27,7 +27,7 @@ pub const FacePlan = struct {
             return error.ZeroSoilLayerCapacity;
         const layer_cell_count = try std.math.mul(
             usize,
-            tile_plan.grid_row_count * tile_plan.grid_column_count,
+            tile_plan.lat_count * tile_plan.lon_count,
             soil_layer_capacity,
         );
         const face_offsets = try allocator.alloc(
@@ -248,14 +248,14 @@ pub fn appendOwnedWaterHeatVaporContributions(
     micropore_water_flux_m3: []const f64,
     macropore_water_flux_m3: []const f64,
     water_vapor_flux_m3: []const f64,
-    heat_flux_mj: []const f64,
+    heat_flux_megajoules: []const f64,
     contributions: *std.ArrayList(lateral_store.Contribution),
 ) !void {
     inline for (.{
         micropore_water_flux_m3,
         macropore_water_flux_m3,
         water_vapor_flux_m3,
-        heat_flux_mj,
+        heat_flux_megajoules,
     }) |values| if (values.len != faces.len)
         return error.LayerFaceContributionDimensionMismatch;
     for (try face_plan.ownedFaceIndices(tile_index)) |face_index| {
@@ -277,7 +277,7 @@ pub fn appendOwnedWaterHeatVaporContributions(
             micropore_water_flux_m3[face_index],
             macropore_water_flux_m3[face_index],
             water_vapor_flux_m3[face_index],
-            heat_flux_mj[face_index],
+            heat_flux_megajoules[face_index],
         };
         for (fluxes, 0..) |flux, carrier| {
             if (!std.math.isFinite(flux))
@@ -368,13 +368,13 @@ fn faceOwnerTile(
         if (source_layer != destination_layer)
             return error.InvalidLayerFace;
         const source_row =
-            source_horizontal / tile_plan.grid_column_count;
+            source_horizontal / tile_plan.lon_count;
         const source_column =
-            source_horizontal % tile_plan.grid_column_count;
+            source_horizontal % tile_plan.lon_count;
         const destination_row =
-            destination_horizontal / tile_plan.grid_column_count;
+            destination_horizontal / tile_plan.lon_count;
         const destination_column =
-            destination_horizontal % tile_plan.grid_column_count;
+            destination_horizontal % tile_plan.lon_count;
         const row_distance = if (source_row > destination_row)
             source_row - destination_row
         else

@@ -39,9 +39,9 @@ pub const State = struct {
     target_layer_volume_m3: []f64,
     layer_thickness_m: []f64,
     cumulative_depth_m: []f64,
-    snow_density_Mg_per_m3: []f64,
+    snow_density_megagrams_per_m3: []f64,
     temperature_k: []f64,
-    heat_capacity_mj_per_k: []f64,
+    heat_capacity_megajoules_per_k: []f64,
     horizontal_area_m2: []f64,
     amount_g: []f64,
 
@@ -62,19 +62,19 @@ pub const State = struct {
         errdefer allocator.free(amount);
         @memset(active, false);
         @memset(amount, 0);
-        return .{ .allocator = allocator, .cell_count = cell_count, .layer_capacity = layer_capacity, .active = active, .solid_snow_water_equivalent_m3 = physical[0], .liquid_water_volume_m3 = physical[1], .vapor_water_equivalent_m3 = physical[2], .ice_volume_m3 = physical[3], .air_filled_volume_m3 = physical[4], .total_layer_volume_m3 = physical[5], .target_layer_volume_m3 = physical[6], .layer_thickness_m = physical[7], .cumulative_depth_m = physical[8], .snow_density_Mg_per_m3 = physical[9], .temperature_k = physical[10], .heat_capacity_mj_per_k = physical[11], .horizontal_area_m2 = physical[12], .amount_g = amount };
+        return .{ .allocator = allocator, .cell_count = cell_count, .layer_capacity = layer_capacity, .active = active, .solid_snow_water_equivalent_m3 = physical[0], .liquid_water_volume_m3 = physical[1], .vapor_water_equivalent_m3 = physical[2], .ice_volume_m3 = physical[3], .air_filled_volume_m3 = physical[4], .total_layer_volume_m3 = physical[5], .target_layer_volume_m3 = physical[6], .layer_thickness_m = physical[7], .cumulative_depth_m = physical[8], .snow_density_megagrams_per_m3 = physical[9], .temperature_k = physical[10], .heat_capacity_megajoules_per_k = physical[11], .horizontal_area_m2 = physical[12], .amount_g = amount };
     }
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.amount_g);
-        inline for (.{ self.solid_snow_water_equivalent_m3, self.liquid_water_volume_m3, self.vapor_water_equivalent_m3, self.ice_volume_m3, self.air_filled_volume_m3, self.total_layer_volume_m3, self.target_layer_volume_m3, self.layer_thickness_m, self.cumulative_depth_m, self.snow_density_Mg_per_m3, self.temperature_k, self.heat_capacity_mj_per_k, self.horizontal_area_m2 }) |values| self.allocator.free(values);
+        inline for (.{ self.solid_snow_water_equivalent_m3, self.liquid_water_volume_m3, self.vapor_water_equivalent_m3, self.ice_volume_m3, self.air_filled_volume_m3, self.total_layer_volume_m3, self.target_layer_volume_m3, self.layer_thickness_m, self.cumulative_depth_m, self.snow_density_megagrams_per_m3, self.temperature_k, self.heat_capacity_megajoules_per_k, self.horizontal_area_m2 }) |values| self.allocator.free(values);
         self.allocator.free(self.active);
         self.* = undefined;
     }
 
     /// STARTS snow-layer initialization with runtime layer boundaries.
-    pub fn initializePhysicalState(self: *State, snow_depth_m: []const f64, cell_area_m2: []const f64, atmospheric_temperature_k: []const f64, layer_bottom_depth_m: []const f64, initial_snow_density_Mg_per_m3: f64) !void {
-        if (snow_depth_m.len != self.cell_count or cell_area_m2.len != self.cell_count or atmospheric_temperature_k.len != self.cell_count or layer_bottom_depth_m.len != self.layer_capacity or !std.math.isFinite(initial_snow_density_Mg_per_m3) or initial_snow_density_Mg_per_m3 <= 0) return error.InvalidSnowPhysicalInitialization;
+    pub fn initializePhysicalState(self: *State, snow_depth_m: []const f64, cell_area_m2: []const f64, atmospheric_temperature_k: []const f64, layer_bottom_depth_m: []const f64, initial_snow_density_megagrams_per_m3: f64) !void {
+        if (snow_depth_m.len != self.cell_count or cell_area_m2.len != self.cell_count or atmospheric_temperature_k.len != self.cell_count or layer_bottom_depth_m.len != self.layer_capacity or !std.math.isFinite(initial_snow_density_megagrams_per_m3) or initial_snow_density_megagrams_per_m3 <= 0) return error.InvalidSnowPhysicalInitialization;
         var previous_bottom: f64 = 0;
         for (layer_bottom_depth_m) |bottom| {
             if (!std.math.isFinite(bottom) or bottom <= previous_bottom) return error.InvalidSnowLayerBoundary;
@@ -91,8 +91,8 @@ pub const State = struct {
                 const top = if (layer == 0) 0 else layer_bottom_depth_m[layer - 1];
                 const nominal = layer_bottom_depth_m[layer] - top;
                 const thickness = @min(nominal, @max(0, depth - top));
-                const solid = thickness * initial_snow_density_Mg_per_m3 * area;
-                const total = if (solid > 0) solid / initial_snow_density_Mg_per_m3 else 0;
+                const solid = thickness * initial_snow_density_megagrams_per_m3 * area;
+                const total = if (solid > 0) solid / initial_snow_density_megagrams_per_m3 else 0;
                 self.active[index] = thickness > 0;
                 self.solid_snow_water_equivalent_m3[index] = solid;
                 self.liquid_water_volume_m3[index] = 0;
@@ -104,9 +104,9 @@ pub const State = struct {
                 self.layer_thickness_m[index] = thickness;
                 cumulative += thickness;
                 self.cumulative_depth_m[index] = cumulative;
-                self.snow_density_Mg_per_m3[index] = initial_snow_density_Mg_per_m3;
+                self.snow_density_megagrams_per_m3[index] = initial_snow_density_megagrams_per_m3;
                 self.temperature_k[index] = @min(273.15, air_temperature);
-                self.heat_capacity_mj_per_k[index] = 2.095 * solid;
+                self.heat_capacity_megajoules_per_k[index] = 2.095 * solid;
                 self.horizontal_area_m2[index] = area;
             }
         }
@@ -114,29 +114,29 @@ pub const State = struct {
 
     /// REDIST top-layer `TQS/TQW/THQS` update, committed only after every
     /// runtime cell has valid mass and energy inputs.
-    pub fn commitAtmosphericWater(self: *State, solid_snow_input_m3: []const f64, liquid_water_input_m3: []const f64, heat_input_mj: []const f64, fallback_temperature_k: []const f64, initial_snow_density_Mg_per_m3: f64) !void {
-        inline for (.{ solid_snow_input_m3.len, liquid_water_input_m3.len, heat_input_mj.len, fallback_temperature_k.len }) |length| if (length != self.cell_count) return error.SnowAtmosphericInputDimensionMismatch;
+    pub fn commitAtmosphericWater(self: *State, solid_snow_input_m3: []const f64, liquid_water_input_m3: []const f64, heat_input_megajoules: []const f64, fallback_temperature_k: []const f64, initial_snow_density_megagrams_per_m3: f64) !void {
+        inline for (.{ solid_snow_input_m3.len, liquid_water_input_m3.len, heat_input_megajoules.len, fallback_temperature_k.len }) |length| if (length != self.cell_count) return error.SnowAtmosphericInputDimensionMismatch;
         for (0..self.cell_count) |cell| {
-            inline for (.{ solid_snow_input_m3[cell], liquid_water_input_m3[cell], heat_input_mj[cell], fallback_temperature_k[cell] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSnowAtmosphericInput;
+            inline for (.{ solid_snow_input_m3[cell], liquid_water_input_m3[cell], heat_input_megajoules[cell], fallback_temperature_k[cell] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSnowAtmosphericInput;
             if (solid_snow_input_m3[cell] < 0 or liquid_water_input_m3[cell] < 0 or fallback_temperature_k[cell] <= 0) return error.InvalidSnowAtmosphericInput;
             const top = cell * self.layer_capacity;
             const solid = self.solid_snow_water_equivalent_m3[top] + solid_snow_input_m3[cell];
             const liquid = self.liquid_water_volume_m3[top] + liquid_water_input_m3[cell];
             const heat_capacity = 2.095 * solid + 4.19 * (liquid + self.vapor_water_equivalent_m3[top]) + 1.9274 * self.ice_volume_m3[top];
-            const old_energy = self.heat_capacity_mj_per_k[top] * self.temperature_k[top];
-            const temperature = if (heat_capacity > 0) (old_energy + heat_input_mj[cell]) / heat_capacity else fallback_temperature_k[cell];
+            const old_energy = self.heat_capacity_megajoules_per_k[top] * self.temperature_k[top];
+            const temperature = if (heat_capacity > 0) (old_energy + heat_input_megajoules[cell]) / heat_capacity else fallback_temperature_k[cell];
             if (!std.math.isFinite(temperature) or temperature <= 0) return error.InvalidSnowAtmosphericEnergy;
         }
         for (0..self.cell_count) |cell| {
             const top = cell * self.layer_capacity;
-            const old_energy = self.heat_capacity_mj_per_k[top] * self.temperature_k[top];
+            const old_energy = self.heat_capacity_megajoules_per_k[top] * self.temperature_k[top];
             self.solid_snow_water_equivalent_m3[top] += solid_snow_input_m3[cell];
             self.liquid_water_volume_m3[top] += liquid_water_input_m3[cell];
-            self.heat_capacity_mj_per_k[top] = 2.095 * self.solid_snow_water_equivalent_m3[top] + 4.19 * (self.liquid_water_volume_m3[top] + self.vapor_water_equivalent_m3[top]) + 1.9274 * self.ice_volume_m3[top];
-            if (self.heat_capacity_mj_per_k[top] > 0) self.temperature_k[top] = (old_energy + heat_input_mj[cell]) / self.heat_capacity_mj_per_k[top];
+            self.heat_capacity_megajoules_per_k[top] = 2.095 * self.solid_snow_water_equivalent_m3[top] + 4.19 * (self.liquid_water_volume_m3[top] + self.vapor_water_equivalent_m3[top]) + 1.9274 * self.ice_volume_m3[top];
+            if (self.heat_capacity_megajoules_per_k[top] > 0) self.temperature_k[top] = (old_energy + heat_input_megajoules[cell]) / self.heat_capacity_megajoules_per_k[top];
             if (self.solid_snow_water_equivalent_m3[top] + self.liquid_water_volume_m3[top] + self.ice_volume_m3[top] > 0) {
                 self.active[top] = true;
-                if (self.snow_density_Mg_per_m3[top] <= 0) self.snow_density_Mg_per_m3[top] = initial_snow_density_Mg_per_m3;
+                if (self.snow_density_megagrams_per_m3[top] <= 0) self.snow_density_megagrams_per_m3[top] = initial_snow_density_megagrams_per_m3;
             }
             self.refreshCellGeometry(cell);
         }
@@ -174,7 +174,7 @@ pub const State = struct {
         var cumulative: f64 = 0;
         for (0..self.layer_capacity) |layer| {
             const index = cell * self.layer_capacity + layer;
-            const density = self.snow_density_Mg_per_m3[index];
+            const density = self.snow_density_megagrams_per_m3[index];
             const solid_volume = if (density > 0) self.solid_snow_water_equivalent_m3[index] / density else 0;
             const total = solid_volume + self.liquid_water_volume_m3[index] + self.ice_volume_m3[index];
             self.total_layer_volume_m3[index] = total;
@@ -339,7 +339,7 @@ fn routeSurface(amounts_g: []const f64, litter_fraction: f64, soil_fraction: f64
 }
 
 fn validateState(state: *const State) !void {
-    inline for (.{ state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.air_filled_volume_m3, state.total_layer_volume_m3, state.target_layer_volume_m3, state.layer_thickness_m, state.cumulative_depth_m, state.snow_density_Mg_per_m3, state.temperature_k, state.heat_capacity_mj_per_k, state.horizontal_area_m2 }) |values| for (values) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSnowTransportState;
+    inline for (.{ state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.air_filled_volume_m3, state.total_layer_volume_m3, state.target_layer_volume_m3, state.layer_thickness_m, state.cumulative_depth_m, state.snow_density_megagrams_per_m3, state.temperature_k, state.heat_capacity_megajoules_per_k, state.horizontal_area_m2 }) |values| for (values) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSnowTransportState;
     for (state.amount_g) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSnowTransportState;
 }
 

@@ -6,7 +6,7 @@ pub const Parameters = struct {
     reference_temperature_k: f64,
     temperature_exponent: f64,
     minimum_air_fraction: f64,
-    vapor_sensible_heat_capacity_mj_per_m3_k: f64,
+    vapor_sensible_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const Options = struct {
@@ -23,15 +23,15 @@ pub const Report = struct { iterations: u16, converged: bool, maximum_interface_
 /// squared times temperature-adjusted diffusivity; interface conductance is
 /// the exact harmonic expression. Signed carrier heat uses donor temperature.
 pub fn solve(allocator: std.mem.Allocator, state: *snow.State, parameters: Parameters, options: Options) !Report {
-    inline for (.{ parameters.reference_vapor_diffusivity_m2_per_h, parameters.reference_temperature_k, parameters.temperature_exponent, parameters.minimum_air_fraction, parameters.vapor_sensible_heat_capacity_mj_per_m3_k, options.timestep_h, options.full_snow_cover_depth_m, options.absolute_tolerance_m3, options.relative_tolerance }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSnowVaporDiffusionParameter;
-    if (parameters.reference_vapor_diffusivity_m2_per_h < 0 or parameters.reference_temperature_k <= 0 or parameters.temperature_exponent < 0 or parameters.minimum_air_fraction < 0 or parameters.minimum_air_fraction > 1 or parameters.vapor_sensible_heat_capacity_mj_per_m3_k <= 0 or options.timestep_h <= 0 or options.full_snow_cover_depth_m <= 0 or options.absolute_tolerance_m3 < 0 or options.relative_tolerance < 0 or options.max_iterations == 0) return error.InvalidSnowVaporDiffusionParameter;
+    inline for (.{ parameters.reference_vapor_diffusivity_m2_per_h, parameters.reference_temperature_k, parameters.temperature_exponent, parameters.minimum_air_fraction, parameters.vapor_sensible_heat_capacity_megajoules_per_m3_k, options.timestep_h, options.full_snow_cover_depth_m, options.absolute_tolerance_m3, options.relative_tolerance }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSnowVaporDiffusionParameter;
+    if (parameters.reference_vapor_diffusivity_m2_per_h < 0 or parameters.reference_temperature_k <= 0 or parameters.temperature_exponent < 0 or parameters.minimum_air_fraction < 0 or parameters.minimum_air_fraction > 1 or parameters.vapor_sensible_heat_capacity_megajoules_per_m3_k <= 0 or options.timestep_h <= 0 or options.full_snow_cover_depth_m <= 0 or options.absolute_tolerance_m3 < 0 or options.relative_tolerance < 0 or options.max_iterations == 0) return error.InvalidSnowVaporDiffusionParameter;
     const vapor = try allocator.dupe(f64, state.vapor_water_equivalent_m3);
     defer allocator.free(vapor);
     const temperature = try allocator.dupe(f64, state.temperature_k);
     defer allocator.free(temperature);
-    const sensible_energy_mj = try allocator.alloc(f64, state.temperature_k.len);
-    defer allocator.free(sensible_energy_mj);
-    for (sensible_energy_mj, state.heat_capacity_mj_per_k, state.temperature_k) |*energy, capacity, temperature_k| energy.* = capacity * temperature_k;
+    const sensible_energy_megajoules = try allocator.alloc(f64, state.temperature_k.len);
+    defer allocator.free(sensible_energy_megajoules);
+    for (sensible_energy_megajoules, state.heat_capacity_megajoules_per_k, state.temperature_k) |*energy, capacity, temperature_k| energy.* = capacity * temperature_k;
     const lower = try allocator.alloc(f64, state.layer_capacity);
     defer allocator.free(lower);
     const diagonal = try allocator.alloc(f64, state.layer_capacity);
@@ -106,13 +106,13 @@ pub fn solve(allocator: std.mem.Allocator, state: *snow.State, parameters: Param
             const flux_m3 = conductance[layer] * options.timestep_h * (concentration[layer] - concentration[layer + 1]);
             maximum_flux = @max(maximum_flux, @abs(flux_m3));
             const donor = if (flux_m3 >= 0) first else second;
-            const heat_mj = parameters.vapor_sensible_heat_capacity_mj_per_m3_k * temperature[donor] * flux_m3;
-            sensible_energy_mj[first] -= heat_mj;
-            sensible_energy_mj[second] += heat_mj;
+            const heat_megajoules = parameters.vapor_sensible_heat_capacity_megajoules_per_m3_k * temperature[donor] * flux_m3;
+            sensible_energy_megajoules[first] -= heat_megajoules;
+            sensible_energy_megajoules[second] += heat_megajoules;
         }
     }
-    for (temperature, sensible_energy_mj, state.heat_capacity_mj_per_k) |*temperature_k, energy_mj, capacity| if (capacity > 0) {
-        temperature_k.* = energy_mj / capacity;
+    for (temperature, sensible_energy_megajoules, state.heat_capacity_megajoules_per_k) |*temperature_k, energy_megajoules, capacity| if (capacity > 0) {
+        temperature_k.* = energy_megajoules / capacity;
     };
     for (temperature) |value| if (!std.math.isFinite(value) or value <= 0) return error.InvalidSnowVaporDiffusionTemperature;
     @memcpy(state.vapor_water_equivalent_m3, vapor);
@@ -128,10 +128,10 @@ test "interlayer vapor diffusion conserves vapor and sensible energy" {
     state.vapor_water_equivalent_m3[1] = 0;
     const vapor_before = state.vapor_water_equivalent_m3[0];
     var energy_before: f64 = 0;
-    for (state.heat_capacity_mj_per_k, state.temperature_k) |capacity, temperature_k| energy_before += capacity * temperature_k;
-    const report = try solve(std.testing.allocator, &state, .{ .reference_vapor_diffusivity_m2_per_h = 0.0896, .reference_temperature_k = 298.15, .temperature_exponent = 1.75, .minimum_air_fraction = 0, .vapor_sensible_heat_capacity_mj_per_m3_k = 4.19 }, .{ .timestep_h = 1, .full_snow_cover_depth_m = 0.07, .absolute_tolerance_m3 = 1e-14, .relative_tolerance = 1e-8, .max_iterations = 20 });
+    for (state.heat_capacity_megajoules_per_k, state.temperature_k) |capacity, temperature_k| energy_before += capacity * temperature_k;
+    const report = try solve(std.testing.allocator, &state, .{ .reference_vapor_diffusivity_m2_per_h = 0.0896, .reference_temperature_k = 298.15, .temperature_exponent = 1.75, .minimum_air_fraction = 0, .vapor_sensible_heat_capacity_megajoules_per_m3_k = 4.19 }, .{ .timestep_h = 1, .full_snow_cover_depth_m = 0.07, .absolute_tolerance_m3 = 1e-14, .relative_tolerance = 1e-8, .max_iterations = 20 });
     var energy_after: f64 = 0;
-    for (state.heat_capacity_mj_per_k, state.temperature_k) |capacity, temperature_k| energy_after += capacity * temperature_k;
+    for (state.heat_capacity_megajoules_per_k, state.temperature_k) |capacity, temperature_k| energy_after += capacity * temperature_k;
     try std.testing.expect(report.maximum_interface_flux_m3 > 0);
     try std.testing.expect(state.vapor_water_equivalent_m3[1] > 0);
     try std.testing.expectApproxEqAbs(vapor_before, state.vapor_water_equivalent_m3[0] + state.vapor_water_equivalent_m3[1], 1e-12);

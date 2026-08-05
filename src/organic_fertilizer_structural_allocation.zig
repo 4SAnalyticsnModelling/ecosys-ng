@@ -25,7 +25,7 @@ pub const Inputs = struct {
     base_phosphorus_to_carbon: []const f64,
     colonized_carbon_fraction: f64,
     negligible_carbon_g_c: f64,
-    residue_density_mg_c_m3: f64,
+    residue_density_megagrams_c_m3: f64,
     placement: Placement,
 };
 
@@ -94,7 +94,7 @@ pub fn compute(inputs: Inputs, output: []StructuralDelta) !Result {
             .phosphorus_g_p = phosphorus,
         };
         if (inputs.placement == .surface)
-            surface_volume_delta_m3 += carbon * 1.0e-6 / inputs.residue_density_mg_c_m3;
+            surface_volume_delta_m3 += carbon * 1.0e-6 / inputs.residue_density_megagrams_c_m3;
     }
     @memcpy(output, &scratch);
     return .{ .surface_volume_delta_m3 = surface_volume_delta_m3 };
@@ -126,8 +126,8 @@ fn validate(inputs: Inputs, output_len: usize) !void {
     inline for (.{ inputs.colonized_carbon_fraction, inputs.negligible_carbon_g_c }) |value| if (!std.math.isFinite(value) or value < 0)
         return error.InvalidStructuralAllocationInput;
     if (inputs.placement == .surface and
-        (!std.math.isFinite(inputs.residue_density_mg_c_m3) or
-            inputs.residue_density_mg_c_m3 <= 0))
+        (!std.math.isFinite(inputs.residue_density_megagrams_c_m3) or
+            inputs.residue_density_megagrams_c_m3 <= 0))
         return error.InvalidResidueDensity;
 }
 
@@ -141,7 +141,7 @@ test "structural remainder preserves source weighting and surface volume" {
         .base_phosphorus_to_carbon = &.{ 0.002, 0.002, 0.002, 0.002 },
         .colonized_carbon_fraction = 0.05,
         .negligible_carbon_g_c = 1.0e-12,
-        .residue_density_mg_c_m3 = 0.1,
+        .residue_density_megagrams_c_m3 = 0.1,
         .placement = .surface,
     }, &output);
     try std.testing.expectEqual(@as(f64, 8), output[0].carbon_g_c);
@@ -161,7 +161,7 @@ test "below threshold still distributes carbon but no nutrients" {
         .base_phosphorus_to_carbon = &.{ 0, 0, 0, 0 },
         .colonized_carbon_fraction = 0,
         .negligible_carbon_g_c = 1,
-        .residue_density_mg_c_m3 = 0,
+        .residue_density_megagrams_c_m3 = 0,
         .placement = .subsurface,
     }, &output);
     try std.testing.expectEqual(@as(f64, 0.25), output[0].carbon_g_c);
@@ -180,7 +180,7 @@ test "zero nutrient requirement fails before changing output" {
         .base_phosphorus_to_carbon = &.{ 0, 0, 0, 0 },
         .colonized_carbon_fraction = 0,
         .negligible_carbon_g_c = 0,
-        .residue_density_mg_c_m3 = 1,
+        .residue_density_megagrams_c_m3 = 1,
         .placement = .surface,
     }, &output));
     try std.testing.expectEqual(@as(f64, 42), output[0].carbon_g_c);

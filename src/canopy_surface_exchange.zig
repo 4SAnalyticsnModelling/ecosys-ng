@@ -13,8 +13,8 @@ pub const Parameters = struct {
     saturation_reference_inverse_temperature_per_k: f64,
     water_potential_vapor_coefficient_mol_per_m3: f64,
     universal_gas_constant_j_per_mol_k: f64,
-    latent_heat_of_vaporization_mj_per_m3: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    latent_heat_of_vaporization_megajoules_per_m3: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const Inputs = struct {
@@ -28,7 +28,7 @@ pub const Inputs = struct {
     aerodynamic_resistance_below_species_h_per_m: f64,
     species_canopy_radiation_fraction: f64,
     latent_boundary_numerator_m2_per_h: f64,
-    sensible_boundary_numerator_mj_per_m_h_k: f64,
+    sensible_boundary_numerator_megajoules_per_m_h_k: f64,
     sensible_surface_resistance_h_per_m: f64,
     latent_surface_resistance_h_per_m: f64,
     stomatal_resistance_h_per_m: f64,
@@ -41,13 +41,13 @@ pub const Result = struct {
     total_aerodynamic_resistance_h_per_m: f64,
     adjusted_surface_resistance_h_per_m: f64,
     canopy_surface_vapor_fraction: f64,
-    sensible_conductance_mj_per_h_k: f64,
+    sensible_conductance_megajoules_per_h_k: f64,
     latent_conductance_m3_per_h: f64,
     intercepted_water_change_m3_per_h: f64,
     transpiration_m3_per_h: f64,
-    latent_heat_flux_mj_per_h: f64,
-    sensible_heat_flux_mj_per_h: f64,
-    vapor_sensible_heat_flux_mj_per_h: f64,
+    latent_heat_flux_megajoules_per_h: f64,
+    sensible_heat_flux_megajoules_per_h: f64,
+    vapor_sensible_heat_flux_megajoules_per_h: f64,
 };
 
 pub const State = struct {
@@ -60,9 +60,9 @@ pub const State = struct {
     canopy_surface_vapor_fraction: []f64,
     intercepted_water_change_m3_per_h: []f64,
     transpiration_m3_per_h: []f64,
-    latent_heat_flux_mj_per_h: []f64,
-    sensible_heat_flux_mj_per_h: []f64,
-    vapor_sensible_heat_flux_mj_per_h: []f64,
+    latent_heat_flux_megajoules_per_h: []f64,
+    sensible_heat_flux_megajoules_per_h: []f64,
+    vapor_sensible_heat_flux_megajoules_per_h: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize) !State {
         if (cell_count == 0 or species_count == 0) return error.InvalidCanopySurfaceExchangeDimensions;
@@ -103,7 +103,7 @@ pub const RuntimeInputs = struct {
     bulk_richardson_coefficient_k_by_cell: []const f64,
     biome_isothermal_boundary_resistance_h_per_m_by_cell: []const f64,
     latent_boundary_numerator_m2_per_h_by_cell: []const f64,
-    sensible_boundary_numerator_mj_per_m_h_k_by_cell: []const f64,
+    sensible_boundary_numerator_megajoules_per_m_h_k_by_cell: []const f64,
     canopy_surface_temperature_k: []const f64,
     aerodynamic_resistance_below_biome_h_per_m_by_cell: []const f64,
     aerodynamic_resistance_below_species_h_per_m: []const f64,
@@ -199,7 +199,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         context.inputs.bulk_richardson_coefficient_k_by_cell,
         context.inputs.biome_isothermal_boundary_resistance_h_per_m_by_cell,
         context.inputs.latent_boundary_numerator_m2_per_h_by_cell,
-        context.inputs.sensible_boundary_numerator_mj_per_m_h_k_by_cell,
+        context.inputs.sensible_boundary_numerator_megajoules_per_m_h_k_by_cell,
         context.inputs.aerodynamic_resistance_below_biome_h_per_m_by_cell,
     }) |values| if (values.len != state.cell_count) return error.CanopySurfaceExchangeDimensionMismatch;
     inline for (.{
@@ -233,7 +233,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             .aerodynamic_resistance_below_species_h_per_m = context.inputs.aerodynamic_resistance_below_species_h_per_m[index],
             .species_canopy_radiation_fraction = context.inputs.species_canopy_radiation_fraction[index],
             .latent_boundary_numerator_m2_per_h = context.inputs.latent_boundary_numerator_m2_per_h_by_cell[cell],
-            .sensible_boundary_numerator_mj_per_m_h_k = context.inputs.sensible_boundary_numerator_mj_per_m_h_k_by_cell[cell],
+            .sensible_boundary_numerator_megajoules_per_m_h_k = context.inputs.sensible_boundary_numerator_megajoules_per_m_h_k_by_cell[cell],
             .sensible_surface_resistance_h_per_m = context.inputs.sensible_surface_resistance_h_per_m[index],
             .latent_surface_resistance_h_per_m = context.inputs.latent_surface_resistance_h_per_m[index],
             .stomatal_resistance_h_per_m = context.inputs.stomatal_resistance_h_per_m[index],
@@ -249,19 +249,19 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
 /// Adds canopy exchange to an existing per-cell near-ground-air ledger. Each
 /// tile owns complete cells, so the species reduction is deterministic and
 /// race-free. Positive canopy uptake is an equal negative air source.
-pub fn addGroundAirSourcesTile(state: State, range: CellRange, sensible_heat_source_mj_per_h: []f64, vapor_source_m3_per_h: []f64) !void {
-    if (range.end > state.cell_count or sensible_heat_source_mj_per_h.len != state.cell_count or vapor_source_m3_per_h.len != state.cell_count) return error.CanopySurfaceExchangeDimensionMismatch;
+pub fn addGroundAirSourcesTile(state: State, range: CellRange, sensible_heat_source_megajoules_per_h: []f64, vapor_source_m3_per_h: []f64) !void {
+    if (range.end > state.cell_count or sensible_heat_source_megajoules_per_h.len != state.cell_count or vapor_source_m3_per_h.len != state.cell_count) return error.CanopySurfaceExchangeDimensionMismatch;
     for (range.first..range.end) |cell| {
-        var canopy_sensible_mj_per_h: f64 = 0;
+        var canopy_sensible_megajoules_per_h: f64 = 0;
         var canopy_vapor_m3_per_h: f64 = 0;
         for (0..state.species_count) |species| {
             const index = cell * state.species_count + species;
-            canopy_sensible_mj_per_h += state.sensible_heat_flux_mj_per_h[index];
+            canopy_sensible_megajoules_per_h += state.sensible_heat_flux_megajoules_per_h[index];
             canopy_vapor_m3_per_h += state.intercepted_water_change_m3_per_h[index] + state.transpiration_m3_per_h[index];
         }
-        sensible_heat_source_mj_per_h[cell] -= canopy_sensible_mj_per_h;
+        sensible_heat_source_megajoules_per_h[cell] -= canopy_sensible_megajoules_per_h;
         vapor_source_m3_per_h[cell] -= canopy_vapor_m3_per_h;
-        if (!std.math.isFinite(sensible_heat_source_mj_per_h[cell]) or !std.math.isFinite(vapor_source_m3_per_h[cell])) return error.NonFiniteGroundAirCanopySource;
+        if (!std.math.isFinite(sensible_heat_source_megajoules_per_h[cell]) or !std.math.isFinite(vapor_source_m3_per_h[cell])) return error.NonFiniteGroundAirCanopySource;
     }
 }
 
@@ -277,7 +277,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
         inputs.canopy_air_vapor_fraction < 0 or inputs.biome_isothermal_boundary_resistance_h_per_m < 0 or
         inputs.aerodynamic_resistance_below_biome_h_per_m <= 0 or inputs.aerodynamic_resistance_below_species_h_per_m < 0 or
         inputs.species_canopy_radiation_fraction < 0 or
-        inputs.latent_boundary_numerator_m2_per_h < 0 or inputs.sensible_boundary_numerator_mj_per_m_h_k < 0 or
+        inputs.latent_boundary_numerator_m2_per_h < 0 or inputs.sensible_boundary_numerator_megajoules_per_m_h_k < 0 or
         inputs.sensible_surface_resistance_h_per_m < 0 or inputs.latent_surface_resistance_h_per_m < 0 or
         inputs.stomatal_resistance_h_per_m < 0 or inputs.intercepted_water_volume_m3 < 0)
         return error.InvalidCanopySurfaceExchangeInput;
@@ -312,7 +312,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
         parameters.maximum_boundary_resistance_h_per_m,
     );
 
-    const sensible_numerator = inputs.species_canopy_radiation_fraction * inputs.sensible_boundary_numerator_mj_per_m_h_k;
+    const sensible_numerator = inputs.species_canopy_radiation_fraction * inputs.sensible_boundary_numerator_megajoules_per_m_h_k;
     const latent_numerator = inputs.species_canopy_radiation_fraction * inputs.latent_boundary_numerator_m2_per_h;
     const sensible_conductance = sensible_numerator / adjusted_surface_resistance;
     const latent_conductance = latent_numerator / (adjusted_surface_resistance + inputs.latent_surface_resistance_h_per_m);
@@ -336,8 +336,8 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
         (adjusted_surface_resistance + inputs.latent_surface_resistance_h_per_m) /
         (adjusted_surface_resistance + inputs.stomatal_resistance_h_per_m);
     const sensible_heat_flux = sensible_conductance * (inputs.canopy_air_temperature_k - inputs.canopy_surface_temperature_k);
-    const latent_heat_flux = (transpiration + intercepted_water_change) * parameters.latent_heat_of_vaporization_mj_per_m3;
-    const vapor_sensible_heat_flux = intercepted_water_change * parameters.liquid_water_heat_capacity_mj_per_m3_k * inputs.canopy_surface_temperature_k;
+    const latent_heat_flux = (transpiration + intercepted_water_change) * parameters.latent_heat_of_vaporization_megajoules_per_m3;
+    const vapor_sensible_heat_flux = intercepted_water_change * parameters.liquid_water_heat_capacity_megajoules_per_m3_k * inputs.canopy_surface_temperature_k;
 
     inline for (.{ boundary_resistance, total_aerodynamic_resistance, adjusted_surface_resistance, surface_vapor_fraction, sensible_conductance, latent_conductance, intercepted_water_change, transpiration, latent_heat_flux, sensible_heat_flux, vapor_sensible_heat_flux }) |value| {
         if (!std.math.isFinite(value)) return error.NonFiniteCanopySurfaceExchangeResult;
@@ -347,13 +347,13 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
         .total_aerodynamic_resistance_h_per_m = total_aerodynamic_resistance,
         .adjusted_surface_resistance_h_per_m = adjusted_surface_resistance,
         .canopy_surface_vapor_fraction = surface_vapor_fraction,
-        .sensible_conductance_mj_per_h_k = sensible_conductance,
+        .sensible_conductance_megajoules_per_h_k = sensible_conductance,
         .latent_conductance_m3_per_h = latent_conductance,
         .intercepted_water_change_m3_per_h = intercepted_water_change,
         .transpiration_m3_per_h = transpiration,
-        .latent_heat_flux_mj_per_h = latent_heat_flux,
-        .sensible_heat_flux_mj_per_h = sensible_heat_flux,
-        .vapor_sensible_heat_flux_mj_per_h = vapor_sensible_heat_flux,
+        .latent_heat_flux_megajoules_per_h = latent_heat_flux,
+        .sensible_heat_flux_megajoules_per_h = sensible_heat_flux,
+        .vapor_sensible_heat_flux_megajoules_per_h = vapor_sensible_heat_flux,
     };
 }
 
@@ -367,7 +367,7 @@ fn validateParameters(parameters: Parameters) !void {
         parameters.saturation_vapor_prefactor_k <= 0 or parameters.saturation_relative_humidity < 0 or parameters.saturation_relative_humidity > 1 or
         parameters.saturation_temperature_k <= 0 or parameters.saturation_reference_inverse_temperature_per_k <= 0 or
         parameters.water_potential_vapor_coefficient_mol_per_m3 <= 0 or parameters.universal_gas_constant_j_per_mol_k <= 0 or
-        parameters.latent_heat_of_vaporization_mj_per_m3 <= 0 or parameters.liquid_water_heat_capacity_mj_per_m3_k <= 0)
+        parameters.latent_heat_of_vaporization_megajoules_per_m3 <= 0 or parameters.liquid_water_heat_capacity_megajoules_per_m3_k <= 0)
         return error.InvalidCanopySurfaceExchangeParameter;
 }
 
@@ -391,8 +391,8 @@ const test_parameters: Parameters = .{
     .saturation_reference_inverse_temperature_per_k = 3.661e-3,
     .water_potential_vapor_coefficient_mol_per_m3 = 18,
     .universal_gas_constant_j_per_mol_k = 8.3143,
-    .latent_heat_of_vaporization_mj_per_m3 = 2465,
-    .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+    .latent_heat_of_vaporization_megajoules_per_m3 = 2465,
+    .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
 };
 
 test "uptake canopy condensation is assigned entirely to intercepted water" {
@@ -407,7 +407,7 @@ test "uptake canopy condensation is assigned entirely to intercepted water" {
         .aerodynamic_resistance_below_species_h_per_m = 0.004,
         .species_canopy_radiation_fraction = 0.5,
         .latent_boundary_numerator_m2_per_h = 0.1,
-        .sensible_boundary_numerator_mj_per_m_h_k = 0.02,
+        .sensible_boundary_numerator_megajoules_per_m_h_k = 0.02,
         .sensible_surface_resistance_h_per_m = 0.004,
         .latent_surface_resistance_h_per_m = 0.002,
         .stomatal_resistance_h_per_m = 0.01,
@@ -416,7 +416,7 @@ test "uptake canopy condensation is assigned entirely to intercepted water" {
     }, test_parameters);
     try std.testing.expect(result.intercepted_water_change_m3_per_h > 0);
     try std.testing.expectEqual(@as(f64, 0), result.transpiration_m3_per_h);
-    try std.testing.expectApproxEqAbs(result.intercepted_water_change_m3_per_h * test_parameters.latent_heat_of_vaporization_mj_per_m3, result.latent_heat_flux_mj_per_h, 1e-12);
+    try std.testing.expectApproxEqAbs(result.intercepted_water_change_m3_per_h * test_parameters.latent_heat_of_vaporization_megajoules_per_m3, result.latent_heat_flux_megajoules_per_h, 1e-12);
 }
 
 test "uptake canopy evaporation cannot exceed intercepted water" {
@@ -431,7 +431,7 @@ test "uptake canopy evaporation cannot exceed intercepted water" {
         .aerodynamic_resistance_below_species_h_per_m = 0.004,
         .species_canopy_radiation_fraction = 0.5,
         .latent_boundary_numerator_m2_per_h = 0.1,
-        .sensible_boundary_numerator_mj_per_m_h_k = 0.02,
+        .sensible_boundary_numerator_megajoules_per_m_h_k = 0.02,
         .sensible_surface_resistance_h_per_m = 0.004,
         .latent_surface_resistance_h_per_m = 0.002,
         .stomatal_resistance_h_per_m = 0.01,
@@ -463,7 +463,7 @@ test "runtime tiled canopy exchange supports more than five species and conserve
             .bulk_richardson_coefficient_k_by_cell = &.{0},
             .biome_isothermal_boundary_resistance_h_per_m_by_cell = &.{0.005},
             .latent_boundary_numerator_m2_per_h_by_cell = &.{0.1},
-            .sensible_boundary_numerator_mj_per_m_h_k_by_cell = &.{0.02},
+            .sensible_boundary_numerator_megajoules_per_m_h_k_by_cell = &.{0.02},
             .canopy_surface_temperature_k = &temperatures,
             .aerodynamic_resistance_below_biome_h_per_m_by_cell = &.{0.01},
             .aerodynamic_resistance_below_species_h_per_m = &below_species,
@@ -484,7 +484,7 @@ test "runtime tiled canopy exchange supports more than five species and conserve
     var expected_sensible: f64 = 0;
     var expected_vapor: f64 = 0;
     for (0..species_count) |species| {
-        expected_sensible -= state.sensible_heat_flux_mj_per_h[species];
+        expected_sensible -= state.sensible_heat_flux_megajoules_per_h[species];
         expected_vapor -= state.intercepted_water_change_m3_per_h[species] + state.transpiration_m3_per_h[species];
     }
     try std.testing.expectApproxEqAbs(expected_sensible, sensible_source[0], 1e-15);

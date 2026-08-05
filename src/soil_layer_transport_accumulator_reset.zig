@@ -21,12 +21,12 @@ pub const WaterHeatFlux = struct {
     water_vapor_m3_per_step: f64 = 0,
     micropore_wetting_front_water_m3_per_step: f64 = 0,
     macropore_water_m3_per_step: f64 = 0,
-    conductive_convective_heat_mj_per_step: f64 = 0,
+    conductive_convective_heat_megajoules_per_step: f64 = 0,
     micropore_freeze_thaw_water_m3_per_step: f64 = 0,
     macropore_freeze_thaw_water_m3_per_step: f64 = 0,
-    freeze_thaw_latent_heat_mj_per_step: f64 = 0,
+    freeze_thaw_latent_heat_megajoules_per_step: f64 = 0,
     evaporation_condensation_water_m3_per_step: f64 = 0,
-    evaporation_condensation_latent_heat_mj_per_step: f64 = 0,
+    evaporation_condensation_latent_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const OrganicPoreFlux = struct {

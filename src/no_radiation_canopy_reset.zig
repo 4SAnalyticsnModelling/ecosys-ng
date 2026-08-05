@@ -1,27 +1,27 @@
 pub const SpeciesDiagnostics = struct {
-    live_shortwave_mj_h: []f64,
-    standing_dead_shortwave_mj_h: []f64,
+    live_shortwave_megajoules_h: []f64,
+    standing_dead_shortwave_megajoules_h: []f64,
     live_par_umol_s: []f64,
     standing_dead_par_umol_s: []f64,
 };
 
 pub const Result = struct {
-    ground_shortwave_mj_h: f64 = 0,
+    ground_shortwave_megajoules_h: f64 = 0,
 };
 
 /// HOUR1 control lines 1763--1767 and executable lines 1768--1774. Resets
 /// ground radiation, then runtime-species canopy diagnostics in source order.
 pub fn apply(diagnostics: SpeciesDiagnostics) !Result {
-    const species_count = diagnostics.live_shortwave_mj_h.len;
+    const species_count = diagnostics.live_shortwave_megajoules_h.len;
     if (species_count == 0 or
-        diagnostics.standing_dead_shortwave_mj_h.len != species_count or
+        diagnostics.standing_dead_shortwave_megajoules_h.len != species_count or
         diagnostics.live_par_umol_s.len != species_count or
         diagnostics.standing_dead_par_umol_s.len != species_count)
         return error.NoRadiationCanopyDimensionMismatch;
     const result: Result = .{};
     for (0..species_count) |species| {
-        diagnostics.live_shortwave_mj_h[species] = 0.0;
-        diagnostics.standing_dead_shortwave_mj_h[species] = 0.0;
+        diagnostics.live_shortwave_megajoules_h[species] = 0.0;
+        diagnostics.standing_dead_shortwave_megajoules_h[species] = 0.0;
         diagnostics.live_par_umol_s[species] = 0.0;
         diagnostics.standing_dead_par_umol_s[species] = 0.0;
     }
@@ -34,14 +34,14 @@ test "no radiation resets ground and runtime species diagnostics" {
     var live_par = [_]f64{ 9, 10, 11, 12 };
     var dead_par = [_]f64{ 13, 14, 15, 16 };
     const result = try apply(.{
-        .live_shortwave_mj_h = &live_sw,
-        .standing_dead_shortwave_mj_h = &dead_sw,
+        .live_shortwave_megajoules_h = &live_sw,
+        .standing_dead_shortwave_megajoules_h = &dead_sw,
         .live_par_umol_s = &live_par,
         .standing_dead_par_umol_s = &dead_par,
     });
     try std.testing.expectEqual(
         @as(f64, 0),
-        result.ground_shortwave_mj_h,
+        result.ground_shortwave_megajoules_h,
     );
     try std.testing.expectEqualSlices(
         f64,
@@ -61,8 +61,8 @@ test "dimension mismatch leaves diagnostics unchanged" {
     try std.testing.expectError(
         error.NoRadiationCanopyDimensionMismatch,
         apply(.{
-            .live_shortwave_mj_h = &live_sw,
-            .standing_dead_shortwave_mj_h = &empty,
+            .live_shortwave_megajoules_h = &live_sw,
+            .standing_dead_shortwave_megajoules_h = &empty,
             .live_par_umol_s = &live_sw,
             .standing_dead_par_umol_s = &live_sw,
         }),

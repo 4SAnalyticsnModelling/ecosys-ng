@@ -2,6 +2,10 @@ const std = @import("std");
 const canopy_module = @import("canopy_photosynthesis.zig");
 const stages_module = @import("plant_growth_stages.zig");
 const structure_module = @import("canopy_structure.zig");
+const branch_base_module = @import("branch_base_height.zig");
+const branch_leaf_module = @import("canopy_branch_leaf_orchestration.zig");
+const stalk_publication_module = @import("stalk_layer_publication.zig");
+const emergence_reset_module = @import("canopy_emergence_layer_reset.zig");
 const PlantState = @import("grid.zig").PlantState;
 
 pub const Controls = struct {
@@ -11,6 +15,7 @@ pub const Controls = struct {
     biomass_turnover_type: []u8,
     root_profile_type: []u8,
     annual_growth_habit: []bool,
+    specific_internode_length_m_per_g_c: []f64,
     stem_angle_sine: []f64,
 
     pub fn init(allocator: std.mem.Allocator, plant_count: usize) !Controls {
@@ -25,18 +30,22 @@ pub const Controls = struct {
         errdefer allocator.free(profile);
         const annual = try allocator.alloc(bool, plant_count);
         errdefer allocator.free(annual);
+        const specific_internode_length = try allocator.alloc(f64, plant_count);
+        errdefer allocator.free(specific_internode_length);
         const stem_angle_sine = try allocator.alloc(f64, plant_count);
         @memset(ratio, 0);
         @memset(volume, 0);
         @memset(turnover, 0);
         @memset(profile, 0);
         @memset(annual, true);
+        @memset(specific_internode_length, 0);
         @memset(stem_angle_sine, 1);
-        return .{ .allocator = allocator, .leaf_length_to_width_ratio = ratio, .stalk_volume_m3_per_g_c = volume, .biomass_turnover_type = turnover, .root_profile_type = profile, .annual_growth_habit = annual, .stem_angle_sine = stem_angle_sine };
+        return .{ .allocator = allocator, .leaf_length_to_width_ratio = ratio, .stalk_volume_m3_per_g_c = volume, .biomass_turnover_type = turnover, .root_profile_type = profile, .annual_growth_habit = annual, .specific_internode_length_m_per_g_c = specific_internode_length, .stem_angle_sine = stem_angle_sine };
     }
 
     pub fn deinit(self: *Controls) void {
         self.allocator.free(self.stem_angle_sine);
+        self.allocator.free(self.specific_internode_length_m_per_g_c);
         self.allocator.free(self.annual_growth_habit);
         self.allocator.free(self.root_profile_type);
         self.allocator.free(self.biomass_turnover_type);
@@ -45,15 +54,47 @@ pub const Controls = struct {
         self.* = undefined;
     }
 
-    pub fn setPlant(self: *Controls, plant: usize, leaf_length_to_width_ratio: f64, stalk_volume_m3_per_g_c: f64, biomass_turnover_type: u8, root_profile_type: u8, annual_growth_habit: bool, stem_angle_sine: f64) !void {
+    pub fn setPlant(self: *Controls, plant: usize, leaf_length_to_width_ratio: f64, stalk_volume_m3_per_g_c: f64, biomass_turnover_type: u8, root_profile_type: u8, annual_growth_habit: bool, specific_internode_length_m_per_g_c: f64, stem_angle_sine: f64) !void {
         if (plant >= self.leaf_length_to_width_ratio.len) return error.CanopyLayerPlantIndexOutOfBounds;
-        if (!std.math.isFinite(leaf_length_to_width_ratio) or leaf_length_to_width_ratio < 0 or !std.math.isFinite(stalk_volume_m3_per_g_c) or stalk_volume_m3_per_g_c <= 0 or !std.math.isFinite(stem_angle_sine) or stem_angle_sine < 0 or stem_angle_sine > 1) return error.InvalidCanopyLayerControl;
+        if (!std.math.isFinite(leaf_length_to_width_ratio) or leaf_length_to_width_ratio < 0 or !std.math.isFinite(stalk_volume_m3_per_g_c) or stalk_volume_m3_per_g_c <= 0 or !std.math.isFinite(specific_internode_length_m_per_g_c) or specific_internode_length_m_per_g_c < 0 or !std.math.isFinite(stem_angle_sine) or stem_angle_sine < 0 or stem_angle_sine > 1) return error.InvalidCanopyLayerControl;
         self.leaf_length_to_width_ratio[plant] = leaf_length_to_width_ratio;
         self.stalk_volume_m3_per_g_c[plant] = stalk_volume_m3_per_g_c;
         self.biomass_turnover_type[plant] = biomass_turnover_type;
         self.root_profile_type[plant] = root_profile_type;
         self.annual_growth_habit[plant] = annual_growth_habit;
+        self.specific_internode_length_m_per_g_c[plant] = specific_internode_length_m_per_g_c;
         self.stem_angle_sine[plant] = stem_angle_sine;
+    }
+};
+
+const Workspace = struct {
+    allocator: std.mem.Allocator,
+    node_stalk_height_m: []f64,
+    node_leaf_base_height_m: []f64,
+    node_leaf_length_m: []f64,
+    node_allocated_leaf_top_height_m: []f64,
+    stalk_layer_area_m2: []f64,
+
+    fn init(allocator: std.mem.Allocator, node_count: usize, layer_count: usize) !Workspace {
+        const stalk_height = try allocator.alloc(f64, node_count);
+        errdefer allocator.free(stalk_height);
+        const leaf_base = try allocator.alloc(f64, node_count);
+        errdefer allocator.free(leaf_base);
+        const leaf_length = try allocator.alloc(f64, node_count);
+        errdefer allocator.free(leaf_length);
+        const leaf_top = try allocator.alloc(f64, node_count);
+        errdefer allocator.free(leaf_top);
+        const stalk_area = try allocator.alloc(f64, layer_count);
+        return .{ .allocator = allocator, .node_stalk_height_m = stalk_height, .node_leaf_base_height_m = leaf_base, .node_leaf_length_m = leaf_length, .node_allocated_leaf_top_height_m = leaf_top, .stalk_layer_area_m2 = stalk_area };
+    }
+
+    fn deinit(self: *Workspace) void {
+        self.allocator.free(self.stalk_layer_area_m2);
+        self.allocator.free(self.node_allocated_leaf_top_height_m);
+        self.allocator.free(self.node_leaf_length_m);
+        self.allocator.free(self.node_leaf_base_height_m);
+        self.allocator.free(self.node_stalk_height_m);
+        self.* = undefined;
     }
 };
 
@@ -84,12 +125,14 @@ pub const State = struct {
     cell_leaf_carbon_g: []f64,
     cell_stalk_area_m2: []f64,
     cell_standing_dead_area_m2: []f64,
+    workspace: Workspace,
+    branch_lowest_live_node: []?usize,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize, layer_count: usize, inclination_count: usize, azimuth_count: usize, canopy: *const canopy_module.State) !State {
         if (cell_count == 0 or species_count == 0 or layer_count == 0 or inclination_count == 0 or azimuth_count == 0 or canopy.cell_count != cell_count or canopy.species_count != species_count) return error.InvalidCanopyLayerDimensions;
         const node_count = canopy.node_sample_offsets.len - 1;
         const branch_count = canopy.branch_node_offsets.len - 1;
-        var result: State = .{ .allocator = allocator, .cell_count = cell_count, .species_count = species_count, .layer_count = layer_count, .inclination_count = inclination_count, .azimuth_count = azimuth_count, .node_count = node_count, .branch_count = branch_count, .boundary_height_m = undefined, .node_leaf_area_m2 = undefined, .node_leaf_carbon_g = undefined, .node_leaf_nitrogen_g = undefined, .node_leaf_phosphorus_g = undefined, .node_leaf_projected_surface_m2 = undefined, .branch_stalk_area_m2 = undefined, .branch_stalk_projected_surface_m2 = undefined, .plant_leaf_projected_surface_m2 = undefined, .plant_stalk_projected_surface_m2 = undefined, .plant_standing_dead_area_m2 = undefined, .plant_standing_dead_projected_surface_m2 = undefined, .cell_leaf_area_m2 = undefined, .cell_leaf_carbon_g = undefined, .cell_stalk_area_m2 = undefined, .cell_standing_dead_area_m2 = undefined };
+        var result: State = .{ .allocator = allocator, .cell_count = cell_count, .species_count = species_count, .layer_count = layer_count, .inclination_count = inclination_count, .azimuth_count = azimuth_count, .node_count = node_count, .branch_count = branch_count, .boundary_height_m = undefined, .node_leaf_area_m2 = undefined, .node_leaf_carbon_g = undefined, .node_leaf_nitrogen_g = undefined, .node_leaf_phosphorus_g = undefined, .node_leaf_projected_surface_m2 = undefined, .branch_stalk_area_m2 = undefined, .branch_stalk_projected_surface_m2 = undefined, .plant_leaf_projected_surface_m2 = undefined, .plant_stalk_projected_surface_m2 = undefined, .plant_standing_dead_area_m2 = undefined, .plant_standing_dead_projected_surface_m2 = undefined, .cell_leaf_area_m2 = undefined, .cell_leaf_carbon_g = undefined, .cell_stalk_area_m2 = undefined, .cell_standing_dead_area_m2 = undefined, .workspace = undefined, .branch_lowest_live_node = undefined };
         var allocated: usize = 0;
         errdefer inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64 and allocated > 0) {
             allocated -= 1;
@@ -101,11 +144,17 @@ pub const State = struct {
             @memset(@field(result, field.name), 0);
             allocated += 1;
         };
+        result.workspace = try Workspace.init(allocator, node_count, layer_count);
+        errdefer result.workspace.deinit();
+        result.branch_lowest_live_node = try allocator.alloc(?usize, branch_count);
+        @memset(result.branch_lowest_live_node, null);
         for (0..cell_count) |cell| result.boundary_height_m[cell * (layer_count + 1) + layer_count] = 0.01;
         return result;
     }
 
     pub fn deinit(self: *State) void {
+        self.allocator.free(self.branch_lowest_live_node);
+        self.workspace.deinit();
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) self.allocator.free(@field(self, field.name));
         self.* = undefined;
     }
@@ -125,12 +174,7 @@ pub const State = struct {
     }
 
     pub fn resetCurrentAreas(self: *State) void {
-        @memset(self.node_leaf_area_m2, 0);
-        @memset(self.node_leaf_carbon_g, 0);
-        @memset(self.node_leaf_nitrogen_g, 0);
-        @memset(self.node_leaf_phosphorus_g, 0);
         @memset(self.node_leaf_projected_surface_m2, 0);
-        @memset(self.branch_stalk_area_m2, 0);
         @memset(self.branch_stalk_projected_surface_m2, 0);
         @memset(self.plant_leaf_projected_surface_m2, 0);
         @memset(self.plant_stalk_projected_surface_m2, 0);
@@ -238,11 +282,11 @@ pub const State = struct {
         }
     }
 
-    pub fn refresh(self: *State, canopy: *canopy_module.State, growth_stages: *const stages_module.State, controls: *const Controls, emerged_by_plant: []const bool, inclination_sine: []const f64, inclination_fraction_by_plant: []const f64, solar_angle_sine_by_cell: []const f64, minimum_area_m2: f64) !void {
+    pub fn refresh(self: *State, canopy: *canopy_module.State, growth_stages: *const stages_module.State, controls: *const Controls, seeding_depth_m_by_plant: []const f64, inclination_sine: []const f64, inclination_fraction_by_plant: []const f64, solar_angle_sine_by_cell: []const f64, minimum_area_m2: f64) !void {
         try self.ensureTopology(canopy);
         const plant_count = canopy.plant_branch_offsets.len - 1;
         const inclination_count = inclination_sine.len;
-        if (growth_stages.plant_count != plant_count or controls.leaf_length_to_width_ratio.len != plant_count or controls.stem_angle_sine.len != plant_count or emerged_by_plant.len != plant_count or inclination_count != self.inclination_count or inclination_fraction_by_plant.len != plant_count * inclination_count or solar_angle_sine_by_cell.len != self.cell_count) return error.CanopyLayerDistributionDimensionMismatch;
+        if (growth_stages.plant_count != plant_count or controls.leaf_length_to_width_ratio.len != plant_count or controls.stem_angle_sine.len != plant_count or seeding_depth_m_by_plant.len != plant_count or inclination_count != self.inclination_count or inclination_fraction_by_plant.len != plant_count * inclination_count or solar_angle_sine_by_cell.len != self.cell_count) return error.CanopyLayerDistributionDimensionMismatch;
         // HOUR1 adjusts boundaries from the prior GROSUB distribution first.
         for (0..self.cell_count) |cell| {
             const first = cell * self.layer_count;
@@ -290,20 +334,67 @@ pub const State = struct {
             } else {
                 canopy.plant_standing_dead_height_m[plant] = 0;
             }
-            if (!emerged_by_plant[plant]) continue;
             const branch_range = try canopy.branchRange(plant);
             if (branch_range.first == branch_range.end) continue;
+            const population_per_m2 = canopy.plant_population_per_m2[plant];
+            if (!std.math.isFinite(population_per_m2) or population_per_m2 < 0) return error.InvalidCanopyLayerPopulation;
             const main_branch = (try growth_stages.mainLivingBranch(plant)) orelse continue;
             const main_nodes = try canopy.nodeRange(main_branch);
+            var plant_canopy_height_m: f64 = 0;
             for (branch_range.first..branch_range.end) |branch| {
-                if (growth_stages.branches[branch].dead) continue;
                 const nodes = try canopy.nodeRange(branch);
-                var branch_base_height_m: f64 = 0;
-                if (controls.biomass_turnover_type[plant] != 0 and controls.root_profile_type[plant] > 1 and branch != main_branch) {
-                    const order = growth_stages.branches[branch].branch_order;
-                    if (order < main_nodes.end - main_nodes.first) branch_base_height_m = canopy.node_height_m[main_nodes.first + order];
+                if (nodes.first == nodes.end) continue;
+                if (growth_stages.branches[branch].dead or population_per_m2 == 0) {
+                    self.branch_lowest_live_node[branch] = null;
+                    const dead_node_layers = self.node_leaf_area_m2[nodes.first * self.layer_count .. nodes.end * self.layer_count];
+                    @memset(dead_node_layers, 0);
+                    @memset(self.node_leaf_carbon_g[nodes.first * self.layer_count .. nodes.end * self.layer_count], 0);
+                    @memset(self.node_leaf_nitrogen_g[nodes.first * self.layer_count .. nodes.end * self.layer_count], 0);
+                    @memset(self.node_leaf_phosphorus_g[nodes.first * self.layer_count .. nodes.end * self.layer_count], 0);
+                    const dead_branch_layers = try self.branchLayerRange(branch);
+                    @memset(self.branch_stalk_area_m2[dead_branch_layers.first..dead_branch_layers.end], 0);
+                    continue;
                 }
-                var branch_tip_height_m = branch_base_height_m;
+                const branch_layers = try self.branchLayerRange(branch);
+                const emergence = try emergence_reset_module.apply(.{
+                    .lowest_canopy_node = &self.branch_lowest_live_node[branch],
+                    .hypocotyledon_height_m = &canopy.plant_hypocotyledon_height_m[plant],
+                    .layers = .{
+                        .layer_count = self.layer_count,
+                        .node_count = nodes.end - nodes.first,
+                        .leaf_area_m2 = self.node_leaf_area_m2[nodes.first * self.layer_count .. nodes.end * self.layer_count],
+                        .leaf_carbon_g_c = self.node_leaf_carbon_g[nodes.first * self.layer_count .. nodes.end * self.layer_count],
+                        .leaf_nitrogen_g_n = self.node_leaf_nitrogen_g[nodes.first * self.layer_count .. nodes.end * self.layer_count],
+                        .leaf_phosphorus_g_p = self.node_leaf_phosphorus_g[nodes.first * self.layer_count .. nodes.end * self.layer_count],
+                        .stalk_area_m2 = self.branch_stalk_area_m2[branch_layers.first..branch_layers.end],
+                    },
+                }, .{
+                    .seeding_depth_m = seeding_depth_m_by_plant[plant],
+                    .plant_population_per_m2 = canopy.plant_population_per_m2[plant],
+                    .main_node_zero = .{
+                        .leaf_area_m2 = canopy.node_leaf_area_m2[main_nodes.first],
+                        .sheath_height_m = canopy.node_sheath_height_m[main_nodes.first],
+                        .internode_height_m = canopy.node_height_m[main_nodes.first],
+                    },
+                });
+                if (!emergence.emerged) continue;
+                const branch_base_height_m = try branch_base_module.calculate(.{
+                    .current_branch = branch,
+                    .main_branch = main_branch,
+                    // HFUNC assigns NBTB=NBT-1; branch_order is initialized
+                    // from the identical pre-increment branch count.
+                    .attachment_node = growth_stages.branches[branch].branch_order,
+                    .first_retained_main_node = 0,
+                    .end_main_node = main_nodes.end - main_nodes.first,
+                    .aboveground_turnover = if (controls.biomass_turnover_type[plant] == 0) .none else .active,
+                    .root_profile = switch (controls.root_profile_type[plant]) {
+                        0 => .shallow,
+                        1 => .intermediate,
+                        2 => .deep,
+                        else => .deeper,
+                    },
+                    .main_node_height_m = canopy.node_height_m[main_nodes.first..main_nodes.end],
+                });
                 for (nodes.first..nodes.end) |node| {
                     const output = try self.nodeLayerRange(node);
                     const area = self.node_leaf_area_m2[output.first..output.end];
@@ -311,9 +402,8 @@ pub const State = struct {
                     const nitrogen = self.node_leaf_nitrogen_g[output.first..output.end];
                     const phosphorus = self.node_leaf_phosphorus_g[output.first..output.end];
                     const stalk_height_m = branch_base_height_m + canopy.node_height_m[node];
-                    branch_tip_height_m = @max(branch_tip_height_m, stalk_height_m);
                     const canopy_height_m = @max(0.0, boundaries[boundaries.len - 1] - 0.01);
-                    _ = try canopy_module.allocateLeafAcrossCanopyLayers(canopy.node_leaf_area_m2[node], canopy.node_leaf_carbon_g[node], canopy.node_leaf_nitrogen_g[node], canopy.node_leaf_phosphorus_g[node], canopy.plant_population_per_m2[plant], controls.leaf_length_to_width_ratio[plant], stalk_height_m, canopy.node_sheath_height_m[node], canopy_height_m, boundaries, inclination_sine, inclination_fraction_by_plant[plant * inclination_count ..][0..inclination_count], .{ .area_m2 = area, .carbon_g = carbon, .nitrogen_g = nitrogen, .phosphorus_g = phosphorus });
+                    self.workspace.node_allocated_leaf_top_height_m[node] = try canopy_module.allocateLeafAcrossCanopyLayers(canopy.node_leaf_area_m2[node], canopy.node_leaf_carbon_g[node], canopy.node_leaf_nitrogen_g[node], canopy.node_leaf_phosphorus_g[node], canopy.plant_population_per_m2[plant], controls.leaf_length_to_width_ratio[plant], stalk_height_m, canopy.node_sheath_height_m[node], canopy_height_m, boundaries, inclination_sine, inclination_fraction_by_plant[plant * inclination_count ..][0..inclination_count], .{ .area_m2 = area, .carbon_g = carbon, .nitrogen_g = nitrogen, .phosphorus_g = phosphorus });
                     const cell_first = cell * self.layer_count;
                     for (0..self.layer_count) |layer| {
                         self.cell_leaf_area_m2[cell_first + layer] += area[layer];
@@ -326,10 +416,43 @@ pub const State = struct {
                         }
                     }
                 }
-                const branch_layers = try self.branchLayerRange(branch);
+                const local_count = nodes.end - nodes.first;
+                const orchestration = try branch_leaf_module.apply(.{
+                    .internode_height_m = canopy.node_height_m[nodes.first..nodes.end],
+                    .sheath_height_m = canopy.node_sheath_height_m[nodes.first..nodes.end],
+                    .leaf_area_m2 = canopy.node_leaf_area_m2[nodes.first..nodes.end],
+                    .sheath_protein_g = canopy.node_sheath_protein_g[nodes.first..nodes.end],
+                }, .{
+                    .stalk_height_m = self.workspace.node_stalk_height_m[nodes.first..nodes.end],
+                    .leaf_base_height_m = self.workspace.node_leaf_base_height_m[nodes.first..nodes.end],
+                    .leaf_length_m = self.workspace.node_leaf_length_m[nodes.first..nodes.end],
+                }, .{
+                    .first_leafed_node = 0,
+                    .end_leafed_node = local_count,
+                    .latest_node = local_count - 1,
+                    .branch_base_height_m = branch_base_height_m,
+                    .plant_population_per_m2 = canopy.plant_population_per_m2[plant],
+                    .leaf_length_to_width_ratio = controls.leaf_length_to_width_ratio[plant],
+                    .canopy_height_before_branch_m = plant_canopy_height_m,
+                    .allocated_leaf_top_height_m = self.workspace.node_allocated_leaf_top_height_m[nodes.first..nodes.end],
+                });
+                self.branch_lowest_live_node[branch] = orchestration.lowest_live_node;
+                plant_canopy_height_m = orchestration.canopy_height_after_branch_m;
+                const branch_tip_height_m = orchestration.branch_stalk_tip_height_m;
                 const stalk_area = self.branch_stalk_area_m2[branch_layers.first..branch_layers.end];
-                const stalk = try canopy_module.allocateStalkAcrossCanopyLayers(canopy.branch_stalk_carbon_g[branch], canopy.branch_stalk_carbon_g[branch], canopy.plant_population_per_m2[plant], controls.stalk_volume_m3_per_g_c[plant], branch_base_height_m, branch_tip_height_m, controls.annual_growth_habit[plant], false, boundaries, stalk_area);
-                canopy.branch_sapwood_carbon_g[branch] = stalk.sapwood_carbon_g;
+                const stalk = try canopy_module.allocateStalkAcrossCanopyLayers(canopy.branch_stalk_carbon_g[branch], canopy.branch_stalk_carbon_g[branch], canopy.plant_population_per_m2[plant], controls.stalk_volume_m3_per_g_c[plant], branch_base_height_m, branch_tip_height_m, controls.annual_growth_habit[plant], controls.specific_internode_length_m_per_g_c[plant] > 0, boundaries, self.workspace.stalk_layer_area_m2);
+                _ = try stalk_publication_module.publish(.{ .sapwood_carbon_g_c = &canopy.branch_sapwood_carbon_g[branch], .layer_stalk_area_m2 = stalk_area }, .{
+                    .canopy_emerged = true,
+                    .latest_internode_height_m = canopy.node_height_m[nodes.end - 1],
+                    .specific_internode_length = if (controls.specific_internode_length_m_per_g_c[plant] > 0) .positive else .zero,
+                    .retained_live_stalk_carbon_g_c = canopy.branch_stalk_carbon_g[branch],
+                    .allocation = if (branch_tip_height_m > branch_base_height_m) .{
+                        .radius_m = stalk.radius_m,
+                        .surface_area_m2 = stalk.surface_area_m2,
+                        .sapwood_carbon_g_c = stalk.sapwood_carbon_g,
+                        .layer_stalk_area_m2 = self.workspace.stalk_layer_area_m2,
+                    } else null,
+                });
                 const cell_first = cell * self.layer_count;
                 const inclination_width_radians = (0.5 * std.math.pi) / @as(f64, @floatFromInt(inclination_count));
                 const stalk_inclination = if (branch == main_branch) inclination_count - 1 else @min(inclination_count - 1, @as(usize, @intFromFloat(std.math.asin(controls.stem_angle_sine[plant]) / inclination_width_radians)));
@@ -434,7 +557,7 @@ test "GROSUB dead branch clears node branch plant and cell layer aggregates" {
     try std.testing.expectEqual(@as(f64, 3), layers.plant_leaf_projected_surface_m2[1]);
 
     const config = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 2 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 2 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 },
     );
@@ -517,10 +640,10 @@ test "GROSUB runtime layer surfaces conserve live and standing dead geometry" {
     defer stages.deinit();
     var controls = try Controls.init(allocator, 1);
     defer controls.deinit();
-    try controls.setPlant(0, 2, 4.0e-6, 0, 1, true, 0.5);
+    try controls.setPlant(0, 2, 4.0e-6, 0, 1, true, 0.25, 0.5);
     var layers = try State.init(allocator, 1, 1, 13, 4, 4, &canopy);
     defer layers.deinit();
-    try layers.refresh(&canopy, &stages, &controls, &.{true}, &.{ 0.1951, 0.5556, 0.8315, 0.9808 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
+    try layers.refresh(&canopy, &stages, &controls, &.{0}, &.{ 0.1951, 0.5556, 0.8315, 0.9808 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
 
     var leaf_area_m2: f64 = 0;
     var leaf_projected_m2: f64 = 0;
@@ -547,4 +670,74 @@ test "GROSUB runtime layer surfaces conserve live and standing dead geometry" {
     try std.testing.expectApproxEqAbs(stalk_projected_m2, plant_stalk_projected_m2, 1.0e-12);
     const expected_dead_radius_m = @sqrt(4.0e-6 * (9.0 / 3.0) / (3.1416 * 0.7));
     try std.testing.expectApproxEqAbs(6.2832 * expected_dead_radius_m * 0.7 * 3.0, dead_area_m2, 1.0e-12);
+}
+
+test "HFUNC NBTB attachment and READQ SNL1 drive production canopy publication" {
+    const allocator = std.testing.allocator;
+    var canopy = try canopy_module.State.init(allocator, 1, 1, &.{2}, &.{ 3, 1 }, &.{ 1, 1, 1, 1 });
+    defer canopy.deinit();
+    canopy.plant_population_per_m2[0] = 10;
+    canopy.plant_population_count[0] = 10;
+    canopy.plant_hypocotyledon_height_m[0] = 0.01;
+    canopy.node_height_m[0] = 0.2;
+    canopy.node_height_m[1] = 0.7;
+    canopy.node_height_m[2] = 1.5;
+    canopy.node_height_m[3] = 0;
+    canopy.node_sheath_protein_g[3] = 1;
+    canopy.branch_stalk_carbon_g[1] = 5;
+
+    var stages = try stages_module.State.init(allocator, &.{2});
+    defer stages.deinit();
+    stages.branches[0].branch_order = 0;
+    // HFUNC's second initiated lateral after NBT increments to three has
+    // NBTB=2, the explicit attachment node on the main stalk.
+    stages.branches[1].branch_order = 2;
+    var controls = try Controls.init(allocator, 1);
+    defer controls.deinit();
+    try controls.setPlant(0, 1, 4.0e-6, 1, 2, true, 0.25, 1);
+    var layers = try State.init(allocator, 1, 1, 4, 4, 4, &canopy);
+    defer layers.deinit();
+
+    try layers.refresh(&canopy, &stages, &controls, &.{0}, &.{ 0.2, 0.5, 0.8, 1 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
+    try std.testing.expectEqual(@as(f64, 1.5), layers.workspace.node_stalk_height_m[3]);
+    try std.testing.expectEqual(@as(?usize, 0), layers.branch_lowest_live_node[1]);
+    try std.testing.expectEqual(@as(f64, 0), canopy.branch_sapwood_carbon_g[1]);
+
+    controls.specific_internode_length_m_per_g_c[0] = 0;
+    try layers.refresh(&canopy, &stages, &controls, &.{0}, &.{ 0.2, 0.5, 0.8, 1 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
+    try std.testing.expectEqual(@as(f64, 5), canopy.branch_sapwood_carbon_g[1]);
+}
+
+test "GROSUB KVSTGN reset precedes emergence-gated runtime layer clearing" {
+    const allocator = std.testing.allocator;
+    var canopy = try canopy_module.State.init(allocator, 1, 1, &.{1}, &.{1}, &.{1});
+    defer canopy.deinit();
+    canopy.plant_population_per_m2[0] = 100;
+    canopy.plant_population_count[0] = 100;
+    canopy.plant_hypocotyledon_height_m[0] = 0.05;
+    var stages = try stages_module.State.init(allocator, &.{1});
+    defer stages.deinit();
+    var controls = try Controls.init(allocator, 1);
+    defer controls.deinit();
+    try controls.setPlant(0, 1, 4.0e-6, 0, 1, true, 0, 1);
+    var layers = try State.init(allocator, 1, 1, 3, 4, 4, &canopy);
+    defer layers.deinit();
+    @memset(layers.node_leaf_area_m2, 7);
+    @memset(layers.node_leaf_carbon_g, 8);
+    @memset(layers.branch_stalk_area_m2, 9);
+    layers.branch_lowest_live_node[0] = 2;
+
+    try layers.refresh(&canopy, &stages, &controls, &.{0.1}, &.{ 0.2, 0.5, 0.8, 1 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
+    try std.testing.expectEqual(@as(?usize, null), layers.branch_lowest_live_node[0]);
+    try std.testing.expectEqual(@as(f64, 7), layers.node_leaf_area_m2[2]);
+    try std.testing.expectEqual(@as(f64, 9), layers.branch_stalk_area_m2[2]);
+
+    canopy.node_leaf_area_m2[0] = 1;
+    canopy.node_leaf_carbon_g[0] = 2;
+    canopy.node_sheath_protein_g[0] = 1;
+    try layers.refresh(&canopy, &stages, &controls, &.{0.1}, &.{ 0.2, 0.5, 0.8, 1 }, &.{ 0.1, 0.2, 0.3, 0.4 }, &.{0.5}, 1.0e-12);
+    var distributed_area_m2: f64 = 0;
+    for (layers.node_leaf_area_m2) |area_m2| distributed_area_m2 += area_m2;
+    try std.testing.expectApproxEqAbs(@as(f64, 1), distributed_area_m2, 1.0e-12);
+    try std.testing.expectEqual(@as(?usize, 0), layers.branch_lowest_live_node[0]);
 }

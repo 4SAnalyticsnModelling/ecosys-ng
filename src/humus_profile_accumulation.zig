@@ -1,9 +1,9 @@
 const std = @import("std");
 
 pub const Inputs = struct {
-    soil_organic_carbon_g_c_per_Mg: []const f64,
-    particulate_organic_carbon_g_c_per_Mg: []const f64,
-    dry_soil_mass_Mg: []const f64,
+    soil_organic_carbon_g_c_per_megagram: []const f64,
+    particulate_organic_carbon_g_c_per_megagram: []const f64,
+    dry_soil_mass_megagrams: []const f64,
     horizontal_area_m2: f64,
     reference_layer_index: usize,
 };
@@ -24,10 +24,10 @@ pub fn derive(
     inputs: Inputs,
     parameters: Parameters,
 ) !void {
-    const layer_count = inputs.soil_organic_carbon_g_c_per_Mg.len;
+    const layer_count = inputs.soil_organic_carbon_g_c_per_megagram.len;
     if (layer_count == 0 or
-        inputs.particulate_organic_carbon_g_c_per_Mg.len != layer_count or
-        inputs.dry_soil_mass_Mg.len != layer_count or
+        inputs.particulate_organic_carbon_g_c_per_megagram.len != layer_count or
+        inputs.dry_soil_mass_megagrams.len != layer_count or
         result.midpoint_cumulative_humus_g_c_per_m2.len != layer_count or
         inputs.reference_layer_index >= layer_count)
         return error.HumusProfileDimensionMismatch;
@@ -48,22 +48,22 @@ pub fn derive(
     var reference_midpoint_g_c_per_m2: f64 = 0.0;
     for (0..layer_count) |layer| {
         inline for (.{
-            inputs.soil_organic_carbon_g_c_per_Mg[layer],
-            inputs.particulate_organic_carbon_g_c_per_Mg[layer],
-            inputs.dry_soil_mass_Mg[layer],
+            inputs.soil_organic_carbon_g_c_per_megagram[layer],
+            inputs.particulate_organic_carbon_g_c_per_megagram[layer],
+            inputs.dry_soil_mass_megagrams[layer],
         }) |value| {
             if (!std.math.isFinite(value))
                 return error.NonFiniteHumusProfileInput;
             if (value < 0) return error.InvalidHumusProfileInput;
         }
-        const humus_concentration_g_c_per_Mg = @max(
+        const humus_concentration_g_c_per_megagram = @max(
             0.0,
-            inputs.soil_organic_carbon_g_c_per_Mg[layer] -
-                inputs.particulate_organic_carbon_g_c_per_Mg[layer],
+            inputs.soil_organic_carbon_g_c_per_megagram[layer] -
+                inputs.particulate_organic_carbon_g_c_per_megagram[layer],
         );
         const layer_humus_g_c_per_m2 =
-            humus_concentration_g_c_per_Mg *
-            inputs.dry_soil_mass_Mg[layer] /
+            humus_concentration_g_c_per_megagram *
+            inputs.dry_soil_mass_megagrams[layer] /
             inputs.horizontal_area_m2;
         const midpoint_g_c_per_m2 =
             cumulative_humus_g_c_per_m2 +
@@ -89,14 +89,14 @@ pub fn derive(
 
     cumulative_humus_g_c_per_m2 = 0.0;
     for (0..layer_count) |layer| {
-        const humus_concentration_g_c_per_Mg = @max(
+        const humus_concentration_g_c_per_megagram = @max(
             0.0,
-            inputs.soil_organic_carbon_g_c_per_Mg[layer] -
-                inputs.particulate_organic_carbon_g_c_per_Mg[layer],
+            inputs.soil_organic_carbon_g_c_per_megagram[layer] -
+                inputs.particulate_organic_carbon_g_c_per_megagram[layer],
         );
         const layer_humus_g_c_per_m2 =
-            humus_concentration_g_c_per_Mg *
-            inputs.dry_soil_mass_Mg[layer] /
+            humus_concentration_g_c_per_megagram *
+            inputs.dry_soil_mass_megagrams[layer] /
             inputs.horizontal_area_m2;
         result.midpoint_cumulative_humus_g_c_per_m2[layer] =
             cumulative_humus_g_c_per_m2 +
@@ -114,9 +114,9 @@ test "STARTS humus profile preserves midpoint cumulative operation order" {
         .midpoint_cumulative_humus_g_c_per_m2 = &midpoint,
         .reference_humus_g_c_per_m2 = &reference,
     }, .{
-        .soil_organic_carbon_g_c_per_Mg = &.{ 100, 80, 40 },
-        .particulate_organic_carbon_g_c_per_Mg = &.{ 20, 100, 10 },
-        .dry_soil_mass_Mg = &.{ 10, 20, 30 },
+        .soil_organic_carbon_g_c_per_megagram = &.{ 100, 80, 40 },
+        .particulate_organic_carbon_g_c_per_megagram = &.{ 20, 100, 10 },
+        .dry_soil_mass_megagrams = &.{ 10, 20, 30 },
         .horizontal_area_m2 = 100,
         .reference_layer_index = 2,
     }, .{
@@ -135,9 +135,9 @@ test "reference accumulation obeys runtime cap" {
         .midpoint_cumulative_humus_g_c_per_m2 = &midpoint,
         .reference_humus_g_c_per_m2 = &reference,
     }, .{
-        .soil_organic_carbon_g_c_per_Mg = &.{10_000},
-        .particulate_organic_carbon_g_c_per_Mg = &.{0},
-        .dry_soil_mass_Mg = &.{1000},
+        .soil_organic_carbon_g_c_per_megagram = &.{10_000},
+        .particulate_organic_carbon_g_c_per_megagram = &.{0},
+        .dry_soil_mass_megagrams = &.{1000},
         .horizontal_area_m2 = 1,
         .reference_layer_index = 0,
     }, .{
@@ -157,9 +157,9 @@ test "late invalid layer preserves profile and reference" {
             .midpoint_cumulative_humus_g_c_per_m2 = &midpoint,
             .reference_humus_g_c_per_m2 = &reference,
         }, .{
-            .soil_organic_carbon_g_c_per_Mg = &.{ 100, std.math.nan(f64) },
-            .particulate_organic_carbon_g_c_per_Mg = &.{ 20, 20 },
-            .dry_soil_mass_Mg = &.{ 10, 10 },
+            .soil_organic_carbon_g_c_per_megagram = &.{ 100, std.math.nan(f64) },
+            .particulate_organic_carbon_g_c_per_megagram = &.{ 20, 20 },
+            .dry_soil_mass_megagrams = &.{ 10, 10 },
             .horizontal_area_m2 = 100,
             .reference_layer_index = 1,
         }, .{

@@ -1,15 +1,15 @@
 const std = @import("std");
 
 pub const WorkingRadiation = struct {
-    shortwave_mj_m2_h: f64,
+    shortwave_megajoules_m2_h: f64,
     par_umol_m2_s: f64,
 };
 
 pub const Boundaries = struct {
     diffuse_transmittance: []f64,
-    forward_scattered_shortwave_mj_m2_h: []f64,
+    forward_scattered_shortwave_megajoules_m2_h: []f64,
     forward_scattered_par_umol_m2_s: []f64,
-    backscattered_shortwave_mj_m2_h: []const f64,
+    backscattered_shortwave_megajoules_m2_h: []const f64,
     backscattered_par_umol_m2_s: []const f64,
 };
 
@@ -17,10 +17,10 @@ pub const Boundaries = struct {
 /// source assignment order.
 pub fn initialize(working: *WorkingRadiation, boundaries: Boundaries) !void {
     try validateBoundaryDimensions(boundaries);
-    working.shortwave_mj_m2_h = 0.0;
+    working.shortwave_megajoules_m2_h = 0.0;
     working.par_umol_m2_s = 0.0;
     boundaries.diffuse_transmittance[0] = 1.0;
-    boundaries.forward_scattered_shortwave_mj_m2_h[0] = 0.0;
+    boundaries.forward_scattered_shortwave_megajoules_m2_h[0] = 0.0;
     boundaries.forward_scattered_par_umol_m2_s[0] = 0.0;
 }
 
@@ -50,17 +50,17 @@ pub fn admitLayer(
         return false;
     const below_boundary = layer;
     const current_boundary = layer + 1;
-    working.shortwave_mj_m2_h =
-        working.shortwave_mj_m2_h *
+    working.shortwave_megajoules_m2_h =
+        working.shortwave_megajoules_m2_h *
         boundaries.diffuse_transmittance[below_boundary] +
-        boundaries.forward_scattered_shortwave_mj_m2_h[below_boundary] +
-        boundaries.backscattered_shortwave_mj_m2_h[below_boundary];
+        boundaries.forward_scattered_shortwave_megajoules_m2_h[below_boundary] +
+        boundaries.backscattered_shortwave_megajoules_m2_h[below_boundary];
     working.par_umol_m2_s =
         working.par_umol_m2_s *
         boundaries.diffuse_transmittance[below_boundary] +
         boundaries.forward_scattered_par_umol_m2_s[below_boundary] +
         boundaries.backscattered_par_umol_m2_s[below_boundary];
-    boundaries.forward_scattered_shortwave_mj_m2_h[current_boundary] = 0.0;
+    boundaries.forward_scattered_shortwave_megajoules_m2_h[current_boundary] = 0.0;
     boundaries.forward_scattered_par_umol_m2_s[current_boundary] = 0.0;
     return true;
 }
@@ -68,9 +68,9 @@ pub fn admitLayer(
 fn validateBoundaryDimensions(boundaries: Boundaries) !void {
     const boundary_count = boundaries.diffuse_transmittance.len;
     if (boundary_count < 2 or
-        boundaries.forward_scattered_shortwave_mj_m2_h.len != boundary_count or
+        boundaries.forward_scattered_shortwave_megajoules_m2_h.len != boundary_count or
         boundaries.forward_scattered_par_umol_m2_s.len != boundary_count or
-        boundaries.backscattered_shortwave_mj_m2_h.len != boundary_count or
+        boundaries.backscattered_shortwave_megajoules_m2_h.len != boundary_count or
         boundaries.backscattered_par_umol_m2_s.len != boundary_count)
         return error.CanopyUpwardBoundaryDimensionMismatch;
 }
@@ -92,7 +92,7 @@ fn validateLayer(
         snow_depth_m,
         water_ice_depth_m,
         tolerance_m,
-        working.shortwave_mj_m2_h,
+        working.shortwave_megajoules_m2_h,
         working.par_umol_m2_s,
     }) |value| if (!std.math.isFinite(value) or value < 0)
         return error.InvalidCanopyUpwardTraversalInput;
@@ -100,9 +100,9 @@ fn validateLayer(
         return error.InvalidCanopyUpwardTraversalInput;
     inline for (.{
         boundaries.diffuse_transmittance,
-        boundaries.forward_scattered_shortwave_mj_m2_h,
+        boundaries.forward_scattered_shortwave_megajoules_m2_h,
         boundaries.forward_scattered_par_umol_m2_s,
-        boundaries.backscattered_shortwave_mj_m2_h,
+        boundaries.backscattered_shortwave_megajoules_m2_h,
         boundaries.backscattered_par_umol_m2_s,
     }) |values| for (values) |value|
         if (!std.math.isFinite(value) or value < 0)
@@ -116,18 +116,18 @@ test "initialization then exposed layer advances upward scattered radiation" {
     const back_sw = [_]f64{ 2, 3, 4 };
     const back_par = [_]f64{ 20, 30, 40 };
     var working: WorkingRadiation = .{
-        .shortwave_mj_m2_h = 99,
+        .shortwave_megajoules_m2_h = 99,
         .par_umol_m2_s = 98,
     };
     const boundaries: Boundaries = .{
         .diffuse_transmittance = &transmission,
-        .forward_scattered_shortwave_mj_m2_h = &forward_sw,
+        .forward_scattered_shortwave_megajoules_m2_h = &forward_sw,
         .forward_scattered_par_umol_m2_s = &forward_par,
-        .backscattered_shortwave_mj_m2_h = &back_sw,
+        .backscattered_shortwave_megajoules_m2_h = &back_sw,
         .backscattered_par_umol_m2_s = &back_par,
     };
     try initialize(&working, boundaries);
-    try std.testing.expectEqual(@as(f64, 0), working.shortwave_mj_m2_h);
+    try std.testing.expectEqual(@as(f64, 0), working.shortwave_megajoules_m2_h);
     try std.testing.expectEqual(@as(f64, 1), transmission[0]);
     try std.testing.expect(try admitLayer(
         0,
@@ -138,7 +138,7 @@ test "initialization then exposed layer advances upward scattered radiation" {
         &working,
         boundaries,
     ));
-    try std.testing.expectEqual(@as(f64, 2), working.shortwave_mj_m2_h);
+    try std.testing.expectEqual(@as(f64, 2), working.shortwave_megajoules_m2_h);
     try std.testing.expectEqual(@as(f64, 20), working.par_umol_m2_s);
     try std.testing.expectEqual(@as(f64, 0), forward_sw[1]);
     try std.testing.expectEqual(@as(f64, 0), forward_par[1]);
@@ -151,16 +151,16 @@ test "submerged layer leaves traversal state unchanged" {
     const back_sw = [_]f64{ 5, 6 };
     const back_par = [_]f64{ 7, 8 };
     var working: WorkingRadiation = .{
-        .shortwave_mj_m2_h = 9,
+        .shortwave_megajoules_m2_h = 9,
         .par_umol_m2_s = 10,
     };
     try std.testing.expect(!(try admitLayer(0, &.{0}, 1, 0, 0.1, &working, .{
         .diffuse_transmittance = &transmission,
-        .forward_scattered_shortwave_mj_m2_h = &forward_sw,
+        .forward_scattered_shortwave_megajoules_m2_h = &forward_sw,
         .forward_scattered_par_umol_m2_s = &forward_par,
-        .backscattered_shortwave_mj_m2_h = &back_sw,
+        .backscattered_shortwave_megajoules_m2_h = &back_sw,
         .backscattered_par_umol_m2_s = &back_par,
     })));
-    try std.testing.expectEqual(@as(f64, 9), working.shortwave_mj_m2_h);
+    try std.testing.expectEqual(@as(f64, 9), working.shortwave_megajoules_m2_h);
     try std.testing.expectEqual(@as(f64, 2), forward_sw[1]);
 }

@@ -16,23 +16,23 @@ pub const State = struct {
     cell_count: usize,
     species_count: usize,
     layer_count: usize,
-    absorbed_shortwave_mj_per_m2: []f64,
+    absorbed_shortwave_megajoules_per_m2: []f64,
     absorbed_par_micromol_per_m2_per_s: []f64,
     direct_transmission_fraction: []f64,
     diffuse_transmission_fraction: []f64,
     direct_boundary_transmission_fraction: []f64,
     diffuse_boundary_transmission_fraction: []f64,
-    leaf_absorbed_shortwave_by_layer_mj_per_m2: []f64,
-    stalk_absorbed_shortwave_by_layer_mj_per_m2: []f64,
-    standing_dead_absorbed_shortwave_by_layer_mj_per_m2: []f64,
+    leaf_absorbed_shortwave_by_layer_megajoules_per_m2: []f64,
+    stalk_absorbed_shortwave_by_layer_megajoules_per_m2: []f64,
+    standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2: []f64,
     leaf_absorbed_par_by_layer_micromol_per_m2_per_s: []f64,
     stalk_absorbed_par_by_layer_micromol_per_m2_per_s: []f64,
     standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s: []f64,
-    downward_scattered_shortwave_by_boundary_mj_per_m2: []f64,
-    upward_scattered_shortwave_by_boundary_mj_per_m2: []f64,
+    downward_scattered_shortwave_by_boundary_megajoules_per_m2: []f64,
+    upward_scattered_shortwave_by_boundary_megajoules_per_m2: []f64,
     downward_scattered_par_by_boundary_micromol_per_m2_per_s: []f64,
     upward_scattered_par_by_boundary_micromol_per_m2_per_s: []f64,
-    upward_escape_shortwave_mj_per_m2: []f64,
+    upward_escape_shortwave_megajoules_per_m2: []f64,
     upward_escape_par_micromol_per_m2_per_s: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize, layer_count: usize) !State {
@@ -46,26 +46,26 @@ pub const State = struct {
             .cell_count = cell_count,
             .species_count = species_count,
             .layer_count = layer_count,
-            .absorbed_shortwave_mj_per_m2 = try allocator.alloc(f64, species_slots),
+            .absorbed_shortwave_megajoules_per_m2 = try allocator.alloc(f64, species_slots),
             .absorbed_par_micromol_per_m2_per_s = undefined,
             .direct_transmission_fraction = undefined,
             .diffuse_transmission_fraction = undefined,
             .direct_boundary_transmission_fraction = undefined,
             .diffuse_boundary_transmission_fraction = undefined,
-            .leaf_absorbed_shortwave_by_layer_mj_per_m2 = undefined,
-            .stalk_absorbed_shortwave_by_layer_mj_per_m2 = undefined,
-            .standing_dead_absorbed_shortwave_by_layer_mj_per_m2 = undefined,
+            .leaf_absorbed_shortwave_by_layer_megajoules_per_m2 = undefined,
+            .stalk_absorbed_shortwave_by_layer_megajoules_per_m2 = undefined,
+            .standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2 = undefined,
             .leaf_absorbed_par_by_layer_micromol_per_m2_per_s = undefined,
             .stalk_absorbed_par_by_layer_micromol_per_m2_per_s = undefined,
             .standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s = undefined,
-            .downward_scattered_shortwave_by_boundary_mj_per_m2 = undefined,
-            .upward_scattered_shortwave_by_boundary_mj_per_m2 = undefined,
+            .downward_scattered_shortwave_by_boundary_megajoules_per_m2 = undefined,
+            .upward_scattered_shortwave_by_boundary_megajoules_per_m2 = undefined,
             .downward_scattered_par_by_boundary_micromol_per_m2_per_s = undefined,
             .upward_scattered_par_by_boundary_micromol_per_m2_per_s = undefined,
-            .upward_escape_shortwave_mj_per_m2 = undefined,
+            .upward_escape_shortwave_megajoules_per_m2 = undefined,
             .upward_escape_par_micromol_per_m2_per_s = undefined,
         };
-        errdefer allocator.free(result.absorbed_shortwave_mj_per_m2);
+        errdefer allocator.free(result.absorbed_shortwave_megajoules_per_m2);
         result.absorbed_par_micromol_per_m2_per_s = try allocator.alloc(f64, species_slots);
         errdefer allocator.free(result.absorbed_par_micromol_per_m2_per_s);
         result.direct_transmission_fraction = try allocator.alloc(f64, cell_count);
@@ -76,28 +76,28 @@ pub const State = struct {
         errdefer allocator.free(result.direct_boundary_transmission_fraction);
         result.diffuse_boundary_transmission_fraction = try allocator.alloc(f64, boundary_slots);
         errdefer allocator.free(result.diffuse_boundary_transmission_fraction);
-        result.leaf_absorbed_shortwave_by_layer_mj_per_m2 = try allocator.alloc(f64, layer_slots);
-        errdefer allocator.free(result.leaf_absorbed_shortwave_by_layer_mj_per_m2);
-        result.stalk_absorbed_shortwave_by_layer_mj_per_m2 = try allocator.alloc(f64, layer_slots);
-        errdefer allocator.free(result.stalk_absorbed_shortwave_by_layer_mj_per_m2);
-        result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2 = try allocator.alloc(f64, layer_slots);
-        errdefer allocator.free(result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2);
+        result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2 = try allocator.alloc(f64, layer_slots);
+        errdefer allocator.free(result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2);
+        result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2 = try allocator.alloc(f64, layer_slots);
+        errdefer allocator.free(result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2);
+        result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2 = try allocator.alloc(f64, layer_slots);
+        errdefer allocator.free(result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2);
         result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s = try allocator.alloc(f64, layer_slots);
         errdefer allocator.free(result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s);
         result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s = try allocator.alloc(f64, layer_slots);
         errdefer allocator.free(result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s);
         result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s = try allocator.alloc(f64, layer_slots);
         errdefer allocator.free(result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s);
-        result.downward_scattered_shortwave_by_boundary_mj_per_m2 = try allocator.alloc(f64, boundary_slots);
-        errdefer allocator.free(result.downward_scattered_shortwave_by_boundary_mj_per_m2);
-        result.upward_scattered_shortwave_by_boundary_mj_per_m2 = try allocator.alloc(f64, boundary_slots);
-        errdefer allocator.free(result.upward_scattered_shortwave_by_boundary_mj_per_m2);
+        result.downward_scattered_shortwave_by_boundary_megajoules_per_m2 = try allocator.alloc(f64, boundary_slots);
+        errdefer allocator.free(result.downward_scattered_shortwave_by_boundary_megajoules_per_m2);
+        result.upward_scattered_shortwave_by_boundary_megajoules_per_m2 = try allocator.alloc(f64, boundary_slots);
+        errdefer allocator.free(result.upward_scattered_shortwave_by_boundary_megajoules_per_m2);
         result.downward_scattered_par_by_boundary_micromol_per_m2_per_s = try allocator.alloc(f64, boundary_slots);
         errdefer allocator.free(result.downward_scattered_par_by_boundary_micromol_per_m2_per_s);
         result.upward_scattered_par_by_boundary_micromol_per_m2_per_s = try allocator.alloc(f64, boundary_slots);
         errdefer allocator.free(result.upward_scattered_par_by_boundary_micromol_per_m2_per_s);
-        result.upward_escape_shortwave_mj_per_m2 = try allocator.alloc(f64, cell_count);
-        errdefer allocator.free(result.upward_escape_shortwave_mj_per_m2);
+        result.upward_escape_shortwave_megajoules_per_m2 = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(result.upward_escape_shortwave_megajoules_per_m2);
         result.upward_escape_par_micromol_per_m2_per_s = try allocator.alloc(f64, cell_count);
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) @memset(@field(result, field.name), if (comptime std.mem.indexOf(u8, field.name, "transmission") != null) 1 else 0);
         return result;
@@ -105,23 +105,23 @@ pub const State = struct {
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.upward_escape_par_micromol_per_m2_per_s);
-        self.allocator.free(self.upward_escape_shortwave_mj_per_m2);
+        self.allocator.free(self.upward_escape_shortwave_megajoules_per_m2);
         self.allocator.free(self.upward_scattered_par_by_boundary_micromol_per_m2_per_s);
         self.allocator.free(self.downward_scattered_par_by_boundary_micromol_per_m2_per_s);
-        self.allocator.free(self.upward_scattered_shortwave_by_boundary_mj_per_m2);
-        self.allocator.free(self.downward_scattered_shortwave_by_boundary_mj_per_m2);
+        self.allocator.free(self.upward_scattered_shortwave_by_boundary_megajoules_per_m2);
+        self.allocator.free(self.downward_scattered_shortwave_by_boundary_megajoules_per_m2);
         self.allocator.free(self.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s);
         self.allocator.free(self.stalk_absorbed_par_by_layer_micromol_per_m2_per_s);
         self.allocator.free(self.leaf_absorbed_par_by_layer_micromol_per_m2_per_s);
-        self.allocator.free(self.standing_dead_absorbed_shortwave_by_layer_mj_per_m2);
-        self.allocator.free(self.stalk_absorbed_shortwave_by_layer_mj_per_m2);
-        self.allocator.free(self.leaf_absorbed_shortwave_by_layer_mj_per_m2);
+        self.allocator.free(self.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2);
+        self.allocator.free(self.stalk_absorbed_shortwave_by_layer_megajoules_per_m2);
+        self.allocator.free(self.leaf_absorbed_shortwave_by_layer_megajoules_per_m2);
         self.allocator.free(self.diffuse_boundary_transmission_fraction);
         self.allocator.free(self.direct_boundary_transmission_fraction);
         self.allocator.free(self.diffuse_transmission_fraction);
         self.allocator.free(self.direct_transmission_fraction);
         self.allocator.free(self.absorbed_par_micromol_per_m2_per_s);
-        self.allocator.free(self.absorbed_shortwave_mj_per_m2);
+        self.allocator.free(self.absorbed_shortwave_megajoules_per_m2);
         self.* = undefined;
     }
 
@@ -160,7 +160,7 @@ pub fn applySingleLayerTile(context: *ApplyContext, range: CellRange) !void {
         var diffuse_intercepted_area: f64 = 0;
         for (0..result.species_count) |species| {
             const species_index = cell * result.species_count + species;
-            result.absorbed_shortwave_mj_per_m2[species_index] = 0;
+            result.absorbed_shortwave_megajoules_per_m2[species_index] = 0;
             result.absorbed_par_micromol_per_m2_per_s[species_index] = 0;
             if (!structure.species_is_active[species_index]) continue;
             const clumping = structure.effective_clumping_factor[species_index];
@@ -202,18 +202,18 @@ pub fn applySingleLayerTile(context: *ApplyContext, range: CellRange) !void {
                         cell * direct_table_count +
                         inclination * azimuth_count + azimuth;
                     const direct_surface = effective_leaf_area * azimuth_weight * context.direct_incidence_fraction[direct_index] * direct_scale;
-                    absorbed_shortwave += direct_surface * context.optics.direct_leaf_shortwave_mj_per_m2[species_index];
+                    absorbed_shortwave += direct_surface * context.optics.direct_leaf_shortwave_megajoules_per_m2[species_index];
                     absorbed_par += direct_surface * context.optics.direct_leaf_par_micromol_per_m2_per_s[species_index];
                     for (0..sky_count) |sky| {
                         const diffuse_index = context.geometry.index(sky, inclination, azimuth);
                         const diffuse_surface = effective_leaf_area * azimuth_weight * context.geometry.diffuse_incidence_fraction[diffuse_index] * diffuse_scale;
-                        absorbed_shortwave += diffuse_surface * context.optics.diffuse_leaf_shortwave_mj_per_m2[species_index];
+                        absorbed_shortwave += diffuse_surface * context.optics.diffuse_leaf_shortwave_megajoules_per_m2[species_index];
                         absorbed_par += diffuse_surface * context.optics.diffuse_leaf_par_micromol_per_m2_per_s[species_index];
                     }
                 }
             }
             if (!std.math.isFinite(absorbed_shortwave) or !std.math.isFinite(absorbed_par) or absorbed_shortwave < 0 or absorbed_par < 0) return error.InvalidCanopyAbsorption;
-            result.absorbed_shortwave_mj_per_m2[species_index] = absorbed_shortwave;
+            result.absorbed_shortwave_megajoules_per_m2[species_index] = absorbed_shortwave;
             result.absorbed_par_micromol_per_m2_per_s[species_index] = absorbed_par;
         }
     }
@@ -237,7 +237,7 @@ pub fn refreshAtmosphericLayerAbsorption(result: *State, layers: *const LayerSta
     const boundary_count = layers.layer_count + 1;
     const direct_table_count = inclination_count * azimuth_count;
     if (result.cell_count != layers.cell_count or result.species_count != layers.species_count or result.layer_count != layers.layer_count or structure.cell_count != layers.cell_count or structure.species_count != layers.species_count or optics.cell_count != layers.cell_count or optics.species_count != layers.species_count or radiation.cellCount() != layers.cell_count or geometry.leaf_inclination_sine.len != inclination_count or geometry.leaf_azimuth_radians.len != azimuth_count or direct_incidence_fraction.len != layers.cell_count * direct_table_count or direct_incidence_per_horizontal_area.len != layers.cell_count * direct_table_count or direct_scattering_direction.len != layers.cell_count * direct_table_count or cell_area_m2.len != layers.cell_count) return error.LayerAbsorptionDimensionMismatch;
-    inline for (.{ result.leaf_absorbed_shortwave_by_layer_mj_per_m2, result.stalk_absorbed_shortwave_by_layer_mj_per_m2, result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2, result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s, result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s, result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s, result.absorbed_shortwave_mj_per_m2, result.absorbed_par_micromol_per_m2_per_s, result.downward_scattered_shortwave_by_boundary_mj_per_m2, result.upward_scattered_shortwave_by_boundary_mj_per_m2, result.downward_scattered_par_by_boundary_micromol_per_m2_per_s, result.upward_scattered_par_by_boundary_micromol_per_m2_per_s }) |values| @memset(values, 0);
+    inline for (.{ result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2, result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2, result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2, result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s, result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s, result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s, result.absorbed_shortwave_megajoules_per_m2, result.absorbed_par_micromol_per_m2_per_s, result.downward_scattered_shortwave_by_boundary_megajoules_per_m2, result.upward_scattered_shortwave_by_boundary_megajoules_per_m2, result.downward_scattered_par_by_boundary_micromol_per_m2_per_s, result.upward_scattered_par_by_boundary_micromol_per_m2_per_s }) |values| @memset(values, 0);
 
     for (0..layers.cell_count) |cell| {
         if (!std.math.isFinite(cell_area_m2[cell]) or cell_area_m2[cell] <= 0) return error.InvalidCanopyCellArea;
@@ -284,7 +284,7 @@ pub fn refreshAtmosphericLayerAbsorption(result: *State, layers: *const LayerSta
                             cell * direct_table_count +
                             inclination * azimuth_count + azimuth;
                         const direct_incidence = direct_incidence_fraction[direct_index];
-                        const direct_sw = radiation.direct_shortwave_mj_per_m2[cell] * direct_incidence * direct_above * direct_scale * inverse_cell_area;
+                        const direct_sw = radiation.direct_shortwave_megajoules_per_m2[cell] * direct_incidence * direct_above * direct_scale * inverse_cell_area;
                         const direct_par = radiation.direct_par_micromol_per_m2_per_s[cell] * direct_incidence * direct_above * direct_scale * inverse_cell_area;
                         const leaf_direct_sw = leaf_m2 * direct_sw * leaf_sw_absorptivity;
                         const stalk_direct_sw = stalk_m2 * direct_sw * (1.0 - woody.stalk_shortwave_albedo);
@@ -292,27 +292,27 @@ pub fn refreshAtmosphericLayerAbsorption(result: *State, layers: *const LayerSta
                         const leaf_direct_par = leaf_m2 * direct_par * leaf_par_absorptivity;
                         const stalk_direct_par = stalk_m2 * direct_par * (1.0 - woody.stalk_par_albedo);
                         const dead_direct_par = dead_m2 * direct_par * (1.0 - woody.standing_dead_par_albedo);
-                        result.leaf_absorbed_shortwave_by_layer_mj_per_m2[output] += leaf_direct_sw;
-                        result.stalk_absorbed_shortwave_by_layer_mj_per_m2[output] += stalk_direct_sw;
-                        result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2[output] += dead_direct_sw;
+                        result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2[output] += leaf_direct_sw;
+                        result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2[output] += stalk_direct_sw;
+                        result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2[output] += dead_direct_sw;
                         result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s[output] += leaf_direct_par;
                         result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s[output] += stalk_direct_par;
                         result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s[output] += dead_direct_par;
-                        result.downward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += leaf_direct_sw * optics.leaf_shortwave_transmission[plant];
+                        result.downward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += leaf_direct_sw * optics.leaf_shortwave_transmission[plant];
                         result.downward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += leaf_direct_par * optics.leaf_par_transmission[plant];
                         const direct_is_forward = direct_scattering_direction[direct_index] == .forward;
                         const reflected_direct_sw = leaf_direct_sw * optics.leaf_shortwave_albedo[plant] + stalk_direct_sw * woody.stalk_shortwave_albedo + dead_direct_sw * woody.standing_dead_shortwave_albedo;
                         const reflected_direct_par = leaf_direct_par * optics.leaf_par_albedo[plant] + stalk_direct_par * woody.stalk_par_albedo + dead_direct_par * woody.standing_dead_par_albedo;
                         if (direct_is_forward) {
-                            result.downward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += reflected_direct_sw;
+                            result.downward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += reflected_direct_sw;
                             result.downward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += reflected_direct_par;
                         } else {
-                            result.upward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += reflected_direct_sw;
+                            result.upward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += reflected_direct_sw;
                             result.upward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += reflected_direct_par;
                         }
                         for (0..sky_count) |sky| {
                             const diffuse_incidence = geometry.diffuse_incidence_fraction[geometry.index(sky, inclination, azimuth)];
-                            const diffuse_sw = radiation.diffuse_shortwave_mj_per_m2[cell] * diffuse_incidence * diffuse_above * diffuse_scale * inverse_cell_area;
+                            const diffuse_sw = radiation.diffuse_shortwave_megajoules_per_m2[cell] * diffuse_incidence * diffuse_above * diffuse_scale * inverse_cell_area;
                             const diffuse_par = radiation.diffuse_par_micromol_per_m2_per_s[cell] * diffuse_incidence * diffuse_above * diffuse_scale * inverse_cell_area;
                             const leaf_diffuse_sw = leaf_m2 * diffuse_sw * leaf_sw_absorptivity;
                             const stalk_diffuse_sw = stalk_m2 * diffuse_sw * (1.0 - woody.stalk_shortwave_albedo);
@@ -320,28 +320,28 @@ pub fn refreshAtmosphericLayerAbsorption(result: *State, layers: *const LayerSta
                             const leaf_diffuse_par = leaf_m2 * diffuse_par * leaf_par_absorptivity;
                             const stalk_diffuse_par = stalk_m2 * diffuse_par * (1.0 - woody.stalk_par_albedo);
                             const dead_diffuse_par = dead_m2 * diffuse_par * (1.0 - woody.standing_dead_par_albedo);
-                            result.leaf_absorbed_shortwave_by_layer_mj_per_m2[output] += leaf_diffuse_sw;
-                            result.stalk_absorbed_shortwave_by_layer_mj_per_m2[output] += stalk_diffuse_sw;
-                            result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2[output] += dead_diffuse_sw;
+                            result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2[output] += leaf_diffuse_sw;
+                            result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2[output] += stalk_diffuse_sw;
+                            result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2[output] += dead_diffuse_sw;
                             result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s[output] += leaf_diffuse_par;
                             result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s[output] += stalk_diffuse_par;
                             result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s[output] += dead_diffuse_par;
-                            result.downward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += leaf_diffuse_sw * optics.leaf_shortwave_transmission[plant];
+                            result.downward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += leaf_diffuse_sw * optics.leaf_shortwave_transmission[plant];
                             result.downward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += leaf_diffuse_par * optics.leaf_par_transmission[plant];
                             const diffuse_index = geometry.index(sky, inclination, azimuth);
                             const reflected_diffuse_sw = leaf_diffuse_sw * optics.leaf_shortwave_albedo[plant] + stalk_diffuse_sw * woody.stalk_shortwave_albedo + dead_diffuse_sw * woody.standing_dead_shortwave_albedo;
                             const reflected_diffuse_par = leaf_diffuse_par * optics.leaf_par_albedo[plant] + stalk_diffuse_par * woody.stalk_par_albedo + dead_diffuse_par * woody.standing_dead_par_albedo;
                             if (geometry.diffuse_scattering_direction[diffuse_index] == .forward) {
-                                result.downward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += reflected_diffuse_sw;
+                                result.downward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += reflected_diffuse_sw;
                                 result.downward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += reflected_diffuse_par;
                             } else {
-                                result.upward_scattered_shortwave_by_boundary_mj_per_m2[scattering_boundary] += reflected_diffuse_sw;
+                                result.upward_scattered_shortwave_by_boundary_megajoules_per_m2[scattering_boundary] += reflected_diffuse_sw;
                                 result.upward_scattered_par_by_boundary_micromol_per_m2_per_s[scattering_boundary] += reflected_diffuse_par;
                             }
                         }
                     }
                 }
-                result.absorbed_shortwave_mj_per_m2[plant] += result.leaf_absorbed_shortwave_by_layer_mj_per_m2[output] + result.stalk_absorbed_shortwave_by_layer_mj_per_m2[output];
+                result.absorbed_shortwave_megajoules_per_m2[plant] += result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2[output] + result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2[output];
                 result.absorbed_par_micromol_per_m2_per_s[plant] += result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s[output] + result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s[output];
             }
         }
@@ -351,14 +351,14 @@ pub fn refreshAtmosphericLayerAbsorption(result: *State, layers: *const LayerSta
 /// HOUR1 lower-to-upper diffuse pass beginning with ground reflection and
 /// atmospheric RAB at boundary zero. Angular surface weights allocate the
 /// layer interception; leaf TAUR/TAUP terms propagate transmitted energy.
-pub fn applyGroundReflectedUpwardSweep(result: *State, layers: *const LayerState, structure: *const StructureState, optics: *const OpticsState, geometry: *const Geometry, ground_reflected_shortwave_mj_per_m2: []const f64, ground_reflected_par_micromol_per_m2_per_s: []const f64, woody: WoodyOpticsParameters) !void {
+pub fn applyGroundReflectedUpwardSweep(result: *State, layers: *const LayerState, structure: *const StructureState, optics: *const OpticsState, geometry: *const Geometry, ground_reflected_shortwave_megajoules_per_m2: []const f64, ground_reflected_par_micromol_per_m2_per_s: []const f64, woody: WoodyOpticsParameters) !void {
     try woody.validate();
-    if (result.cell_count != layers.cell_count or result.species_count != layers.species_count or result.layer_count != layers.layer_count or structure.cell_count != layers.cell_count or optics.cell_count != layers.cell_count or ground_reflected_shortwave_mj_per_m2.len != layers.cell_count or ground_reflected_par_micromol_per_m2_per_s.len != layers.cell_count) return error.UpwardCanopySweepDimensionMismatch;
-    @memset(result.upward_escape_shortwave_mj_per_m2, 0);
+    if (result.cell_count != layers.cell_count or result.species_count != layers.species_count or result.layer_count != layers.layer_count or structure.cell_count != layers.cell_count or optics.cell_count != layers.cell_count or ground_reflected_shortwave_megajoules_per_m2.len != layers.cell_count or ground_reflected_par_micromol_per_m2_per_s.len != layers.cell_count) return error.UpwardCanopySweepDimensionMismatch;
+    @memset(result.upward_escape_shortwave_megajoules_per_m2, 0);
     @memset(result.upward_escape_par_micromol_per_m2_per_s, 0);
     const boundary_count = layers.layer_count + 1;
     for (0..layers.cell_count) |cell| {
-        var incoming_sw = ground_reflected_shortwave_mj_per_m2[cell] + result.upward_scattered_shortwave_by_boundary_mj_per_m2[cell * boundary_count];
+        var incoming_sw = ground_reflected_shortwave_megajoules_per_m2[cell] + result.upward_scattered_shortwave_by_boundary_megajoules_per_m2[cell * boundary_count];
         var incoming_par = ground_reflected_par_micromol_per_m2_per_s[cell] + result.upward_scattered_par_by_boundary_micromol_per_m2_per_s[cell * boundary_count];
         if (!std.math.isFinite(incoming_sw) or !std.math.isFinite(incoming_par) or incoming_sw < 0 or incoming_par < 0) return error.InvalidGroundReflectedRadiation;
         for (0..layers.layer_count) |layer| {
@@ -410,22 +410,22 @@ pub fn applyGroundReflectedUpwardSweep(result: *State, layers: *const LayerState
                 const leaf_par = intercepted_par * leaf_weight / total_geometric_weight * optics.leaf_par_absorptivity[plant];
                 const stalk_par = intercepted_par * stalk_weight / total_geometric_weight * (1.0 - woody.stalk_par_albedo);
                 const dead_par = intercepted_par * dead_weight / total_geometric_weight * (1.0 - woody.standing_dead_par_albedo);
-                result.leaf_absorbed_shortwave_by_layer_mj_per_m2[output] += leaf_sw;
-                result.stalk_absorbed_shortwave_by_layer_mj_per_m2[output] += stalk_sw;
-                result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2[output] += dead_sw;
+                result.leaf_absorbed_shortwave_by_layer_megajoules_per_m2[output] += leaf_sw;
+                result.stalk_absorbed_shortwave_by_layer_megajoules_per_m2[output] += stalk_sw;
+                result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2[output] += dead_sw;
                 result.leaf_absorbed_par_by_layer_micromol_per_m2_per_s[output] += leaf_par;
                 result.stalk_absorbed_par_by_layer_micromol_per_m2_per_s[output] += stalk_par;
                 result.standing_dead_absorbed_par_by_layer_micromol_per_m2_per_s[output] += dead_par;
-                result.absorbed_shortwave_mj_per_m2[plant] += leaf_sw + stalk_sw;
+                result.absorbed_shortwave_megajoules_per_m2[plant] += leaf_sw + stalk_sw;
                 result.absorbed_par_micromol_per_m2_per_s[plant] += leaf_par + stalk_par;
                 leaf_transmitted_sw += leaf_sw * optics.leaf_shortwave_transmission[plant];
                 leaf_transmitted_par += leaf_par * optics.leaf_par_transmission[plant];
             };
-            incoming_sw = incoming_sw * layer_transmission + leaf_transmitted_sw + result.upward_scattered_shortwave_by_boundary_mj_per_m2[above];
+            incoming_sw = incoming_sw * layer_transmission + leaf_transmitted_sw + result.upward_scattered_shortwave_by_boundary_megajoules_per_m2[above];
             incoming_par = incoming_par * layer_transmission + leaf_transmitted_par + result.upward_scattered_par_by_boundary_micromol_per_m2_per_s[above];
             if (!std.math.isFinite(incoming_sw) or !std.math.isFinite(incoming_par) or incoming_sw < 0 or incoming_par < 0) return error.InvalidUpwardCanopyRadiation;
         }
-        result.upward_escape_shortwave_mj_per_m2[cell] = incoming_sw;
+        result.upward_escape_shortwave_megajoules_per_m2[cell] = incoming_sw;
         result.upward_escape_par_micromol_per_m2_per_s[cell] = incoming_par;
     }
 }
@@ -547,7 +547,7 @@ test "HOUR1 layered atmospheric absorption conserves incident shortwave" {
     structure.effective_clumping_factor[0] = 1;
     var geometry = try Geometry.init(allocator, .{ .leaf_inclination_class_count = 1, .leaf_azimuth_class_count = 1, .diffuse_sky_sector_count = 1 });
     defer geometry.deinit();
-    var optics: OpticsState = .{ .allocator = allocator, .cell_count = 1, .species_count = 1, .species_is_active = try allocator.alloc(bool, 1), .leaf_shortwave_absorptivity = try allocator.alloc(f64, 1), .leaf_par_absorptivity = try allocator.alloc(f64, 1), .leaf_shortwave_albedo = try allocator.alloc(f64, 1), .leaf_par_albedo = try allocator.alloc(f64, 1), .leaf_shortwave_transmission = try allocator.alloc(f64, 1), .leaf_par_transmission = try allocator.alloc(f64, 1), .direct_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, 1), .diffuse_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, 1), .direct_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, 1), .diffuse_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, 1) };
+    var optics: OpticsState = .{ .allocator = allocator, .cell_count = 1, .species_count = 1, .species_is_active = try allocator.alloc(bool, 1), .leaf_shortwave_absorptivity = try allocator.alloc(f64, 1), .leaf_par_absorptivity = try allocator.alloc(f64, 1), .leaf_shortwave_albedo = try allocator.alloc(f64, 1), .leaf_par_albedo = try allocator.alloc(f64, 1), .leaf_shortwave_transmission = try allocator.alloc(f64, 1), .leaf_par_transmission = try allocator.alloc(f64, 1), .direct_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, 1), .diffuse_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, 1), .direct_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, 1), .diffuse_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, 1) };
     defer optics.deinit();
     optics.leaf_shortwave_absorptivity[0] = 0.7;
     optics.leaf_par_absorptivity[0] = 0.85;
@@ -557,8 +557,8 @@ test "HOUR1 layered atmospheric absorption conserves incident shortwave" {
     optics.leaf_par_transmission[0] = 0.05;
     var radiation = try RadiationState.init(allocator, 1);
     defer radiation.deinit();
-    radiation.direct_shortwave_mj_per_m2[0] = 1;
-    radiation.diffuse_shortwave_mj_per_m2[0] = 0.5;
+    radiation.direct_shortwave_megajoules_per_m2[0] = 1;
+    radiation.diffuse_shortwave_megajoules_per_m2[0] = 0.5;
     radiation.direct_par_micromol_per_m2_per_s[0] = 500;
     radiation.diffuse_par_micromol_per_m2_per_s[0] = 200;
     const direct_fraction = try allocator.alloc(f64, 1);
@@ -573,18 +573,18 @@ test "HOUR1 layered atmospheric absorption conserves incident shortwave" {
     try refreshLayerTransmission(&result, &layers, &structure, &geometry, direct_horizontal, &.{1});
     try refreshAtmosphericLayerAbsorption(&result, &layers, &structure, &optics, &geometry, &radiation, direct_fraction, direct_horizontal, direction, &.{1}, @import("canopy_optics.zig").compatibilityWoodyOpticsParameters());
     var dead_absorbed: f64 = 0;
-    for (result.standing_dead_absorbed_shortwave_by_layer_mj_per_m2) |value| dead_absorbed += value;
+    for (result.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2) |value| dead_absorbed += value;
     var scattered_shortwave: f64 = 0;
-    for (result.downward_scattered_shortwave_by_boundary_mj_per_m2) |value| scattered_shortwave += value;
-    for (result.upward_scattered_shortwave_by_boundary_mj_per_m2) |value| scattered_shortwave += value;
-    const incident_horizontal = radiation.direct_shortwave_mj_per_m2[0] * 0.6 + radiation.diffuse_shortwave_mj_per_m2[0] * geometry.diffuse_sky_horizontal_projection;
-    const total_absorbed = result.absorbed_shortwave_mj_per_m2[0] + dead_absorbed;
+    for (result.downward_scattered_shortwave_by_boundary_megajoules_per_m2) |value| scattered_shortwave += value;
+    for (result.upward_scattered_shortwave_by_boundary_megajoules_per_m2) |value| scattered_shortwave += value;
+    const incident_horizontal = radiation.direct_shortwave_megajoules_per_m2[0] * 0.6 + radiation.diffuse_shortwave_megajoules_per_m2[0] * geometry.diffuse_sky_horizontal_projection;
+    const total_absorbed = result.absorbed_shortwave_megajoules_per_m2[0] + dead_absorbed;
     try std.testing.expect(total_absorbed > 0);
     try std.testing.expect(total_absorbed <= incident_horizontal + 1.0e-12);
     try std.testing.expect(scattered_shortwave > 0);
     try std.testing.expect(total_absorbed + scattered_shortwave <= incident_horizontal + 1.0e-12);
-    const living_absorbed_before_upward = result.absorbed_shortwave_mj_per_m2[0];
+    const living_absorbed_before_upward = result.absorbed_shortwave_megajoules_per_m2[0];
     try applyGroundReflectedUpwardSweep(&result, &layers, &structure, &optics, &geometry, &.{0.1}, &.{20}, @import("canopy_optics.zig").compatibilityWoodyOpticsParameters());
-    try std.testing.expect(result.absorbed_shortwave_mj_per_m2[0] >= living_absorbed_before_upward);
-    try std.testing.expect(result.upward_escape_shortwave_mj_per_m2[0] >= 0 and std.math.isFinite(result.upward_escape_shortwave_mj_per_m2[0]));
+    try std.testing.expect(result.absorbed_shortwave_megajoules_per_m2[0] >= living_absorbed_before_upward);
+    try std.testing.expect(result.upward_escape_shortwave_megajoules_per_m2[0] >= 0 and std.math.isFinite(result.upward_escape_shortwave_megajoules_per_m2[0]));
 }

@@ -5,7 +5,7 @@ pub const Daily = struct {
     minimum_air_temperature_c: f64,
     first_vapor_pressure_kpa: f64,
     second_vapor_pressure_kpa: f64,
-    shortwave_radiation_mj_per_m2_day: f64,
+    shortwave_radiation_megajoules_per_m2_day: f64,
 };
 
 pub const Inputs = struct {
@@ -20,7 +20,7 @@ pub const Inputs = struct {
 };
 
 pub const Parameters = struct {
-    maximum_hourly_radiation_mj_per_m2_h: f64,
+    maximum_hourly_radiation_megajoules_per_m2_h: f64,
     previous_to_current_temperature_average_c: f64,
     current_temperature_average_c: f64,
     current_to_next_temperature_average_c: f64,
@@ -64,13 +64,13 @@ pub fn derive(inputs: Inputs) !Parameters {
     const radiation_peak =
         if (inputs.radiation_input_type >= -1)
             if (inputs.current_daylength_h > 0)
-                inputs.current.shortwave_radiation_mj_per_m2_day /
+                inputs.current.shortwave_radiation_megajoules_per_m2_day /
                     (inputs.current_daylength_h *
                         inputs.radiation_peak_shape_factor)
             else
                 0
         else
-            inputs.current.shortwave_radiation_mj_per_m2_day;
+            inputs.current.shortwave_radiation_megajoules_per_m2_day;
     const temperature_average_1 =
         0.5 * (previous.maximum_air_temperature_c +
             inputs.current.minimum_air_temperature_c);
@@ -90,7 +90,7 @@ pub fn derive(inputs: Inputs) !Parameters {
         0.5 * (inputs.current.first_vapor_pressure_kpa +
             next.second_vapor_pressure_kpa);
     const result: Parameters = .{
-        .maximum_hourly_radiation_mj_per_m2_h = radiation_peak,
+        .maximum_hourly_radiation_megajoules_per_m2_h = radiation_peak,
         .previous_to_current_temperature_average_c = temperature_average_1,
         .current_temperature_average_c = temperature_average_2,
         .current_to_next_temperature_average_c = temperature_average_3,
@@ -118,7 +118,7 @@ fn exampleDay(maximum: f64, minimum: f64, first_vapor: f64, second_vapor: f64, r
         .minimum_air_temperature_c = minimum,
         .first_vapor_pressure_kpa = first_vapor,
         .second_vapor_pressure_kpa = second_vapor,
-        .shortwave_radiation_mj_per_m2_day = radiation,
+        .shortwave_radiation_megajoules_per_m2_day = radiation,
     };
 }
 
@@ -134,7 +134,7 @@ test "DAY derives exact three-record temperature vapor and radiation terms" {
     });
     try std.testing.expectApproxEqAbs(
         @as(f64, 12) / (12 * 0.658),
-        result.maximum_hourly_radiation_mj_per_m2_h,
+        result.maximum_hourly_radiation_megajoules_per_m2_h,
         1e-15,
     );
     try std.testing.expectEqual(
@@ -188,13 +188,13 @@ test "zero daylength and direct hourly radiation type preserve source branches" 
     var result = try derive(inputs);
     try std.testing.expectEqual(
         @as(f64, 0),
-        result.maximum_hourly_radiation_mj_per_m2_h,
+        result.maximum_hourly_radiation_megajoules_per_m2_h,
     );
     inputs.radiation_input_type = -2;
     result = try derive(inputs);
     try std.testing.expectEqual(
         @as(f64, 12),
-        result.maximum_hourly_radiation_mj_per_m2_h,
+        result.maximum_hourly_radiation_megajoules_per_m2_h,
     );
 }
 

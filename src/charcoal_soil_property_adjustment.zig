@@ -3,8 +3,8 @@ const std = @import("std");
 pub const Properties = struct {
     field_capacity_m3_m3: f64,
     wilting_point_m3_m3: f64,
-    cation_exchange_capacity_mol_mg: f64,
-    anion_exchange_capacity_mol_mg: f64,
+    cation_exchange_capacity_mol_per_megagram: f64,
+    anion_exchange_capacity_mol_per_megagram: f64,
 };
 
 pub const AdjustmentError = error{
@@ -46,9 +46,9 @@ pub fn adjust(
             1.0e-6 * charcoal_carbon_g / effective_soil_volume_m3,
         .wilting_point_m3_m3 = properties.wilting_point_m3_m3 +
             1.0e-6 * charcoal_carbon_g / effective_soil_volume_m3,
-        .cation_exchange_capacity_mol_mg = properties.cation_exchange_capacity_mol_mg +
+        .cation_exchange_capacity_mol_per_megagram = properties.cation_exchange_capacity_mol_per_megagram +
             1.0e-3 * charcoal_carbon_g / effective_soil_volume_m3,
-        .anion_exchange_capacity_mol_mg = properties.anion_exchange_capacity_mol_mg +
+        .anion_exchange_capacity_mol_per_megagram = properties.anion_exchange_capacity_mol_per_megagram +
             1.0e-3 * charcoal_carbon_g / effective_soil_volume_m3,
     };
     inline for (std.meta.fields(Properties)) |field| {
@@ -66,21 +66,21 @@ test "charcoal increments retention and exchange capacities in source order" {
     const adjusted = try adjust(.{
         .field_capacity_m3_m3 = 0.30,
         .wilting_point_m3_m3 = 0.10,
-        .cation_exchange_capacity_mol_mg = 20.0,
-        .anion_exchange_capacity_mol_mg = 2.0,
+        .cation_exchange_capacity_mol_per_megagram = 20.0,
+        .anion_exchange_capacity_mol_per_megagram = 2.0,
     }, 100_000.0, 10.0, 1.0e-12);
     try std.testing.expectEqual(@as(f64, 0.31), adjusted.field_capacity_m3_m3);
     try std.testing.expectEqual(@as(f64, 0.11), adjusted.wilting_point_m3_m3);
-    try std.testing.expectEqual(@as(f64, 30.0), adjusted.cation_exchange_capacity_mol_mg);
-    try std.testing.expectEqual(@as(f64, 12.0), adjusted.anion_exchange_capacity_mol_mg);
+    try std.testing.expectEqual(@as(f64, 30.0), adjusted.cation_exchange_capacity_mol_per_megagram);
+    try std.testing.expectEqual(@as(f64, 12.0), adjusted.anion_exchange_capacity_mol_per_megagram);
 }
 
 test "volume at threshold preserves existing properties" {
     const properties = Properties{
         .field_capacity_m3_m3 = 0.30,
         .wilting_point_m3_m3 = 0.10,
-        .cation_exchange_capacity_mol_mg = 20.0,
-        .anion_exchange_capacity_mol_mg = 2.0,
+        .cation_exchange_capacity_mol_per_megagram = 20.0,
+        .anion_exchange_capacity_mol_per_megagram = 2.0,
     };
     try std.testing.expectEqual(properties, try adjust(properties, 100.0, 0.0, 0.0));
 }

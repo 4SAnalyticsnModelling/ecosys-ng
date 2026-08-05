@@ -60,6 +60,7 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
 }
 
 fn commitCell(context: *ApplyContext, cell: usize) !void {
+    const conserved_nitrogen_before_g_n = try authoritativeCellNitrogen_g_n(context.*, cell);
     var dissolved_after: [respiration.litter_complex_count]organic.ElementPool = undefined;
     var acetate_after: [respiration.litter_complex_count]f64 = undefined;
     var nonstructural_after: [respiration.unit_count_per_cell]organic.ElementPool = undefined;
@@ -353,6 +354,83 @@ fn commitCell(context: *ApplyContext, cell: usize) !void {
     if (context.hourly_carbon_dioxide_production_g_c) |ledger|
         ledger[cell] = total_co2_g_c;
     context.litter_gas.dissolved_mass_g[cell * gas.species_count + @intFromEnum(gas.Species.hydrogen)] += total_h2_g_h;
+    var closed_n2_g_n = context.litter_gas.dissolved_mass_g[n2_index];
+    var diagnostic_nitrogen_closure_g_n: f64 = 0;
+    for (0..4) |_| {
+        const conserved_nitrogen_after_g_n = try authoritativeCellNitrogen_g_n(context.*, cell);
+        const closure_g_n = conserved_nitrogen_before_g_n - conserved_nitrogen_after_g_n;
+        if (closure_g_n == 0) break;
+        diagnostic_nitrogen_closure_g_n += closure_g_n;
+        closed_n2_g_n += closure_g_n;
+        // The closure is the difference of two cell nitrogen censuses, each a sum
+        // of well over fifty independently rounded pool terms: litter nitrite,
+        // aqueous ammonium and nitrate, four organic pool families, three gas
+        // species across four phases, and topsoil aqueous terms. Comparing the
+        // accumulated result against absolute zero rejects a pure rounding residue
+        // whenever the dissolved N2 pool sits at exactly zero. Measured in the
+        // Ottawa example with surface evaporation active, the rejected value was
+        // `-4.768372e-7` g against a `2.150557e9` g census: **exactly 1.00 ULP**.
+        // Admit that representational floor while keeping the physical check, using
+        // the same forward-error bound `mass_balance_audit` applies to the EXEC
+        // census for the same reason. See EXEC-004.
+        const representation_floor_g_n = 512 * std.math.floatEps(f64) *
+            @max(@abs(conserved_nitrogen_before_g_n), @abs(conserved_nitrogen_after_g_n));
+        if (!std.math.isFinite(closed_n2_g_n) or closed_n2_g_n < -representation_floor_g_n) {
+            std.log.err("surface nitrogen closure failed: cell={d} before_g_n={e} closure_g_n={e} closed_n2_g_n={e} representation_floor_g_n={e} litter_water_m3={e}", .{
+                cell,
+                conserved_nitrogen_before_g_n,
+                closure_g_n,
+                closed_n2_g_n,
+                representation_floor_g_n,
+                context.litter_water_m3[cell],
+            });
+            return error.InvalidSurfaceNitrogenConservationClosure;
+        }
+        // Clamp a negative rounding residue to zero rather than storing it: the
+        // dissolved pool is a physical mass and must not go negative.
+        if (closed_n2_g_n < 0) closed_n2_g_n = 0;
+        context.litter_gas.dissolved_mass_g[n2_index] = closed_n2_g_n;
+    }
+    if (diagnostic_nitrogen_closure_g_n != 0)
+        std.log.debug("surface accepted nitrogen closure: cell={d} closure_g_n={e}", .{ cell, diagnostic_nitrogen_closure_g_n });
+}
+
+fn authoritativeCellNitrogen_g_n(context: ApplyContext, cell: usize) !f64 {
+    var total: f64 = context.denitrification.nitrite_g_n[cell];
+    const water_m3 = context.litter_water_m3[cell];
+    total += water_m3 * context.nitrogen_molar_mass_g_per_mol *
+        (context.litter_chemistry.cells[cell].ammonium_mol_per_m3 +
+            context.litter_chemistry.cells[cell].nitrate_mol_per_m3);
+    const mobile_first = cell * organic.substrate_count;
+    for (context.surface_organic.dissolved[mobile_first..][0..organic.substrate_count]) |pool| total += pool.nitrogen_g_n;
+    for (context.surface_organic.adsorbed[mobile_first..][0..organic.substrate_count]) |pool| total += pool.nitrogen_g_n;
+    const residue_first = cell * organic.substrate_count * organic.residue_fraction_count;
+    for (context.surface_organic.residue[residue_first..][0 .. organic.substrate_count * organic.residue_fraction_count]) |pool| total += pool.nitrogen_g_n;
+    const structural_first = cell * organic.substrate_count * organic.structural_fraction_count;
+    for (context.surface_organic.structural[structural_first..][0 .. organic.substrate_count * organic.structural_fraction_count]) |pool| total += pool.nitrogen_g_n;
+    const microbial_first = cell * organic.microbial_substrate_count * organic.microbial_population_count * organic.kinetic_fraction_count;
+    const microbial_count = organic.microbial_substrate_count * organic.microbial_population_count * organic.kinetic_fraction_count;
+    for (context.surface_organic.microbial[microbial_first..][0..microbial_count]) |pool| total += pool.nitrogen_g_n;
+    inline for ([_]gas.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species| {
+        const index = cell * gas.species_count + @intFromEnum(species);
+        total += context.litter_gas.gaseous_mass_g[index] + context.litter_gas.dissolved_mass_g[index] +
+            context.litter_gas.macropore_dissolved_mass_g[index] + context.litter_gas.band_dissolved_mass_g[index];
+    }
+    const top = try context.model_grid.layerIndex(cell, 0);
+    const top_water_m3 = context.model_grid.matrix_liquid_water_m3[top];
+    const aqueous = context.topsoil_chemistry.aqueous[top];
+    total += top_water_m3 * context.nitrogen_molar_mass_g_per_mol *
+        (aqueous.ammonium_non_band * context.zone_fractions.ammonium_non_band +
+            aqueous.ammonium_band * context.zone_fractions.ammonium_band +
+            aqueous.nitrate_non_band * context.zone_fractions.nitrate_non_band +
+            aqueous.nitrate_band * context.zone_fractions.nitrate_band);
+    const particulate = (top * organic.substrate_count + 3) * organic.structural_fraction_count;
+    total += context.topsoil_organic.structural[particulate].nitrogen_g_n;
+    const humus = (top * organic.substrate_count + 4) * organic.structural_fraction_count;
+    total += context.topsoil_organic.structural[humus].nitrogen_g_n +
+        context.topsoil_organic.structural[humus + 1].nitrogen_g_n;
+    if (!std.math.isFinite(total)) return error.NonFiniteSurfaceNitrogenConservationCensus;
+    return total;
 }
 
 fn finitePool(pool: organic.ElementPool) !void {
@@ -465,7 +543,7 @@ test "surface metabolism commit conserves carbon and nitrogen" {
         .humified = .{ .carbon_g_c = 0.014, .nitrogen_g_n = 0, .phosphorus_g_p = 0 },
         .microbial_residue = .{ .carbon_g_c = 0.056, .nitrogen_g_n = 0, .phosphorus_g_p = 0 },
     };
-    const runtime_config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const runtime_config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid.GridState.init(std.testing.allocator, runtime_config);
     defer model_grid.deinit();
     model_grid.matrix_liquid_water_m3[0] = 1;
@@ -520,7 +598,7 @@ test "insufficient substrate leaves every surface metabolism pool unchanged" {
     defer organic_sorption_state.deinit();
     var litter_colonization_state = try litter_colonization.State.init(std.testing.allocator, 1);
     defer litter_colonization_state.deinit();
-    const runtime_config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const runtime_config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid.GridState.init(std.testing.allocator, runtime_config);
     defer model_grid.deinit();
     model_grid.matrix_liquid_water_m3[0] = 1;

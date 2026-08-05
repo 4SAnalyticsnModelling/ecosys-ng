@@ -7,14 +7,14 @@ pub const NeighborFluxMode = enum {
 
 pub const RunoffWaterHeatFlux = struct {
     water_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const SnowWaterHeatFlux = struct {
     snow_m3_per_step: f64 = 0,
     liquid_water_m3_per_step: f64 = 0,
     ice_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const OrganicFlux = struct {

@@ -67,8 +67,8 @@ pub const CumulativeBoundaryElements = struct {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     flux_by_face: [Face.count][]const BoundaryFlux,
     negligible_water_m3_by_cell: []const f64,
@@ -95,7 +95,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const flux = inputs.flux_by_face[@intFromEnum(face)][cell];
@@ -185,7 +185,7 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var cell_export = state.export_by_cell[cell];
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
@@ -275,12 +275,12 @@ fn commitGroups(
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !usize {
-    if (inputs.grid_column_count == 0 or inputs.grid_row_count == 0)
+    if (inputs.lon_count == 0 or inputs.lat_count == 0)
         return error.InvalidRunoffElementDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidRunoffElementDimensions;
     inline for (inputs.flux_by_face) |values|
         if (values.len != cell_count)
@@ -291,8 +291,8 @@ fn validateDimensions(inputs: Inputs, state: State) !usize {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidRunoffElementBoundaryWindow;
     return cell_count;
 }
@@ -399,8 +399,8 @@ test "REDIST runoff element groups preserve source signs and closure" {
     var exports = [_]CellExport{.{}};
     var state: State = .{ .cumulative = .{}, .export_by_cell = &exports };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -466,8 +466,8 @@ test "west face reverses source group signs and adds to existing state" {
         .export_by_cell = &exports,
     };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -495,8 +495,8 @@ test "runtime boundary window and water threshold gate element accounting" {
     var exports = [_]CellExport{.{}} ** cell_count;
     var state: State = .{ .cumulative = .{}, .export_by_cell = &exports };
     try apply(.{
-        .grid_column_count = 3,
-        .grid_row_count = 2,
+        .lon_count = 3,
+        .lat_count = 2,
         .external_boundary_window = .{
             .first_column = 1,
             .last_column_inclusive = 2,
@@ -525,8 +525,8 @@ test "late invalid runoff element flux leaves state unchanged" {
         .export_by_cell = &exports,
     };
     try std.testing.expectError(error.InvalidRunoffElementInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -552,8 +552,8 @@ test "invalid runoff element dimensions and window fail explicitly" {
     var exports = [_]CellExport{.{}};
     var state: State = .{ .cumulative = .{}, .export_by_cell = &exports };
     try std.testing.expectError(error.InvalidRunoffElementBoundaryWindow, apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 1,
             .last_column_inclusive = 0,

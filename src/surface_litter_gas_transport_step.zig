@@ -91,6 +91,22 @@ pub const State = struct {
             const thickness = if (area > 0) volume / area else 0;
             if (!std.math.isFinite(volume) or volume < 0 or !std.math.isFinite(porosity) or porosity < 0 or !std.math.isFinite(air_volume) or air_volume < 0 or air_volume > volume or !std.math.isFinite(area) or area <= 0 or !std.math.isFinite(litter_water_m3[cell]) or litter_water_m3[cell] < 0 or !std.math.isFinite(litter_ice_m3[cell]) or litter_ice_m3[cell] < 0) return error.InvalidSurfaceLitterGasState;
             gas_state.air_volume_m3[cell] = air_volume;
+            // Freeze-out: ice excludes dissolved gases. When all pore space is
+            // occupied by ice and liquid, air_volume = 0 and the gas-water
+            // exchange rate is zero (litterGasExchange requires air_m3 > 0).
+            // Without this transfer, dissolved mass accumulates in the shrinking
+            // liquid volume, producing physically impossible concentrations.
+            // The atmospheric boundary (atmosphericDiffusiveFluxG, air_volume=0
+            // branch) then immediately expels the degassed mass to atmosphere.
+            if (air_volume <= 0) {
+                const start = cell * gas.species_count;
+                const dissolved = gas_state.dissolved_mass_g[start..][0..gas.species_count];
+                const gaseous = gas_state.gaseous_mass_g[start..][0..gas.species_count];
+                for (dissolved, gaseous) |*d, *g| {
+                    g.* += d.*;
+                    d.* = 0;
+                }
+            }
             self.water_volume_m3[cell] = litter_water_m3[cell];
             const solubility = try gas.surfaceSolubilityWaterToAir(gas_state.temperature_k[cell], solubility_parameters);
             var whole_step_exchange = exchange_parameters;

@@ -91,6 +91,73 @@ pub const SurfaceActivityCoefficients = struct {
     trivalent: f64,
 };
 
+pub const RestrictedSaltActivities = struct {
+    hydrogen_mol_per_m3: f64,
+    hydroxide_mol_per_m3: f64,
+    aluminum_mol_per_m3: f64,
+    iron_mol_per_m3: f64,
+    calcium_mol_per_m3: f64,
+    magnesium_mol_per_m3: f64,
+    sodium_mol_per_m3: f64,
+    potassium_mol_per_m3: f64,
+    sulfate_mol_per_m3: f64,
+    carbon_dioxide_mol_per_m3: f64,
+    bicarbonate_mol_per_m3: f64,
+    carbonate_mol_per_m3: f64,
+    aluminum_hydroxide_2_mol_per_m3: f64,
+    iron_hydroxide_2_mol_per_m3: f64,
+    non_band_hpo4_mol_p_per_m3: f64,
+    non_band_h2po4_mol_p_per_m3: f64,
+    band_hpo4_mol_p_per_m3: f64,
+    band_h2po4_mol_p_per_m3: f64,
+    ammonium_non_band_mol_n_per_m3: f64,
+    ammonium_band_mol_n_per_m3: f64,
+    ammonia_non_band_mol_n_per_m3: f64,
+    ammonia_band_mol_n_per_m3: f64,
+};
+
+/// Direct source-order restricted-network activity map for SOLUTE.F
+/// 2939--2960. Neutral CO2 and NH3 retain concentration values.
+pub fn calculateRestrictedSalt(
+    shared: aqueous_network.State,
+    non_band: phosphate_network.State,
+    band: phosphate_network.State,
+    coefficients: activity_coefficients.Result,
+) !RestrictedSaltActivities {
+    try validate(shared, non_band, band, coefficients);
+    const g1 = coefficients.monovalent_activity_coefficient;
+    const g2 = coefficients.divalent_activity_coefficient;
+    const g3 = coefficients.trivalent_activity_coefficient;
+    const result = RestrictedSaltActivities{
+        .hydrogen_mol_per_m3 = shared.hydrogen * g1,
+        .hydroxide_mol_per_m3 = shared.hydroxide * g1,
+        .aluminum_mol_per_m3 = shared.aluminum * g3,
+        .iron_mol_per_m3 = shared.iron * g3,
+        .calcium_mol_per_m3 = shared.calcium * g2,
+        .magnesium_mol_per_m3 = shared.magnesium * g2,
+        .sodium_mol_per_m3 = shared.sodium * g1,
+        .potassium_mol_per_m3 = shared.potassium * g1,
+        .sulfate_mol_per_m3 = shared.sulfate * g2,
+        .carbon_dioxide_mol_per_m3 = shared.carbon_dioxide,
+        .bicarbonate_mol_per_m3 = shared.bicarbonate * g1,
+        .carbonate_mol_per_m3 = shared.carbonate * g2,
+        .aluminum_hydroxide_2_mol_per_m3 = shared.aluminum_hydroxide_2 * g1,
+        .iron_hydroxide_2_mol_per_m3 = shared.iron_hydroxide_2 * g1,
+        .non_band_hpo4_mol_p_per_m3 = non_band.dissolved_hpo4_mol_p_per_m3 * g2,
+        .non_band_h2po4_mol_p_per_m3 = non_band.dissolved_h2po4_mol_p_per_m3 * g1,
+        .band_hpo4_mol_p_per_m3 = band.dissolved_hpo4_mol_p_per_m3 * g2,
+        .band_h2po4_mol_p_per_m3 = band.dissolved_h2po4_mol_p_per_m3 * g1,
+        .ammonium_non_band_mol_n_per_m3 = shared.ammonium_non_band * g1,
+        .ammonium_band_mol_n_per_m3 = shared.ammonium_band * g1,
+        .ammonia_non_band_mol_n_per_m3 = shared.ammonia_non_band,
+        .ammonia_band_mol_n_per_m3 = shared.ammonia_band,
+    };
+    inline for (@typeInfo(RestrictedSaltActivities).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(result, field.name)))
+            return error.NonFiniteRestrictedSaltActivity;
+    return result;
+}
+
 /// Direct SOLUTE lines 866--922 charge-class mapping. Activity coefficients
 /// are runtime values; neutral complexes retain their concentrations.
 pub fn calculate(
@@ -103,50 +170,92 @@ pub fn calculate(
     const g1 = coefficients.monovalent_activity_coefficient;
     const g2 = coefficients.divalent_activity_coefficient;
     const g3 = coefficients.trivalent_activity_coefficient;
+
+    // SOLUTE.F 866--922: evaluate every activity in source statement order,
+    // then assemble the scientifically grouped public result.
+    const hydrogen = shared.hydrogen * g1;
+    const hydroxide = shared.hydroxide * g1;
+    const aluminum = shared.aluminum * g3;
+    const aluminum_hydroxide_1 = shared.aluminum_hydroxide_1 * g2;
+    const aluminum_hydroxide_2 = shared.aluminum_hydroxide_2 * g1;
+    const aluminum_hydroxide_3 = shared.aluminum_hydroxide_3;
+    const aluminum_hydroxide_4 = shared.aluminum_hydroxide_4 * g1;
+    const iron = shared.iron * g3;
+    const iron_hydroxide_1 = shared.iron_hydroxide_1 * g2;
+    const iron_hydroxide_2 = shared.iron_hydroxide_2 * g1;
+    const iron_hydroxide_3 = shared.iron_hydroxide_3;
+    const iron_hydroxide_4 = shared.iron_hydroxide_4 * g1;
+    const calcium = shared.calcium * g2;
+    const carbonate = shared.carbonate * g2;
+    const bicarbonate = shared.bicarbonate * g1;
+    const carbon_dioxide = shared.carbon_dioxide;
+    const sulfate = shared.sulfate * g2;
+    const non_band_phosphate = phosphateActivities(non_band, g1, g2, g3);
+    const band_phosphate = phosphateActivities(band, g1, g2, g3);
+    const ammonium_non_band = shared.ammonium_non_band * g1;
+    const ammonium_band = shared.ammonium_band * g1;
+    const ammonia_non_band = shared.ammonia_non_band;
+    const ammonia_band = shared.ammonia_band;
+    const magnesium = shared.magnesium * g2;
+    const sodium = shared.sodium * g1;
+    const potassium = shared.potassium * g1;
+    const aluminum_sulfate = shared.aluminum_sulfate * g1;
+    const iron_sulfate = shared.iron_sulfate * g1;
+    const calcium_hydroxide = shared.calcium_hydroxide * g1;
+    const calcium_carbonate = shared.calcium_carbonate;
+    const calcium_sulfate = shared.calcium_sulfate;
+    const calcium_bicarbonate = shared.calcium_bicarbonate * g1;
+    const magnesium_hydroxide = shared.magnesium_hydroxide * g1;
+    const magnesium_carbonate = shared.magnesium_carbonate;
+    const magnesium_bicarbonate = shared.magnesium_bicarbonate * g1;
+    const magnesium_sulfate = shared.magnesium_sulfate;
+    const sodium_carbonate = shared.sodium_carbonate * g1;
+    const sodium_sulfate = shared.sodium_sulfate * g1;
+    const potassium_sulfate = shared.potassium_sulfate * g1;
     const result = Result{
         .free = .{
-            .hydrogen_mol_per_m3 = shared.hydrogen * g1,
-            .hydroxide_mol_per_m3 = shared.hydroxide * g1,
-            .aluminum_mol_per_m3 = shared.aluminum * g3,
-            .iron_mol_per_m3 = shared.iron * g3,
-            .calcium_mol_per_m3 = shared.calcium * g2,
-            .magnesium_mol_per_m3 = shared.magnesium * g2,
-            .sodium_mol_per_m3 = shared.sodium * g1,
-            .potassium_mol_per_m3 = shared.potassium * g1,
-            .sulfate_mol_per_m3 = shared.sulfate * g2,
-            .carbonate_mol_per_m3 = shared.carbonate * g2,
-            .bicarbonate_mol_per_m3 = shared.bicarbonate * g1,
-            .carbon_dioxide_mol_per_m3 = shared.carbon_dioxide,
-            .ammonium_non_band_mol_per_m3 = shared.ammonium_non_band * g1,
-            .ammonium_band_mol_per_m3 = shared.ammonium_band * g1,
-            .ammonia_non_band_mol_per_m3 = shared.ammonia_non_band,
-            .ammonia_band_mol_per_m3 = shared.ammonia_band,
+            .hydrogen_mol_per_m3 = hydrogen,
+            .hydroxide_mol_per_m3 = hydroxide,
+            .aluminum_mol_per_m3 = aluminum,
+            .iron_mol_per_m3 = iron,
+            .calcium_mol_per_m3 = calcium,
+            .magnesium_mol_per_m3 = magnesium,
+            .sodium_mol_per_m3 = sodium,
+            .potassium_mol_per_m3 = potassium,
+            .sulfate_mol_per_m3 = sulfate,
+            .carbonate_mol_per_m3 = carbonate,
+            .bicarbonate_mol_per_m3 = bicarbonate,
+            .carbon_dioxide_mol_per_m3 = carbon_dioxide,
+            .ammonium_non_band_mol_per_m3 = ammonium_non_band,
+            .ammonium_band_mol_per_m3 = ammonium_band,
+            .ammonia_non_band_mol_per_m3 = ammonia_non_band,
+            .ammonia_band_mol_per_m3 = ammonia_band,
         },
         .metal_complexes = .{
-            .aluminum_hydroxide_1_mol_per_m3 = shared.aluminum_hydroxide_1 * g2,
-            .aluminum_hydroxide_2_mol_per_m3 = shared.aluminum_hydroxide_2 * g1,
-            .aluminum_hydroxide_3_mol_per_m3 = shared.aluminum_hydroxide_3,
-            .aluminum_hydroxide_4_mol_per_m3 = shared.aluminum_hydroxide_4 * g1,
-            .aluminum_sulfate_mol_per_m3 = shared.aluminum_sulfate * g1,
-            .iron_hydroxide_1_mol_per_m3 = shared.iron_hydroxide_1 * g2,
-            .iron_hydroxide_2_mol_per_m3 = shared.iron_hydroxide_2 * g1,
-            .iron_hydroxide_3_mol_per_m3 = shared.iron_hydroxide_3,
-            .iron_hydroxide_4_mol_per_m3 = shared.iron_hydroxide_4 * g1,
-            .iron_sulfate_mol_per_m3 = shared.iron_sulfate * g1,
-            .calcium_hydroxide_mol_per_m3 = shared.calcium_hydroxide * g1,
-            .calcium_carbonate_mol_per_m3 = shared.calcium_carbonate,
-            .calcium_bicarbonate_mol_per_m3 = shared.calcium_bicarbonate * g1,
-            .calcium_sulfate_mol_per_m3 = shared.calcium_sulfate,
-            .magnesium_hydroxide_mol_per_m3 = shared.magnesium_hydroxide * g1,
-            .magnesium_carbonate_mol_per_m3 = shared.magnesium_carbonate,
-            .magnesium_bicarbonate_mol_per_m3 = shared.magnesium_bicarbonate * g1,
-            .magnesium_sulfate_mol_per_m3 = shared.magnesium_sulfate,
-            .sodium_carbonate_mol_per_m3 = shared.sodium_carbonate * g1,
-            .sodium_sulfate_mol_per_m3 = shared.sodium_sulfate * g1,
-            .potassium_sulfate_mol_per_m3 = shared.potassium_sulfate * g1,
+            .aluminum_hydroxide_1_mol_per_m3 = aluminum_hydroxide_1,
+            .aluminum_hydroxide_2_mol_per_m3 = aluminum_hydroxide_2,
+            .aluminum_hydroxide_3_mol_per_m3 = aluminum_hydroxide_3,
+            .aluminum_hydroxide_4_mol_per_m3 = aluminum_hydroxide_4,
+            .aluminum_sulfate_mol_per_m3 = aluminum_sulfate,
+            .iron_hydroxide_1_mol_per_m3 = iron_hydroxide_1,
+            .iron_hydroxide_2_mol_per_m3 = iron_hydroxide_2,
+            .iron_hydroxide_3_mol_per_m3 = iron_hydroxide_3,
+            .iron_hydroxide_4_mol_per_m3 = iron_hydroxide_4,
+            .iron_sulfate_mol_per_m3 = iron_sulfate,
+            .calcium_hydroxide_mol_per_m3 = calcium_hydroxide,
+            .calcium_carbonate_mol_per_m3 = calcium_carbonate,
+            .calcium_bicarbonate_mol_per_m3 = calcium_bicarbonate,
+            .calcium_sulfate_mol_per_m3 = calcium_sulfate,
+            .magnesium_hydroxide_mol_per_m3 = magnesium_hydroxide,
+            .magnesium_carbonate_mol_per_m3 = magnesium_carbonate,
+            .magnesium_bicarbonate_mol_per_m3 = magnesium_bicarbonate,
+            .magnesium_sulfate_mol_per_m3 = magnesium_sulfate,
+            .sodium_carbonate_mol_per_m3 = sodium_carbonate,
+            .sodium_sulfate_mol_per_m3 = sodium_sulfate,
+            .potassium_sulfate_mol_per_m3 = potassium_sulfate,
         },
-        .non_band_phosphate = phosphateActivities(non_band, g1, g2, g3),
-        .band_phosphate = phosphateActivities(band, g1, g2, g3),
+        .non_band_phosphate = non_band_phosphate,
+        .band_phosphate = band_phosphate,
     };
     inline for (@typeInfo(FreeActivities).@"struct".fields) |field|
         if (!std.math.isFinite(@field(result.free, field.name)))
@@ -485,4 +594,30 @@ test "surface activities reject invalid input and overflow" {
             .{ .monovalent = 1, .divalent = 1, .trivalent = 2 },
         ),
     );
+}
+
+test "restricted salt activities preserve source charge classes and neutrals" {
+    const shared = filled(aqueous_network.State, 8);
+    const non_band = filled(phosphate_network.State, 8);
+    const band = filled(phosphate_network.State, 8);
+    const result = try calculateRestrictedSalt(
+        shared,
+        non_band,
+        band,
+        .{
+            .ionic_strength_mol_per_l = 0,
+            .monovalent_activity_coefficient = 0.5,
+            .divalent_activity_coefficient = 0.25,
+            .trivalent_activity_coefficient = 0.125,
+            .total_ion_activity_mol_per_m3 = 0,
+            .electrical_conductivity_dS_per_m = 0,
+        },
+    );
+    try std.testing.expectEqual(@as(f64, 1), result.aluminum_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 2), result.calcium_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 4), result.sodium_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 2), result.non_band_hpo4_mol_p_per_m3);
+    try std.testing.expectEqual(@as(f64, 4), result.band_h2po4_mol_p_per_m3);
+    try std.testing.expectEqual(@as(f64, 8), result.carbon_dioxide_mol_per_m3);
+    try std.testing.expectEqual(@as(f64, 8), result.ammonia_band_mol_n_per_m3);
 }

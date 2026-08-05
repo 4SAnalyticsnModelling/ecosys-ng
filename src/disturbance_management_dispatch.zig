@@ -97,10 +97,10 @@ pub fn applyEvent(context: *ApplyContext, cell: usize, event: disturbance.Event)
         .tillage => |value| value,
         .fire => |fire| {
             if (cell >= context.surface_energy.cell_count or cell >= context.fire_active_this_hour.len) return error.DisturbanceCellOutOfBounds;
-            const energy_mj_per_m2 = 3.6 * fire.energy_kw_per_m2;
-            const next = context.surface_energy.fire_ignition_mj_per_m2[cell] + energy_mj_per_m2;
+            const energy_megajoules_per_m2 = 3.6 * fire.energy_kw_per_m2;
+            const next = context.surface_energy.fire_ignition_megajoules_per_m2[cell] + energy_megajoules_per_m2;
             if (!std.math.isFinite(next)) return error.NonFiniteFireIgnitionEnergy;
-            context.surface_energy.fire_ignition_mj_per_m2[cell] = next;
+            context.surface_energy.fire_ignition_megajoules_per_m2[cell] = next;
             context.fire_active_this_hour[cell] = true;
             return;
         },
@@ -657,7 +657,7 @@ test "disturbance dispatch date preserves DAY modulo-four chronology" {
 test "GROSUB fire combustion conserves runtime species nodule C N P" {
     const SimulationConfig = @import("config.zig").SimulationConfig;
     const cfg = try SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 7 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 7 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 10 },
     );

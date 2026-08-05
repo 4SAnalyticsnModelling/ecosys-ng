@@ -42,21 +42,21 @@ pub const Diagnostics = struct {
 };
 
 pub const Inputs = struct {
-    incoming_shortwave_radiation_mj_per_m2_h: f64,
+    incoming_shortwave_radiation_megajoules_per_m2_h: f64,
     air_temperature_c: f64,
     atmospheric_vapor_pressure_kpa: f64,
     wind_travel_m_per_h: f64,
     rainfall_m3: f64,
     irrigation_m3: f64,
     local_surface_area_m2: f64,
-    ground_surface_net_radiation_mj: f64,
-    ground_surface_latent_heat_mj: f64,
-    ground_surface_sensible_heat_mj: f64,
-    ground_surface_storage_heat_mj: f64,
-    ecosystem_net_radiation_mj: f64,
-    ecosystem_latent_heat_mj: f64,
-    ecosystem_sensible_heat_mj: f64,
-    ecosystem_storage_heat_mj: f64,
+    ground_surface_net_radiation_megajoules: f64,
+    ground_surface_latent_heat_megajoules: f64,
+    ground_surface_sensible_heat_megajoules: f64,
+    ground_surface_storage_heat_megajoules: f64,
+    ecosystem_net_radiation_megajoules: f64,
+    ecosystem_latent_heat_megajoules: f64,
+    ecosystem_sensible_heat_megajoules: f64,
+    ecosystem_storage_heat_megajoules: f64,
     soil_temperature_c_by_layer: []const f64,
     surface_soil_temperature_c: f64,
     surface_water_temperature_c: f64,
@@ -69,25 +69,25 @@ pub const Inputs = struct {
 pub fn calculateInto(inputs: Inputs, output: []f64) !void {
     if (output.len != 17 + inputs.soil_temperature_c_by_layer.len) return error.SoilHeatOutputValueDimensionMismatch;
     if (!std.math.isFinite(inputs.local_surface_area_m2) or inputs.local_surface_area_m2 <= 0 or !std.math.isFinite(inputs.litter_absolute_temperature_k) or inputs.litter_absolute_temperature_k <= 0) return error.InvalidSoilHeatOutputGeometry;
-    inline for (.{ inputs.incoming_shortwave_radiation_mj_per_m2_h, inputs.air_temperature_c, inputs.atmospheric_vapor_pressure_kpa, inputs.wind_travel_m_per_h, inputs.rainfall_m3, inputs.irrigation_m3, inputs.ground_surface_net_radiation_mj, inputs.ground_surface_latent_heat_mj, inputs.ground_surface_sensible_heat_mj, inputs.ground_surface_storage_heat_mj, inputs.ecosystem_net_radiation_mj, inputs.ecosystem_latent_heat_mj, inputs.ecosystem_sensible_heat_mj, inputs.ecosystem_storage_heat_mj, inputs.surface_soil_temperature_c, inputs.surface_water_temperature_c, inputs.litter_temperature_c, inputs.litter_water_vapor_partial_pressure_kpa }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilHeatOutputInput;
+    inline for (.{ inputs.incoming_shortwave_radiation_megajoules_per_m2_h, inputs.air_temperature_c, inputs.atmospheric_vapor_pressure_kpa, inputs.wind_travel_m_per_h, inputs.rainfall_m3, inputs.irrigation_m3, inputs.ground_surface_net_radiation_megajoules, inputs.ground_surface_latent_heat_megajoules, inputs.ground_surface_sensible_heat_megajoules, inputs.ground_surface_storage_heat_megajoules, inputs.ecosystem_net_radiation_megajoules, inputs.ecosystem_latent_heat_megajoules, inputs.ecosystem_sensible_heat_megajoules, inputs.ecosystem_storage_heat_megajoules, inputs.surface_soil_temperature_c, inputs.surface_water_temperature_c, inputs.litter_temperature_c, inputs.litter_water_vapor_partial_pressure_kpa }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilHeatOutputInput;
     for (inputs.soil_temperature_c_by_layer) |temperature_c| if (!std.math.isFinite(temperature_c)) return error.NonFiniteSoilHeatOutputInput;
 
-    const watts_per_mj_per_h = 277.8;
+    const watts_per_megajoule_per_h = 277.8;
     const area = inputs.local_surface_area_m2;
     output[0..13].* = .{
-        inputs.incoming_shortwave_radiation_mj_per_m2_h * watts_per_mj_per_h,
+        inputs.incoming_shortwave_radiation_megajoules_per_m2_h * watts_per_megajoule_per_h,
         inputs.air_temperature_c,
         inputs.atmospheric_vapor_pressure_kpa,
         inputs.wind_travel_m_per_h / 3600.0,
         (inputs.rainfall_m3 + inputs.irrigation_m3) * 1000.0 / area,
-        inputs.ground_surface_net_radiation_mj * watts_per_mj_per_h / area,
-        inputs.ground_surface_latent_heat_mj * watts_per_mj_per_h / area,
-        inputs.ground_surface_sensible_heat_mj * watts_per_mj_per_h / area,
-        inputs.ground_surface_storage_heat_mj * watts_per_mj_per_h / area,
-        inputs.ecosystem_net_radiation_mj * watts_per_mj_per_h / area,
-        inputs.ecosystem_latent_heat_mj * watts_per_mj_per_h / area,
-        inputs.ecosystem_sensible_heat_mj * watts_per_mj_per_h / area,
-        inputs.ecosystem_storage_heat_mj * watts_per_mj_per_h / area,
+        inputs.ground_surface_net_radiation_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ground_surface_latent_heat_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ground_surface_sensible_heat_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ground_surface_storage_heat_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ecosystem_net_radiation_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ecosystem_latent_heat_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ecosystem_sensible_heat_megajoules * watts_per_megajoule_per_h / area,
+        inputs.ecosystem_storage_heat_megajoules * watts_per_megajoule_per_h / area,
     };
     for (output[13..][0..inputs.soil_temperature_c_by_layer.len], inputs.soil_temperature_c_by_layer) |*destination, source| destination.* = source;
     const index = 13 + inputs.soil_temperature_c_by_layer.len;
@@ -102,29 +102,29 @@ pub fn calculateInto(inputs: Inputs, output: []f64) !void {
 
 pub fn calculate(allocator: std.mem.Allocator, inputs: Inputs) !Diagnostics {
     if (!std.math.isFinite(inputs.local_surface_area_m2) or inputs.local_surface_area_m2 <= 0 or !std.math.isFinite(inputs.litter_absolute_temperature_k) or inputs.litter_absolute_temperature_k <= 0) return error.InvalidSoilHeatOutputGeometry;
-    inline for (.{ inputs.incoming_shortwave_radiation_mj_per_m2_h, inputs.air_temperature_c, inputs.atmospheric_vapor_pressure_kpa, inputs.wind_travel_m_per_h, inputs.rainfall_m3, inputs.irrigation_m3, inputs.ground_surface_net_radiation_mj, inputs.ground_surface_latent_heat_mj, inputs.ground_surface_sensible_heat_mj, inputs.ground_surface_storage_heat_mj, inputs.ecosystem_net_radiation_mj, inputs.ecosystem_latent_heat_mj, inputs.ecosystem_sensible_heat_mj, inputs.ecosystem_storage_heat_mj, inputs.surface_soil_temperature_c, inputs.surface_water_temperature_c, inputs.litter_temperature_c, inputs.litter_water_vapor_partial_pressure_kpa }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilHeatOutputInput;
+    inline for (.{ inputs.incoming_shortwave_radiation_megajoules_per_m2_h, inputs.air_temperature_c, inputs.atmospheric_vapor_pressure_kpa, inputs.wind_travel_m_per_h, inputs.rainfall_m3, inputs.irrigation_m3, inputs.ground_surface_net_radiation_megajoules, inputs.ground_surface_latent_heat_megajoules, inputs.ground_surface_sensible_heat_megajoules, inputs.ground_surface_storage_heat_megajoules, inputs.ecosystem_net_radiation_megajoules, inputs.ecosystem_latent_heat_megajoules, inputs.ecosystem_sensible_heat_megajoules, inputs.ecosystem_storage_heat_megajoules, inputs.surface_soil_temperature_c, inputs.surface_water_temperature_c, inputs.litter_temperature_c, inputs.litter_water_vapor_partial_pressure_kpa }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilHeatOutputInput;
     const temperatures = try allocator.dupe(f64, inputs.soil_temperature_c_by_layer);
     errdefer allocator.free(temperatures);
     for (temperatures) |temperature_c| if (!std.math.isFinite(temperature_c)) return error.NonFiniteSoilHeatOutputInput;
 
     // OUTSH uses 277.8 = 1e6 J MJ-1 / 3600 s h-1.
-    const watts_per_mj_per_h = 277.8;
+    const watts_per_megajoule_per_h = 277.8;
     const area = inputs.local_surface_area_m2;
     return .{
         .allocator = allocator,
-        .incoming_shortwave_radiation_w_per_m2 = inputs.incoming_shortwave_radiation_mj_per_m2_h * watts_per_mj_per_h,
+        .incoming_shortwave_radiation_w_per_m2 = inputs.incoming_shortwave_radiation_megajoules_per_m2_h * watts_per_megajoule_per_h,
         .air_temperature_c = inputs.air_temperature_c,
         .atmospheric_vapor_pressure_kpa = inputs.atmospheric_vapor_pressure_kpa,
         .wind_speed_m_per_s = inputs.wind_travel_m_per_h / 3600.0,
         .rain_and_irrigation_mm = (inputs.rainfall_m3 + inputs.irrigation_m3) * 1000.0 / area,
-        .ground_surface_net_radiation_w_per_m2 = inputs.ground_surface_net_radiation_mj * watts_per_mj_per_h / area,
-        .ground_surface_latent_heat_flux_w_per_m2 = inputs.ground_surface_latent_heat_mj * watts_per_mj_per_h / area,
-        .ground_surface_sensible_heat_flux_w_per_m2 = inputs.ground_surface_sensible_heat_mj * watts_per_mj_per_h / area,
-        .ground_surface_storage_heat_flux_w_per_m2 = inputs.ground_surface_storage_heat_mj * watts_per_mj_per_h / area,
-        .ecosystem_net_radiation_w_per_m2 = inputs.ecosystem_net_radiation_mj * watts_per_mj_per_h / area,
-        .ecosystem_latent_heat_flux_w_per_m2 = inputs.ecosystem_latent_heat_mj * watts_per_mj_per_h / area,
-        .ecosystem_sensible_heat_flux_w_per_m2 = inputs.ecosystem_sensible_heat_mj * watts_per_mj_per_h / area,
-        .ecosystem_storage_heat_flux_w_per_m2 = inputs.ecosystem_storage_heat_mj * watts_per_mj_per_h / area,
+        .ground_surface_net_radiation_w_per_m2 = inputs.ground_surface_net_radiation_megajoules * watts_per_megajoule_per_h / area,
+        .ground_surface_latent_heat_flux_w_per_m2 = inputs.ground_surface_latent_heat_megajoules * watts_per_megajoule_per_h / area,
+        .ground_surface_sensible_heat_flux_w_per_m2 = inputs.ground_surface_sensible_heat_megajoules * watts_per_megajoule_per_h / area,
+        .ground_surface_storage_heat_flux_w_per_m2 = inputs.ground_surface_storage_heat_megajoules * watts_per_megajoule_per_h / area,
+        .ecosystem_net_radiation_w_per_m2 = inputs.ecosystem_net_radiation_megajoules * watts_per_megajoule_per_h / area,
+        .ecosystem_latent_heat_flux_w_per_m2 = inputs.ecosystem_latent_heat_megajoules * watts_per_megajoule_per_h / area,
+        .ecosystem_sensible_heat_flux_w_per_m2 = inputs.ecosystem_sensible_heat_megajoules * watts_per_megajoule_per_h / area,
+        .ecosystem_storage_heat_flux_w_per_m2 = inputs.ecosystem_storage_heat_megajoules * watts_per_megajoule_per_h / area,
         .soil_temperature_c_by_layer = temperatures,
         .surface_soil_temperature_c = inputs.surface_soil_temperature_c,
         .surface_water_temperature_c = inputs.surface_water_temperature_c,
@@ -136,21 +136,21 @@ pub fn calculate(allocator: std.mem.Allocator, inputs: Inputs) !Diagnostics {
 test "allocation-free soil-heat projection matches owned diagnostics" {
     const temperatures = [_]f64{ 2, 4, 6 };
     const inputs: Inputs = .{
-        .incoming_shortwave_radiation_mj_per_m2_h = 2,
+        .incoming_shortwave_radiation_megajoules_per_m2_h = 2,
         .air_temperature_c = 12,
         .atmospheric_vapor_pressure_kpa = 1.1,
         .wind_travel_m_per_h = 7200,
         .rainfall_m3 = 0.1,
         .irrigation_m3 = 0.2,
         .local_surface_area_m2 = 100,
-        .ground_surface_net_radiation_mj = 1,
-        .ground_surface_latent_heat_mj = 2,
-        .ground_surface_sensible_heat_mj = 3,
-        .ground_surface_storage_heat_mj = 4,
-        .ecosystem_net_radiation_mj = 5,
-        .ecosystem_latent_heat_mj = 6,
-        .ecosystem_sensible_heat_mj = 7,
-        .ecosystem_storage_heat_mj = 8,
+        .ground_surface_net_radiation_megajoules = 1,
+        .ground_surface_latent_heat_megajoules = 2,
+        .ground_surface_sensible_heat_megajoules = 3,
+        .ground_surface_storage_heat_megajoules = 4,
+        .ecosystem_net_radiation_megajoules = 5,
+        .ecosystem_latent_heat_megajoules = 6,
+        .ecosystem_sensible_heat_megajoules = 7,
+        .ecosystem_storage_heat_megajoules = 8,
         .soil_temperature_c_by_layer = &temperatures,
         .surface_soil_temperature_c = 3,
         .surface_water_temperature_c = 4,
@@ -170,21 +170,21 @@ test "allocation-free soil-heat projection matches owned diagnostics" {
 test "OUTSH hourly soil-heat equations preserve conversions and runtime layers" {
     const temperatures = [_]f64{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 };
     var output = try calculate(std.testing.allocator, .{
-        .incoming_shortwave_radiation_mj_per_m2_h = 2,
+        .incoming_shortwave_radiation_megajoules_per_m2_h = 2,
         .air_temperature_c = 12,
         .atmospheric_vapor_pressure_kpa = 1.1,
         .wind_travel_m_per_h = 7200,
         .rainfall_m3 = 0.1,
         .irrigation_m3 = 0.2,
         .local_surface_area_m2 = 100,
-        .ground_surface_net_radiation_mj = 1,
-        .ground_surface_latent_heat_mj = 2,
-        .ground_surface_sensible_heat_mj = 3,
-        .ground_surface_storage_heat_mj = 4,
-        .ecosystem_net_radiation_mj = 5,
-        .ecosystem_latent_heat_mj = 6,
-        .ecosystem_sensible_heat_mj = 7,
-        .ecosystem_storage_heat_mj = 8,
+        .ground_surface_net_radiation_megajoules = 1,
+        .ground_surface_latent_heat_megajoules = 2,
+        .ground_surface_sensible_heat_megajoules = 3,
+        .ground_surface_storage_heat_megajoules = 4,
+        .ecosystem_net_radiation_megajoules = 5,
+        .ecosystem_latent_heat_megajoules = 6,
+        .ecosystem_sensible_heat_megajoules = 7,
+        .ecosystem_storage_heat_megajoules = 8,
         .soil_temperature_c_by_layer = &temperatures,
         .surface_soil_temperature_c = 3,
         .surface_water_temperature_c = 4,

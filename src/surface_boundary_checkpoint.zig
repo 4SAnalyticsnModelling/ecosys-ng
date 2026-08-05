@@ -138,7 +138,7 @@ pub fn validateView(view: View) !void {
     for (0..cells) |cell| {
         if (view.ground_air.temperature_k[cell] <= 0 or
             view.ground_air.vapor_volume_fraction[cell] < 0 or
-            view.ground_air.heat_capacity_mj_per_k[cell] <= 0 or
+            view.ground_air.heat_capacity_megajoules_per_k[cell] <= 0 or
             view.ground_air.air_volume_m3[cell] <= 0 or
             view.surface_aerodynamics.zero_plane_displacement_m[cell] < 0 or
             view.surface_aerodynamics.effective_roughness_height_m[cell] <= 0 or
@@ -166,7 +166,7 @@ fn groundAirConstFields(state: *const GroundAir) [ground_air_field_count][]const
     return .{
         state.temperature_k,
         state.vapor_volume_fraction,
-        state.heat_capacity_mj_per_k,
+        state.heat_capacity_megajoules_per_k,
         state.air_volume_m3,
     };
 }
@@ -175,7 +175,7 @@ fn groundAirFields(state: *GroundAir) [ground_air_field_count][]f64 {
     return .{
         state.temperature_k,
         state.vapor_volume_fraction,
-        state.heat_capacity_mj_per_k,
+        state.heat_capacity_megajoules_per_k,
         state.air_volume_m3,
     };
 }

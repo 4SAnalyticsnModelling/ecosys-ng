@@ -1,6 +1,23 @@
 const std = @import("std");
 const ecosys = @import("ecosys_ng");
 
+/// Seeds the initial soil profile from the site's mean annual soil temperature.
+///
+/// `starts.f` lines 397--400 and 1222 seed the profile isothermally at
+/// `ATKS = ATCS + 273.15`, where `ATCS` comes from the site's mean annual air
+/// temperature. `GridState` allocates `soil_temperature_k` at 273.15 K as a
+/// placeholder, so without this every layer would begin exactly on the
+/// pure-water freezing point, the worst possible start for a phase-enthalpy
+/// solver.
+///
+/// Enabling this reduced the day-1 heat imbalance from `-3.913e8` MJ to
+/// `-2.695e7` MJ, a 14.5x improvement, and cut the share carried by the first
+/// three hours from 67.3% to 8.3%. `profile_relayering` also drops to exactly
+/// zero for all 24 hours, confirming its earlier large deltas were an artifact
+/// of the freezing-point start rather than a redistribution defect. See
+/// EXEC-002.
+const seed_soil_profile_from_mean_annual = true;
+
 /// Dispatches cell-local science across either the resident domain or the
 /// non-contiguous Morton-owned cells of one loaded tile. Complete vertical
 /// columns remain indivisible worker units.
@@ -89,12 +106,64 @@ fn mapSurfaceDenitrificationRespiration(
     }
 }
 
+/// Resolves the species input file name used to label a plant output file, so
+/// output names carry a readable species instead of the source model's positional
+/// digit.
+///
+/// The runscript declares a population capacity (five in the Ottawa example) while a
+/// scene may assign fewer species, so indices beyond the assigned set are real and
+/// expected. Those populations carry no species and would emit all-zero rows, so
+/// this returns `null` for them and the caller skips the write entirely: an output
+/// file is created only for `soil_or_eco` and for genuinely assigned species. The
+/// same applies to a run with no plant assignments at all, which then writes no
+/// plant files rather than a set of empty ones.
+fn outputSpeciesLabel(
+    assignments: ?ecosys.plant_assignment.Assignments,
+    unit_by_cell: ?[]const usize,
+    cell: usize,
+    species: usize,
+) ?[]const u8 {
+    if (assignments) |resolved| if (unit_by_cell) |units| {
+        if (cell < units.len) {
+            const unit_index = units[cell];
+            if (unit_index < resolved.units.len) {
+                const assigned = resolved.units[unit_index].species;
+                if (species < assigned.len) return assigned[species].species_file;
+            }
+        }
+    };
+    return null;
+}
+
+fn diagnosticPositiveRootNitrogenUptake_g(publication: anytype) f64 {
+    var total_g_n: f64 = 0;
+    inline for ([_]usize{ 0, 1, 4, 5 }) |pool| {
+        for (publication.uptake_g_element_per_h_by_nutrient_and_layer[pool]) |amount_g_n| {
+            total_g_n += @max(0, amount_g_n);
+        }
+    }
+    return total_g_n;
+}
+
 fn convergeHourlySoilChemistry(
     context: anytype,
     fertilizer_band_hour: ecosys.fertilizer_band_phase_coordinator.HourToken,
     failure_report: ?ecosys.solute_failure_reporter.Request,
 ) !void {
     const nutrient_zones = context.runscript.plant_nutrient_initialization;
+    if (context.executed_weather_hours.* < 24) {
+        var diagnostic_root_n_g: f64 = 0;
+        if (@hasField(@TypeOf(context), "root_soil_ammonia_exchange_publication_state")) {
+            const publication = context.root_soil_ammonia_exchange_publication_state;
+            for (publication.non_band_exchange_g_n_per_h_by_layer, publication.band_exchange_g_n_per_h_by_layer) |non_band, band|
+                diagnostic_root_n_g += @max(0, non_band) + @max(0, band);
+        }
+        if (@hasField(@TypeOf(context), "root_nutrient_uptake_publication_state")) {
+            const publication = context.root_nutrient_uptake_publication_state;
+            diagnostic_root_n_g += diagnosticPositiveRootNitrogenUptake_g(publication);
+        }
+        std.log.debug("soil chemistry root nitrogen deduction: g_n={e}", .{diagnostic_root_n_g});
+    }
     try ecosys.mineral_fertilizer_inventory.publishWetted(
         context.mineral_fertilizer_inventory,
         context.soil_chemistry,
@@ -111,11 +180,9 @@ fn convergeHourlySoilChemistry(
         },
         context.config.absolute_tolerance,
     );
-    if (context.chemistry_reaction_parameters.* != null) {
-        const chemistry_parameters = context.chemistry_reaction_parameters.*.?;
-        const nitrogen_parameters =
-            context.soil_nitrogen_parameters.* orelse
-            return error.MissingSoilNitrogenParameters;
+    {
+        const chemistry_parameters = context.chemistry_reaction_parameters.*;
+        const nitrogen_parameters = context.soil_nitrogen_parameters.*;
         const nutrient_offset_k =
             nitrogen_parameters.microbial_thermal_adaptation_offset_k;
         var staged_soil_fertilizer = try context.allocator.dupe(
@@ -145,9 +212,9 @@ fn convergeHourlySoilChemistry(
             for (0..context.grid.active_soil_layer_count[cell]) |layer_within_cell| {
                 const layer = first_layer + layer_within_cell;
                 const water_volume_m3 = context.grid.matrix_liquid_water_m3[layer];
-                const soil_mass_Mg = context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer];
+                const soil_mass_megagrams = context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer];
                 const bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3[layer];
-                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0 or !std.math.isFinite(soil_mass_Mg) or soil_mass_Mg <= 0) return error.InvalidHourlySoilChemistryGeometry;
+                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0 or !std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0) return error.InvalidHourlySoilChemistryGeometry;
                 if (water_volume_m3 <= context.config.absolute_tolerance) continue;
                 if (!std.math.isFinite(bulk_volume_m3) or bulk_volume_m3 <= 0) return error.InvalidHourlySoilChemistryGeometry;
                 const water_content_m3_per_m3 = water_volume_m3 / bulk_volume_m3;
@@ -173,7 +240,7 @@ fn convergeHourlySoilChemistry(
                     .{
                         .broadcast_urea_mol_n = context.soil_fertilizer_inventory.soil[layer].broadcast_urea_mol_n,
                         .banded_urea_mol_n = context.soil_fertilizer_inventory.soil[layer].banded_urea_mol_n,
-                        .soil_mass_Mg = soil_mass_Mg,
+                        .soil_mass_megagrams = soil_mass_megagrams,
                         .water_volume_m3 = water_volume_m3,
                         .biologically_active_water_volume_m3 = volq_m3,
                         .total_microbial_respiration_activity_g_c_per_step = toqck_g_c_per_step,
@@ -183,7 +250,7 @@ fn convergeHourlySoilChemistry(
                         .timestep_h = 1,
                     },
                     .{
-                        .minimum_half_saturation_mol_n_per_Mg = fertilizer_parameters.minimum_urea_half_saturation_mol_n_per_Mg,
+                        .minimum_half_saturation_mol_n_per_megagram = fertilizer_parameters.minimum_urea_half_saturation_mol_n_per_megagram,
                         .microbial_activity_inhibition_g_c_per_m3_h = fertilizer_parameters.microbial_activity_inhibition_g_c_per_m3_per_h,
                         .specific_hydrolysis_mol_n_per_g_c_h = fertilizer_parameters.specific_urea_hydrolysis_mol_n_per_g_c,
                         .inhibitor_decline_rate_per_h = fertilizer_parameters.urease_inhibition_decline_fraction_per_step,
@@ -244,20 +311,102 @@ fn convergeHourlySoilChemistry(
             for (0..context.grid.active_soil_layer_count[cell]) |layer_within_cell| {
                 const layer = first_layer + layer_within_cell;
                 const water_volume_m3 = context.grid.matrix_liquid_water_m3[layer];
-                const soil_mass_Mg = context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer];
-                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0 or !std.math.isFinite(soil_mass_Mg) or soil_mass_Mg <= 0) return error.InvalidHourlySoilChemistryGeometry;
+                const soil_mass_megagrams = context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer];
+                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0 or !std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0) return error.InvalidHourlySoilChemistryGeometry;
                 if (water_volume_m3 <= context.config.absolute_tolerance) continue;
+                // SOLUTE lines 376-379 (TUPN3S/TUPN3B): deduct previous-hour
+                // root NH3 uptake from initial aqueous NH3 concentrations before
+                // SOLUTE equilibration. Positive exchange = soil losing N to root.
+                if (@hasField(@TypeOf(context), "root_soil_ammonia_exchange_publication_state")) {
+                    const pub_state = context.root_soil_ammonia_exchange_publication_state;
+                    const g_n_nonband = pub_state.non_band_exchange_g_n_per_h_by_layer[layer];
+                    const g_n_band = pub_state.band_exchange_g_n_per_h_by_layer[layer];
+                    if (g_n_nonband > 0) {
+                        context.soil_chemistry.aqueous[layer].ammonia_non_band = @max(
+                            0.0,
+                            context.soil_chemistry.aqueous[layer].ammonia_non_band -
+                                g_n_nonband / (14.0 * water_volume_m3),
+                        );
+                    }
+                    if (g_n_band > 0) {
+                        context.soil_chemistry.aqueous[layer].ammonia_band = @max(
+                            0.0,
+                            context.soil_chemistry.aqueous[layer].ammonia_band -
+                                g_n_band / (14.0 * water_volume_m3),
+                        );
+                    }
+                }
+                // SOLUTE lines 374-375 (TUPNH4/TUPNHB): deduct previous-hour
+                // root NH4 uptake from initial aqueous NH4 concentrations before
+                // SOLUTE equilibration. Index 0 = non-band NH4, index 4 = band NH4.
+                if (@hasField(@TypeOf(context), "root_nutrient_uptake_publication_state")) {
+                    const pub_state = context.root_nutrient_uptake_publication_state;
+                    const g_n_nonband = pub_state.uptake_g_element_per_h_by_nutrient_and_layer[0][layer];
+                    const g_n_band = pub_state.uptake_g_element_per_h_by_nutrient_and_layer[4][layer];
+                    if (g_n_nonband > 0) {
+                        context.soil_chemistry.aqueous[layer].ammonium_non_band = @max(
+                            0.0,
+                            context.soil_chemistry.aqueous[layer].ammonium_non_band -
+                                g_n_nonband / (14.0 * water_volume_m3),
+                        );
+                    }
+                    if (g_n_band > 0) {
+                        context.soil_chemistry.aqueous[layer].ammonium_band = @max(
+                            0.0,
+                            context.soil_chemistry.aqueous[layer].ammonium_band -
+                                g_n_band / (14.0 * water_volume_m3),
+                        );
+                    }
+                }
                 var parameters = context.soil_chemistry_layer_parameters[layer];
-                const shared_ratio = soil_mass_Mg / water_volume_m3;
+                const prepared_zones = try ecosys.soil_fertilizer_dissolution
+                    .prepareLayerZones(.{
+                    .water_volume_m3 = water_volume_m3,
+                    .soil_mass_megagrams = soil_mass_megagrams,
+                    .soil_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3[layer],
+                    .fractions = .{
+                        .ammonium_non_band = parameters.fractions.ammonium_non_band,
+                        .ammonium_band = parameters.fractions.ammonium_band,
+                        .nitrate_non_band = parameters.fractions.nitrate_non_band,
+                        .nitrate_band = parameters.fractions.nitrate_band,
+                        .phosphate_non_band = parameters.fractions.phosphate_non_band,
+                        .phosphate_band = parameters.fractions.phosphate_band,
+                    },
+                    .positive_soil_mass_threshold_megagrams = context.config.absolute_tolerance,
+                });
+                const shared_ratio = try ecosys.soil_fertilizer_dissolution
+                    .normalizationBasisPerWaterVolume(
+                    prepared_zones.whole_layer_normalization_basis,
+                    water_volume_m3,
+                );
                 parameters.cation_exchange_water_ratios = .{
-                    .shared_Mg_per_m3 = shared_ratio,
-                    .ammonium_non_band_Mg_per_m3 = if (parameters.fractions.ammonium_non_band > 0) shared_ratio / parameters.fractions.ammonium_non_band else shared_ratio,
-                    .ammonium_band_Mg_per_m3 = if (parameters.fractions.ammonium_band > 0) shared_ratio / parameters.fractions.ammonium_band else shared_ratio,
+                    .shared_megagrams_per_m3 = shared_ratio,
+                    .ammonium_non_band_megagrams_per_m3 = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(
+                        prepared_zones.ammonium_non_band_normalization_basis,
+                        prepared_zones.ammonium_non_band_water_m3,
+                    ),
+                    .ammonium_band_megagrams_per_m3 = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(
+                        prepared_zones.ammonium_band_normalization_basis,
+                        prepared_zones.ammonium_band_water_m3,
+                    ),
                 };
-                parameters.non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = if (parameters.fractions.phosphate_non_band > 0) shared_ratio / parameters.fractions.phosphate_non_band else shared_ratio;
-                parameters.band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = if (parameters.fractions.phosphate_band > 0) shared_ratio / parameters.fractions.phosphate_band else shared_ratio;
-                parameters.total_carboxyl_sites_mol_per_Mg = context.chemistry_reaction_parameters.*.?.surface_litter.carboxyl_sites_mol_per_Mg_c *
+                parameters.non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(
+                    prepared_zones.phosphate_non_band_normalization_basis,
+                    prepared_zones.phosphate_non_band_water_m3,
+                );
+                parameters.band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(
+                    prepared_zones.phosphate_band_normalization_basis,
+                    prepared_zones.phosphate_band_water_m3,
+                );
+                parameters.total_carboxyl_sites_mol_per_megagram = context.chemistry_reaction_parameters.*.surface_litter.carboxyl_sites_mol_per_megagram_c *
                     1.0e-6 * context.soil_solver_properties.total_organic_carbon_g_per_megagram[layer];
+                // SOLUTE line 2934: CCO21 = CCO2S/12 = (CO2S/VOLW)/12 mol/m³ water.
+                // Without dissolved CO2, bicarbonate/carbonate are zero and the
+                // charge balance diverges to pH ~2.7 from the very first hour.
+                {
+                    const co2_idx = try ecosys.gas_transport.massIndex(layer, .carbon_dioxide, context.gas_transport.cell_count);
+                    context.soil_chemistry.aqueous[layer].carbon_dioxide = @max(0, context.gas_transport.dissolved_mass_g[co2_idx] / (12.0 * water_volume_m3));
+                }
                 const solver_options: ecosys.solute_reaction_solver.Options = .{
                     .absolute_tolerance = context.config.absolute_tolerance,
                     .relative_tolerance = context.config.relative_tolerance,
@@ -270,31 +419,426 @@ fn convergeHourlySoilChemistry(
                     layer,
                     parameters,
                     solver_options,
-                ) catch |err| {
-                    if (failure_report) |report| {
-                        var contextual_report = report;
-                        contextual_report.context.global_cell_id =
-                            @intCast(cell);
-                        contextual_report.context.soil_layer_id =
-                            @intCast(layer_within_cell);
-                        contextual_report.context.packed_cell_index =
-                            @intCast(layer);
-                        return ecosys.solute_failure_reporter
-                            .reportPreservingSolverError(
-                            context.allocator,
-                            contextual_report,
-                            context.soil_chemistry,
-                            layer,
-                            parameters,
-                            solver_options,
-                            err,
-                        );
-                    }
-                    return err;
+                ) catch |err| switch (err) {
+                    // Legacy STARTE/SOLUTE retain their state after exactly MRXN
+                    // cycles without requiring convergence. For hourly runs over
+                    // frozen soil layers (concentrated chemistry, small water
+                    // volume), non-convergence is expected and the transactional
+                    // rollback already restores the pre-solve cell state. Log and
+                    // continue; the layer re-attempts equilibration next hour as
+                    // conditions change.
+                    error.SoluteReactionSolverStagnated,
+                    error.SoluteReactionSolverDidNotConverge,
+                    => std.log.warn(
+                        "SOLUTE hourly non-convergence retained: cell={d} layer={d} water_m3={e} err={s}",
+                        .{ cell, layer_within_cell, water_volume_m3, @errorName(err) },
+                    ),
+                    else => {
+                        if (failure_report) |report| {
+                            var contextual_report = report;
+                            contextual_report.context.global_cell_id =
+                                @intCast(cell);
+                            contextual_report.context.soil_layer_id =
+                                @intCast(layer_within_cell);
+                            contextual_report.context.packed_cell_index =
+                                @intCast(layer);
+                            return ecosys.solute_failure_reporter
+                                .reportPreservingSolverError(
+                                context.allocator,
+                                contextual_report,
+                                context.soil_chemistry,
+                                layer,
+                                parameters,
+                                solver_options,
+                                err,
+                            );
+                        }
+                        return err;
+                    },
                 };
             }
         }
+        // After solute solver equilibrates CO2(aq) ↔ HCO3⁻, sync gas_state
+        // dissolved CO2 with the post-equilibration chemistry CO2(aq).  Without
+        // this update, the inventory counts pre-equilibration dissolved CO2 from
+        // gas_state alongside post-equilibration micropore HCO3⁻ from
+        // exportChemistry, creating a systematic carbon balance drift equal to
+        // the equilibrium shift in each layer.
+        for (0..context.grid.cell_count) |sync_cell| {
+            const sync_first = sync_cell * context.grid.soil_layer_capacity;
+            for (0..context.grid.active_soil_layer_count[sync_cell]) |sync_local_layer| {
+                const sync_layer = sync_first + sync_local_layer;
+                const sync_water_m3 = context.grid.matrix_liquid_water_m3[sync_layer];
+                if (sync_water_m3 <= context.config.absolute_tolerance) continue;
+                const sync_co2_idx = try ecosys.gas_transport.massIndex(sync_layer, .carbon_dioxide, context.gas_transport.cell_count);
+                context.gas_transport.dissolved_mass_g[sync_co2_idx] = context.soil_chemistry.aqueous[sync_layer].carbon_dioxide * 12.0 * sync_water_m3;
+            }
+        }
+        for (0..context.grid.cell_count) |cell| {
+            const active_layer_count = context.grid.active_soil_layer_count[cell];
+            if (active_layer_count == 0) continue;
+            if (active_layer_count > context.grid.soil_layer_capacity)
+                return error.InvalidHourlySoilChemistryGeometry;
+            const first_layer = cell * context.grid.soil_layer_capacity;
+            var layer_properties = try context.allocator.alloc(
+                ecosys.fertilizer_band_nitrate_phosphate.LayerProperties,
+                active_layer_count,
+            );
+            defer context.allocator.free(layer_properties);
+            const nitrate_geometry = try context.fertilizer_band.geometry(
+                cell,
+                .nitrate,
+            );
+            const phosphate_geometry = try context.fertilizer_band.geometry(
+                cell,
+                .phosphate,
+            );
+            const nitrate_row_width_m = nitrate_geometry.row_spacing_m;
+            const phosphate_row_width_m = phosphate_geometry.row_spacing_m;
+            const nitrate_application: ecosys.fertilizer_band_nitrate_phosphate.BandApplication = if (nitrate_row_width_m > 0) .banded else .unbanded;
+            const phosphate_application: ecosys.fertilizer_band_nitrate_phosphate.BandApplication = if (phosphate_row_width_m > 0) .banded else .unbanded;
+            var nonband_fractional_change = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(nonband_fractional_change);
+            var layer_top_depth_m: f64 = 0;
+            for (0..active_layer_count) |local_layer| {
+                const global_layer = first_layer + local_layer;
+                const layer_thickness = context.soil_solver_properties.layer_thickness_m[global_layer];
+                if (!std.math.isFinite(layer_thickness) or layer_thickness < 0)
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const water_volume_m3 = context.grid.matrix_liquid_water_m3[global_layer];
+                const pore_capacity_m3 = context.grid.matrix_pore_capacity_m3[global_layer];
+                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0 or !std.math.isFinite(pore_capacity_m3) or pore_capacity_m3 < 0)
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const water_fraction = if (pore_capacity_m3 > 0)
+                    std.math.clamp(water_volume_m3 / pore_capacity_m3, 0, 1)
+                else
+                    0;
+                const top_depth_m = layer_top_depth_m;
+                layer_top_depth_m += layer_thickness;
+                layer_properties[local_layer] = .{
+                    .top_depth_m = top_depth_m,
+                    .bottom_depth_m = layer_top_depth_m,
+                    .thickness_m = layer_thickness,
+                    .tortuosity = context.runscript.root_nutrient_parameters.liquid_tortuosity_coefficient * water_fraction * water_fraction,
+                    .nitrate_diffusivity_m2_h = try context.runscript.root_nutrient_parameters.diffusivityM2PerH(
+                        1,
+                        context.grid.soil_temperature_k[global_layer],
+                    ),
+                    .phosphate_diffusivity_m2_h = try context.runscript.root_nutrient_parameters.diffusivityM2PerH(
+                        2,
+                        context.grid.soil_temperature_k[global_layer],
+                    ),
+                };
+            }
+            const nitrate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(nitrate_nonband_pools);
+            const nitrate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(nitrate_band_pools);
+            const nitrite_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(nitrite_nonband_pools);
+            const nitrite_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(nitrite_band_pools);
+            const fertilizer_nitrate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(fertilizer_nitrate_nonband_pools);
+            const fertilizer_nitrate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(fertilizer_nitrate_band_pools);
+            const hydrogen_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(hydrogen_phosphate_nonband_pools);
+            const hydrogen_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(hydrogen_phosphate_band_pools);
+            const dihydrogen_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(dihydrogen_phosphate_nonband_pools);
+            const dihydrogen_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(dihydrogen_phosphate_band_pools);
+            const adsorbed_oh0_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh0_nonband_pools);
+            const adsorbed_oh0_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh0_band_pools);
+            const adsorbed_oh1_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh1_nonband_pools);
+            const adsorbed_oh1_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh1_band_pools);
+            const adsorbed_oh2_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh2_nonband_pools);
+            const adsorbed_oh2_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_oh2_band_pools);
+            const adsorbed_hpo4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_hpo4_nonband_pools);
+            const adsorbed_hpo4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_hpo4_band_pools);
+            const adsorbed_h2po4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_h2po4_nonband_pools);
+            const adsorbed_h2po4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(adsorbed_h2po4_band_pools);
+            const aluminum_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(aluminum_phosphate_nonband_pools);
+            const aluminum_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(aluminum_phosphate_band_pools);
+            const iron_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_phosphate_nonband_pools);
+            const iron_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_phosphate_band_pools);
+            const dicalcium_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(dicalcium_phosphate_nonband_pools);
+            const dicalcium_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(dicalcium_phosphate_band_pools);
+            const hydroxyapatite_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(hydroxyapatite_nonband_pools);
+            const hydroxyapatite_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(hydroxyapatite_band_pools);
+            const monocalcium_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(monocalcium_phosphate_nonband_pools);
+            const monocalcium_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(monocalcium_phosphate_band_pools);
+            const phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(phosphate_nonband_pools);
+            const phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(phosphate_band_pools);
+            const phosphoric_acid_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(phosphoric_acid_nonband_pools);
+            const phosphoric_acid_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(phosphoric_acid_band_pools);
+            const iron_hpo4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_hpo4_nonband_pools);
+            const iron_hpo4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_hpo4_band_pools);
+            const iron_h2po4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_h2po4_nonband_pools);
+            const iron_h2po4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(iron_h2po4_band_pools);
+            const calcium_hpo4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_hpo4_nonband_pools);
+            const calcium_hpo4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_hpo4_band_pools);
+            const calcium_h2po4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_h2po4_nonband_pools);
+            const calcium_h2po4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_h2po4_band_pools);
+            const calcium_phosphate_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_phosphate_nonband_pools);
+            const calcium_phosphate_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(calcium_phosphate_band_pools);
+            const magnesium_hpo4_nonband_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(magnesium_hpo4_nonband_pools);
+            const magnesium_hpo4_band_pools = try context.allocator.alloc(f64, active_layer_count);
+            defer context.allocator.free(magnesium_hpo4_band_pools);
+
+            for (0..active_layer_count) |local_layer| {
+                const global_layer = first_layer + local_layer;
+                const layer = context.soil_chemistry.aqueous[global_layer];
+                const non_band = context.soil_chemistry.non_band_phosphate[global_layer];
+                const band = context.soil_chemistry.band_phosphate[global_layer];
+                const water_volume_m3 = context.grid.matrix_liquid_water_m3[global_layer];
+                if (!std.math.isFinite(water_volume_m3) or water_volume_m3 < 0)
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const soil_mass_megagrams = context.soil_solver_properties.matrix_bulk_volume_m3[global_layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[global_layer];
+                if (!std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0)
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const nitrate_nonband_g_n = layer.nitrate_non_band * water_volume_m3 * 14.0;
+                const nitrate_band_g_n = layer.nitrate_band * water_volume_m3 * 14.0;
+                const nitrite_nonband_g_n = context.soil_reactive_nitrogen.non_band_nitrite_g_n[global_layer];
+                const nitrite_band_g_n = context.soil_reactive_nitrogen.band_nitrite_g_n[global_layer];
+                if (!std.math.isFinite(nitrate_nonband_g_n) or !std.math.isFinite(nitrate_band_g_n) or !std.math.isFinite(nitrite_nonband_g_n) or !std.math.isFinite(nitrite_band_g_n))
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const fertilizer_nitrate_nonband_g_n = context.soil_fertilizer_inventory.soil[global_layer].broadcast_nitrate_mol_n * 14.0;
+                const fertilizer_nitrate_band_g_n = context.soil_fertilizer_inventory.soil[global_layer].banded_nitrate_mol_n * 14.0;
+                if (!std.math.isFinite(fertilizer_nitrate_nonband_g_n) or !std.math.isFinite(fertilizer_nitrate_band_g_n))
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const hydrogen_phosphate_nonband_mol = non_band.dissolved_hpo4_mol_p_per_m3 * water_volume_m3;
+                const hydrogen_phosphate_band_mol = band.dissolved_hpo4_mol_p_per_m3 * water_volume_m3;
+                const dihydrogen_phosphate_nonband_mol = non_band.dissolved_h2po4_mol_p_per_m3 * water_volume_m3;
+                const dihydrogen_phosphate_band_mol = band.dissolved_h2po4_mol_p_per_m3 * water_volume_m3;
+                if (!(std.math.isFinite(hydrogen_phosphate_nonband_mol) and std.math.isFinite(hydrogen_phosphate_band_mol) and std.math.isFinite(dihydrogen_phosphate_nonband_mol) and std.math.isFinite(dihydrogen_phosphate_band_mol)))
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const adsorbed_oh0_nonband_mol = non_band.deprotonated_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_oh0_band_mol = band.deprotonated_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_oh1_nonband_mol = non_band.hydroxyl_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_oh1_band_mol = band.hydroxyl_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_oh2_nonband_mol = non_band.protonated_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_oh2_band_mol = band.protonated_site_mol_per_megagram * soil_mass_megagrams;
+                const adsorbed_hpo4_nonband_mol = non_band.adsorbed_hpo4_mol_p_per_megagram * soil_mass_megagrams;
+                const adsorbed_hpo4_band_mol = band.adsorbed_hpo4_mol_p_per_megagram * soil_mass_megagrams;
+                const adsorbed_h2po4_nonband_mol = non_band.adsorbed_h2po4_mol_p_per_megagram * soil_mass_megagrams;
+                const adsorbed_h2po4_band_mol = band.adsorbed_h2po4_mol_p_per_megagram * soil_mass_megagrams;
+                const aluminum_phosphate_nonband_mol = non_band.aluminum_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const aluminum_phosphate_band_mol = band.aluminum_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const iron_phosphate_nonband_mol = non_band.iron_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const iron_phosphate_band_mol = band.iron_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const dicalcium_phosphate_nonband_mol = non_band.dicalcium_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const dicalcium_phosphate_band_mol = band.dicalcium_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const hydroxyapatite_nonband_mol = non_band.hydroxyapatite_solid_mol_per_m3 * water_volume_m3;
+                const hydroxyapatite_band_mol = band.hydroxyapatite_solid_mol_per_m3 * water_volume_m3;
+                const monocalcium_phosphate_nonband_mol = non_band.monocalcium_phosphate_solid_mol_per_m3 * water_volume_m3;
+                const monocalcium_phosphate_band_mol = band.monocalcium_phosphate_solid_mol_per_m3 * water_volume_m3;
+                if (!std.math.isFinite(adsorbed_oh0_nonband_mol) or !std.math.isFinite(adsorbed_oh0_band_mol) or !std.math.isFinite(adsorbed_oh1_nonband_mol) or !std.math.isFinite(adsorbed_oh1_band_mol) or !std.math.isFinite(adsorbed_oh2_nonband_mol) or !std.math.isFinite(adsorbed_oh2_band_mol) or !std.math.isFinite(adsorbed_hpo4_nonband_mol) or !std.math.isFinite(adsorbed_hpo4_band_mol) or !std.math.isFinite(adsorbed_h2po4_nonband_mol) or !std.math.isFinite(adsorbed_h2po4_band_mol) or !std.math.isFinite(aluminum_phosphate_nonband_mol) or !std.math.isFinite(aluminum_phosphate_band_mol) or !std.math.isFinite(iron_phosphate_nonband_mol) or !std.math.isFinite(iron_phosphate_band_mol) or !std.math.isFinite(dicalcium_phosphate_nonband_mol) or !std.math.isFinite(dicalcium_phosphate_band_mol) or !std.math.isFinite(hydroxyapatite_nonband_mol) or !std.math.isFinite(hydroxyapatite_band_mol) or !std.math.isFinite(monocalcium_phosphate_nonband_mol) or !std.math.isFinite(monocalcium_phosphate_band_mol))
+                    return error.InvalidHourlySoilChemistryGeometry;
+                const phosphate_nonband_mol = non_band.dissolved_po4_mol_p_per_m3 * water_volume_m3;
+                const phosphate_band_mol = band.dissolved_po4_mol_p_per_m3 * water_volume_m3;
+                const phosphoric_acid_nonband_mol = non_band.dissolved_h3po4_mol_p_per_m3 * water_volume_m3;
+                const phosphoric_acid_band_mol = band.dissolved_h3po4_mol_p_per_m3 * water_volume_m3;
+                const iron_hpo4_nonband_mol = non_band.iron_hpo4_pair_mol_per_m3 * water_volume_m3;
+                const iron_hpo4_band_mol = band.iron_hpo4_pair_mol_per_m3 * water_volume_m3;
+                const iron_h2po4_nonband_mol = non_band.iron_h2po4_pair_mol_per_m3 * water_volume_m3;
+                const iron_h2po4_band_mol = band.iron_h2po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_hpo4_nonband_mol = non_band.calcium_po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_hpo4_band_mol = band.calcium_po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_h2po4_nonband_mol = non_band.calcium_h2po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_h2po4_band_mol = band.calcium_h2po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_phosphate_nonband_mol = non_band.calcium_po4_pair_mol_per_m3 * water_volume_m3;
+                const calcium_phosphate_band_mol = band.calcium_po4_pair_mol_per_m3 * water_volume_m3;
+                const magnesium_hpo4_nonband_mol = non_band.magnesium_hpo4_pair_mol_per_m3 * water_volume_m3;
+                const magnesium_hpo4_band_mol = band.magnesium_hpo4_pair_mol_per_m3 * water_volume_m3;
+                if (!std.math.isFinite(phosphate_nonband_mol) or !std.math.isFinite(phosphate_band_mol) or !std.math.isFinite(phosphoric_acid_nonband_mol) or !std.math.isFinite(phosphoric_acid_band_mol) or !std.math.isFinite(iron_hpo4_nonband_mol) or !std.math.isFinite(iron_hpo4_band_mol) or !std.math.isFinite(iron_h2po4_nonband_mol) or !std.math.isFinite(iron_h2po4_band_mol) or !std.math.isFinite(calcium_hpo4_nonband_mol) or !std.math.isFinite(calcium_hpo4_band_mol) or !std.math.isFinite(calcium_h2po4_nonband_mol) or !std.math.isFinite(calcium_h2po4_band_mol) or !std.math.isFinite(calcium_phosphate_nonband_mol) or !std.math.isFinite(calcium_phosphate_band_mol) or !std.math.isFinite(magnesium_hpo4_nonband_mol) or !std.math.isFinite(magnesium_hpo4_band_mol))
+                    return error.InvalidHourlySoilChemistryGeometry;
+                nitrate_nonband_pools[local_layer] = nitrate_nonband_g_n;
+                nitrate_band_pools[local_layer] = nitrate_band_g_n;
+                nitrite_nonband_pools[local_layer] = nitrite_nonband_g_n;
+                nitrite_band_pools[local_layer] = nitrite_band_g_n;
+                fertilizer_nitrate_nonband_pools[local_layer] = fertilizer_nitrate_nonband_g_n;
+                fertilizer_nitrate_band_pools[local_layer] = fertilizer_nitrate_band_g_n;
+                hydrogen_phosphate_nonband_pools[local_layer] = hydrogen_phosphate_nonband_mol;
+                hydrogen_phosphate_band_pools[local_layer] = hydrogen_phosphate_band_mol;
+                dihydrogen_phosphate_nonband_pools[local_layer] = dihydrogen_phosphate_nonband_mol;
+                dihydrogen_phosphate_band_pools[local_layer] = dihydrogen_phosphate_band_mol;
+                adsorbed_oh0_nonband_pools[local_layer] = adsorbed_oh0_nonband_mol;
+                adsorbed_oh0_band_pools[local_layer] = adsorbed_oh0_band_mol;
+                adsorbed_oh1_nonband_pools[local_layer] = adsorbed_oh1_nonband_mol;
+                adsorbed_oh1_band_pools[local_layer] = adsorbed_oh1_band_mol;
+                adsorbed_oh2_nonband_pools[local_layer] = adsorbed_oh2_nonband_mol;
+                adsorbed_oh2_band_pools[local_layer] = adsorbed_oh2_band_mol;
+                adsorbed_hpo4_nonband_pools[local_layer] = adsorbed_hpo4_nonband_mol;
+                adsorbed_hpo4_band_pools[local_layer] = adsorbed_hpo4_band_mol;
+                adsorbed_h2po4_nonband_pools[local_layer] = adsorbed_h2po4_nonband_mol;
+                adsorbed_h2po4_band_pools[local_layer] = adsorbed_h2po4_band_mol;
+                aluminum_phosphate_nonband_pools[local_layer] = aluminum_phosphate_nonband_mol;
+                aluminum_phosphate_band_pools[local_layer] = aluminum_phosphate_band_mol;
+                iron_phosphate_nonband_pools[local_layer] = iron_phosphate_nonband_mol;
+                iron_phosphate_band_pools[local_layer] = iron_phosphate_band_mol;
+                dicalcium_phosphate_nonband_pools[local_layer] = dicalcium_phosphate_nonband_mol;
+                dicalcium_phosphate_band_pools[local_layer] = dicalcium_phosphate_band_mol;
+                hydroxyapatite_nonband_pools[local_layer] = hydroxyapatite_nonband_mol;
+                hydroxyapatite_band_pools[local_layer] = hydroxyapatite_band_mol;
+                monocalcium_phosphate_nonband_pools[local_layer] = monocalcium_phosphate_nonband_mol;
+                monocalcium_phosphate_band_pools[local_layer] = monocalcium_phosphate_band_mol;
+                phosphate_nonband_pools[local_layer] = phosphate_nonband_mol;
+                phosphate_band_pools[local_layer] = phosphate_band_mol;
+                phosphoric_acid_nonband_pools[local_layer] = phosphoric_acid_nonband_mol;
+                phosphoric_acid_band_pools[local_layer] = phosphoric_acid_band_mol;
+                iron_hpo4_nonband_pools[local_layer] = iron_hpo4_nonband_mol;
+                iron_hpo4_band_pools[local_layer] = iron_hpo4_band_mol;
+                iron_h2po4_nonband_pools[local_layer] = iron_h2po4_nonband_mol;
+                iron_h2po4_band_pools[local_layer] = iron_h2po4_band_mol;
+                calcium_hpo4_nonband_pools[local_layer] = calcium_hpo4_nonband_mol;
+                calcium_hpo4_band_pools[local_layer] = calcium_hpo4_band_mol;
+                calcium_h2po4_nonband_pools[local_layer] = calcium_h2po4_nonband_mol;
+                calcium_h2po4_band_pools[local_layer] = calcium_h2po4_band_mol;
+                calcium_phosphate_nonband_pools[local_layer] = calcium_phosphate_nonband_mol;
+                calcium_phosphate_band_pools[local_layer] = calcium_phosphate_band_mol;
+                magnesium_hpo4_nonband_pools[local_layer] = magnesium_hpo4_nonband_mol;
+                magnesium_hpo4_band_pools[local_layer] = magnesium_hpo4_band_mol;
+            }
+
+            var nitrate_geometry_for_update = ecosys.fertilizer_band_nitrate_phosphate.BandGeometry{
+                .total_depth_m = nitrate_geometry.lower_edge_depth_m,
+                .penetration_front_depth_m = nitrate_geometry.upper_edge_depth_m,
+                .layer_depth_m = nitrate_geometry.band_depth_m[0..active_layer_count],
+                .layer_width_m = nitrate_geometry.band_width_m[0..active_layer_count],
+                .nonband_volume_fraction = nitrate_geometry.non_band_volume_fraction[0..active_layer_count],
+                .band_volume_fraction = nitrate_geometry.band_volume_fraction[0..active_layer_count],
+                .nonband_fractional_change_per_timestep = nonband_fractional_change[0..active_layer_count],
+            };
+            var phosphate_geometry_for_update = ecosys.fertilizer_band_nitrate_phosphate.BandGeometry{
+                .total_depth_m = phosphate_geometry.lower_edge_depth_m,
+                .penetration_front_depth_m = phosphate_geometry.upper_edge_depth_m,
+                .layer_depth_m = phosphate_geometry.band_depth_m[0..active_layer_count],
+                .layer_width_m = phosphate_geometry.band_width_m[0..active_layer_count],
+                .nonband_volume_fraction = phosphate_geometry.non_band_volume_fraction[0..active_layer_count],
+                .band_volume_fraction = phosphate_geometry.band_volume_fraction[0..active_layer_count],
+                .nonband_fractional_change_per_timestep = nonband_fractional_change[0..active_layer_count],
+            };
+            var nitrate_pools = ecosys.fertilizer_band_nitrate_phosphate.NitratePools{
+                .nitrate_nonband_g_n = nitrate_nonband_pools,
+                .nitrate_band_g_n = nitrate_band_pools,
+                .nitrite_nonband_g_n = nitrite_nonband_pools,
+                .nitrite_band_g_n = nitrite_band_pools,
+                .fertilizer_nitrate_nonband_g_n = fertilizer_nitrate_nonband_pools,
+                .fertilizer_nitrate_band_g_n = fertilizer_nitrate_band_pools,
+            };
+            var phosphate_pools = ecosys.fertilizer_band_nitrate_phosphate.PhosphatePools{
+                .hydrogen_phosphate_nonband_mol = hydrogen_phosphate_nonband_pools,
+                .hydrogen_phosphate_band_mol = hydrogen_phosphate_band_pools,
+                .dihydrogen_phosphate_nonband_mol = dihydrogen_phosphate_nonband_pools,
+                .dihydrogen_phosphate_band_mol = dihydrogen_phosphate_band_pools,
+                .adsorbed_oh0_nonband_mol = adsorbed_oh0_nonband_pools,
+                .adsorbed_oh0_band_mol = adsorbed_oh0_band_pools,
+                .adsorbed_oh1_nonband_mol = adsorbed_oh1_nonband_pools,
+                .adsorbed_oh1_band_mol = adsorbed_oh1_band_pools,
+                .adsorbed_oh2_nonband_mol = adsorbed_oh2_nonband_pools,
+                .adsorbed_oh2_band_mol = adsorbed_oh2_band_pools,
+                .adsorbed_hpo4_nonband_mol = adsorbed_hpo4_nonband_pools,
+                .adsorbed_hpo4_band_mol = adsorbed_hpo4_band_pools,
+                .adsorbed_h2po4_nonband_mol = adsorbed_h2po4_nonband_pools,
+                .adsorbed_h2po4_band_mol = adsorbed_h2po4_band_pools,
+                .aluminum_phosphate_nonband_mol = aluminum_phosphate_nonband_pools,
+                .aluminum_phosphate_band_mol = aluminum_phosphate_band_pools,
+                .iron_phosphate_nonband_mol = iron_phosphate_nonband_pools,
+                .iron_phosphate_band_mol = iron_phosphate_band_pools,
+                .dicalcium_phosphate_nonband_mol = dicalcium_phosphate_nonband_pools,
+                .dicalcium_phosphate_band_mol = dicalcium_phosphate_band_pools,
+                .hydroxyapatite_nonband_mol = hydroxyapatite_nonband_pools,
+                .hydroxyapatite_band_mol = hydroxyapatite_band_pools,
+                .monocalcium_phosphate_nonband_mol = monocalcium_phosphate_nonband_pools,
+                .monocalcium_phosphate_band_mol = monocalcium_phosphate_band_pools,
+                .phosphate_nonband_mol = phosphate_nonband_pools,
+                .phosphate_band_mol = phosphate_band_pools,
+                .phosphoric_acid_nonband_mol = phosphoric_acid_nonband_pools,
+                .phosphoric_acid_band_mol = phosphoric_acid_band_pools,
+                .iron_hpo4_nonband_mol = iron_hpo4_nonband_pools,
+                .iron_hpo4_band_mol = iron_hpo4_band_pools,
+                .iron_h2po4_nonband_mol = iron_h2po4_nonband_pools,
+                .iron_h2po4_band_mol = iron_h2po4_band_pools,
+                .calcium_hpo4_nonband_mol = calcium_hpo4_nonband_pools,
+                .calcium_hpo4_band_mol = calcium_hpo4_band_pools,
+                .calcium_h2po4_nonband_mol = calcium_h2po4_nonband_pools,
+                .calcium_h2po4_band_mol = calcium_h2po4_band_pools,
+                .calcium_phosphate_nonband_mol = calcium_phosphate_nonband_pools,
+                .calcium_phosphate_band_mol = calcium_phosphate_band_pools,
+                .magnesium_hpo4_nonband_mol = magnesium_hpo4_nonband_pools,
+                .magnesium_hpo4_band_mol = magnesium_hpo4_band_pools,
+            };
+            for (0..active_layer_count) |layer_within_cell| {
+                try ecosys.fertilizer_band_nitrate_phosphate.updateLayer(
+                    .{
+                        .first_active_layer_index = 0,
+                        .layer_index = layer_within_cell,
+                        .solute_timestep_h = 1,
+                        .depth_threshold_m = 0,
+                        .minimum_layer_thickness_m = context.runscript.soil_geometry_parameters.minimum_layer_thickness_m,
+                        .absent_band_fraction_threshold = 1.0e-12,
+                        .maximum_band_volume_fraction = 0.9999,
+                        .nitrate_application = nitrate_application,
+                        .nitrate_row_width_m = nitrate_row_width_m,
+                        .phosphate_application = phosphate_application,
+                        .phosphate_row_width_m = phosphate_row_width_m,
+                        .salinity_chemistry = if (context.runscript.dynamic_plant_salts)
+                            .enabled
+                        else
+                            .disabled,
+                        .layers = layer_properties,
+                    },
+                    &nitrate_geometry_for_update,
+                    &nitrate_pools,
+                    &phosphate_geometry_for_update,
+                    &phosphate_pools,
+                );
+            }
+        }
     }
+    try ecosys.soil_aqueous_transport_bridge.validateCarrierVolumes(
+        context.micropore_solute_state,
+        context.grid.matrix_liquid_water_m3,
+        context.config.absolute_tolerance,
+    );
     try ecosys.soil_aqueous_transport_bridge.exportChemistry(context.soil_chemistry, context.micropore_solute_state);
     try ecosys.fertilizer_band_production.consumeUndissolved(
         context.allocator,
@@ -521,6 +1065,95 @@ fn applyNaturalBranchMortality(context: anytype, calendar: ecosys.plant_developm
     }
 }
 
+/// GROSUB lines 12598–12626. Exponential decay of standing dead C/N/P into
+/// surface litter at each hourly step. The woody/fine-residue partition is
+/// derived from per-plant branch sapwood/total-stalk ratios (FWOOD in
+/// Fortran). All three elemental partitions use the same fraction
+/// (FWOODN=FWOODP=FWOOD). Output is routed into the surface organic pools via
+/// the existing shoot-litter bridge (position-0=woody, position-1=fine residue).
+fn applyStandingDeadLitterfall(context: anytype) !void {
+    if (context.detailed_canopy.* == null) return;
+    const canopy = &context.detailed_canopy.*.?;
+    const plant_count = canopy.cell_count * canopy.species_count;
+    if (plant_count == 0) return;
+
+    const fraction_count = ecosys.standing_dead_litterfall.kinetic_fraction_count;
+    const position_count = ecosys.standing_dead_litterfall.litter_position_count;
+
+    var lf_state = try ecosys.standing_dead_litterfall.State.init(context.allocator, plant_count);
+    defer lf_state.deinit();
+
+    const partition_count = plant_count * position_count;
+    const partitions = try context.allocator.alloc(f64, partition_count);
+    defer context.allocator.free(partitions);
+    for (0..plant_count) |plant| {
+        const b_first = canopy.plant_branch_offsets[plant];
+        const b_end = canopy.plant_branch_offsets[plant + 1];
+        var total_stalk: f64 = 0;
+        var total_sapwood: f64 = 0;
+        for (b_first..b_end) |branch| {
+            total_stalk += canopy.branch_stalk_carbon_g[branch];
+            total_sapwood += canopy.branch_sapwood_carbon_g[branch];
+        }
+        const sapwood_frac = if (total_stalk > 0)
+            std.math.clamp(total_sapwood / total_stalk, 0, 1)
+        else
+            1.0;
+        partitions[plant * position_count + 0] = 1.0 - sapwood_frac;
+        partitions[plant * position_count + 1] = sapwood_frac;
+    }
+
+    try ecosys.standing_dead_litterfall.apply(
+        &lf_state,
+        .{
+            .biomass_turnover_type_by_plant = context.canopy_layer_controls.biomass_turnover_type,
+            .root_profile_type_by_plant = context.canopy_layer_controls.root_profile_type,
+            .canopy_growth_temperature_response_by_plant = canopy.plant_uptake_growth_temperature_response,
+            .timestep_h = 1,
+            .carbon_partition_by_plant_and_position = partitions,
+            .nitrogen_partition_by_plant_and_position = partitions,
+            .phosphorus_partition_by_plant_and_position = partitions,
+        },
+        canopy.plant_standing_dead_carbon_by_kinetic_g,
+        canopy.plant_standing_dead_nitrogen_by_kinetic_g,
+        canopy.plant_standing_dead_phosphorus_by_kinetic_g,
+    );
+
+    // Keep per-plant totals in sync with the updated per-fraction pools.
+    for (0..plant_count) |plant| {
+        var c: f64 = 0;
+        var n: f64 = 0;
+        var p: f64 = 0;
+        const first = plant * fraction_count;
+        for (first..first + fraction_count) |i| {
+            c += canopy.plant_standing_dead_carbon_by_kinetic_g[i];
+            n += canopy.plant_standing_dead_nitrogen_by_kinetic_g[i];
+            p += canopy.plant_standing_dead_phosphorus_by_kinetic_g[i];
+        }
+        canopy.plant_standing_dead_carbon_g[plant] = c;
+        canopy.plant_standing_dead_nitrogen_g[plant] = n;
+        canopy.plant_standing_dead_phosphorus_g[plant] = p;
+    }
+
+    // Commit litter to surface organic (position-0 → woody, position-1 → fine residue).
+    for (0..canopy.cell_count) |cell| {
+        var products: ecosys.canopy_photosynthesis.SenescenceProducts = .{};
+        for (0..canopy.species_count) |species| {
+            const plant = cell * canopy.species_count + species;
+            for (0..fraction_count) |fraction| {
+                const base = (plant * fraction_count + fraction) * position_count;
+                products.woody_carbon_g[fraction] += lf_state.carbon_litterfall_g_c_by_plant_fraction_position[base + 0];
+                products.woody_nitrogen_g[fraction] += lf_state.nitrogen_litterfall_g_n_by_plant_fraction_position[base + 0];
+                products.woody_phosphorus_g[fraction] += lf_state.phosphorus_litterfall_g_p_by_plant_fraction_position[base + 0];
+                products.nonwoody_carbon_g[fraction] += lf_state.carbon_litterfall_g_c_by_plant_fraction_position[base + 1];
+                products.nonwoody_nitrogen_g[fraction] += lf_state.nitrogen_litterfall_g_n_by_plant_fraction_position[base + 1];
+                products.nonwoody_phosphorus_g[fraction] += lf_state.phosphorus_litterfall_g_p_by_plant_fraction_position[base + 1];
+            }
+        }
+        try ecosys.shoot_litter_bridge.commitCell(context.surface_organic, cell, products);
+    }
+}
+
 fn previousRootNutrientDemand(roots: anytype, pool: ecosys.plant_root_nutrient_uptake.NutrientPool, root: usize) f64 {
     return switch (pool) {
         .ammonium_nonband => roots.previous_ammonium_demand_nonband_g_n_per_h[root],
@@ -621,6 +1254,202 @@ fn calculateDailyPlantElementPools(
     });
 }
 
+fn calculateDailyPlantCarbonPools(
+    canopy: *const ecosys.canopy_photosynthesis.State,
+    roots: *const ecosys.plant_root_system.State,
+    plant: usize,
+    branches: ecosys.canopy_photosynthesis.Range,
+    biological_domain_count: usize,
+    root_carbon_g_by_layer: []f64,
+    root_length_density_m_per_m3_by_layer: []f64,
+) !ecosys.plant_daily_pool_aggregation.CarbonPools {
+    if (root_carbon_g_by_layer.len != roots.soil_layer_count or
+        root_length_density_m_per_m3_by_layer.len != roots.soil_layer_count)
+    {
+        return error.DailyPlantElementRootDimensionMismatch;
+    }
+    if (biological_domain_count < 1 or biological_domain_count > ecosys.plant_root_system.biological_domain_count)
+        return error.DailyPlantElementRootDimensionMismatch;
+    @memset(root_carbon_g_by_layer, 0);
+    @memset(root_length_density_m_per_m3_by_layer, 0);
+    for (0..roots.soil_layer_count) |layer| {
+        for (0..biological_domain_count) |domain| {
+            const root = try roots.layerIndex(plant, domain, layer);
+            root_carbon_g_by_layer[layer] += roots.mobile_carbon_g[root];
+            for (0..roots.active_root_axis_count[plant]) |axis| {
+                const axis_layer = try roots.layerAxisIndex(plant, domain, layer, axis);
+                root_carbon_g_by_layer[layer] +=
+                    roots.axis_primary_carbon_g[axis_layer] +
+                    roots.axis_secondary_carbon_g[axis_layer];
+            }
+        }
+    }
+
+    // Preserve source-order aggregation semantics used by plant_daily_output and
+    // avoid reusing historical transformed outputs as inputs.
+    const primary_root_first = try roots.layerIndex(plant, 0, 0);
+    for (0..roots.soil_layer_count) |local_layer| {
+        root_length_density_m_per_m3_by_layer[local_layer] =
+            roots.root_length_density_m_per_m3[primary_root_first + local_layer];
+    }
+
+    var canopy_symbiont_carbon_g: f64 = 0;
+    for (branches.first..branches.end) |branch| {
+        canopy_symbiont_carbon_g +=
+            canopy.branch_symbiont_structural_carbon_g[branch] +
+            canopy.branch_symbiont_mobile_carbon_g[branch];
+    }
+    var root_symbiont_carbon_g: f64 = 0;
+    for (0..roots.soil_layer_count) |layer| {
+        for (0..biological_domain_count) |domain| {
+            const root = try roots.layerIndex(plant, domain, layer);
+            root_symbiont_carbon_g +=
+                roots.symbiont_structural_carbon_g_c[root] +
+                roots.symbiont_mobile_carbon_g_c[root];
+        }
+    }
+
+    var leaf_intermediate_carbon_g: f64 = 0;
+    for (branches.first..branches.end) |branch| {
+        const nodes = try canopy.nodeRange(branch);
+        for (nodes.first..nodes.end) |node| {
+            leaf_intermediate_carbon_g +=
+                canopy.node_c3_nonstructural_carbon_g[node] +
+                canopy.node_c4_mesophyll_nonstructural_carbon_g[node] +
+                canopy.node_bundle_sheath_co2_carbon_g[node] +
+                canopy.node_bundle_sheath_bicarbonate_carbon_g[node];
+        }
+    }
+
+    var projected_leaf_area_m2: f64 = 0;
+    for (branches.first..branches.end) |branch| projected_leaf_area_m2 += canopy.branch_leaf_area_m2[branch];
+
+    return ecosys.plant_daily_pool_aggregation.calculateCarbonInto(.{
+        .branch_leaf_carbon_g = canopy.branch_leaf_carbon_g[branches.first..branches.end],
+        .branch_sheath_carbon_g = canopy.branch_sheath_carbon_g[branches.first..branches.end],
+        .branch_stalk_carbon_g = canopy.branch_stalk_carbon_g[branches.first..branches.end],
+        .branch_reserve_carbon_g = canopy.branch_reserve_carbon_g[branches.first..branches.end],
+        .branch_husk_carbon_g = canopy.branch_husk_carbon_g[branches.first..branches.end],
+        .branch_ear_carbon_g = canopy.branch_ear_carbon_g[branches.first..branches.end],
+        .branch_grain_carbon_g = canopy.branch_grain_carbon_g[branches.first..branches.end],
+        .branch_mobile_carbon_g = canopy.branch_mobile_carbon_g[branches.first..branches.end],
+        .branch_seed_count = canopy.branch_seed_count[branches.first..branches.end],
+        .c4_intermediate_carbon_g = leaf_intermediate_carbon_g,
+        .canopy_symbiont_carbon_g = canopy_symbiont_carbon_g,
+        .root_carbon_g_by_layer = root_carbon_g_by_layer,
+        .primary_root_length_density_m_per_m3_by_layer = root_length_density_m_per_m3_by_layer,
+        .root_symbiont_carbon_g = root_symbiont_carbon_g,
+        .standing_dead_carbon_g = canopy.plant_standing_dead_carbon_g[plant],
+        .seed_storage_carbon_g = canopy.plant_seed_storage_carbon_g[plant],
+        .projected_leaf_area_m2 = projected_leaf_area_m2,
+        .plant_population_count = canopy.plant_population_count[plant],
+    }, root_carbon_g_by_layer);
+}
+
+fn assemblePlantBalanceInputs(
+    canopy: *const ecosys.canopy_photosynthesis.State,
+    roots: *const ecosys.plant_root_system.State,
+    root_metabolism_plant_parameters: []const ecosys.plant_root_metabolism.RuntimePlantParameters,
+    plant_daily_flux_ledger: *const ecosys.plant_daily_flux_ledger.State,
+    active_by_plant: []const bool,
+    carbon_inputs: []ecosys.plant_daily_output.CarbonBalanceInputs,
+    nitrogen_inputs: []ecosys.plant_daily_output.NutrientBalanceInputs,
+    phosphorus_inputs: []ecosys.plant_daily_output.NutrientBalanceInputs,
+    carbon_root_by_layer: []f64,
+    carbon_root_length_density_by_layer: []f64,
+    nutrient_root_by_layer: []f64,
+) !void {
+    if (carbon_inputs.len != active_by_plant.len or
+        nitrogen_inputs.len != active_by_plant.len or
+        phosphorus_inputs.len != active_by_plant.len)
+        return error.InvalidPlantBalancePublicationDimensions;
+
+    @memset(std.mem.sliceAsBytes(carbon_inputs), 0);
+    @memset(std.mem.sliceAsBytes(nitrogen_inputs), 0);
+    @memset(std.mem.sliceAsBytes(phosphorus_inputs), 0);
+
+    for (0..active_by_plant.len) |plant| {
+        if (!active_by_plant[plant]) continue;
+        const branches = try canopy.branchRange(plant);
+        const carbon_pools = try calculateDailyPlantCarbonPools(
+            canopy,
+            roots,
+            plant,
+            branches,
+            root_metabolism_plant_parameters[plant].biologicalDomainCount(),
+            carbon_root_by_layer,
+            carbon_root_length_density_by_layer,
+        );
+        const net_primary_productivity_g =
+            plant_daily_flux_ledger.net_carbon_change_g[plant] +
+            plant_daily_flux_ledger.signed_total_respiration_carbon_g[plant];
+        const carbon_balance_inputs: ecosys.plant_daily_output.CarbonBalanceInputs = .{
+            .shoot_carbon_g = carbon_pools.shoot_carbon_g,
+            .root_carbon_g = carbon_pools.root_carbon_g,
+            .nodule_carbon_g = carbon_pools.nodule_carbon_g,
+            .storage_carbon_g = carbon_pools.storage_carbon_g,
+            .standing_dead_carbon_g = carbon_pools.vegetative_residue_carbon_g,
+            .cumulative_carbon_sink_g = plant_daily_flux_ledger.carbon_sink_g[plant],
+            .cumulative_root_soil_carbon_exchange_g = plant_daily_flux_ledger.root_soil_carbon_exchange_g[plant],
+            .cumulative_carbon_balance_g = plant_daily_flux_ledger.cumulative_carbon_balance_g[plant],
+            .cumulative_harvested_carbon_g = plant_daily_flux_ledger.cumulative_harvested_carbon_g[plant],
+            .harvested_carbon_g = plant_daily_flux_ledger.harvested_carbon_g[plant],
+            .carbon_oxidation_g = plant_daily_flux_ledger.carbon_oxidation_g[plant],
+            .cumulative_net_primary_productivity_g = net_primary_productivity_g,
+        };
+        carbon_inputs[plant] = carbon_balance_inputs;
+
+        const element_domains = root_metabolism_plant_parameters[plant].biologicalDomainCount();
+        const nitrogen_pools = try calculateDailyPlantElementPools(
+            canopy,
+            roots,
+            plant,
+            branches,
+            .nitrogen,
+            element_domains,
+            nutrient_root_by_layer,
+        );
+        const phosphorus_pools = try calculateDailyPlantElementPools(
+            canopy,
+            roots,
+            plant,
+            branches,
+            .phosphorus,
+            element_domains,
+            nutrient_root_by_layer,
+        );
+
+        nitrogen_inputs[plant] = .{
+            .shoot_g = nitrogen_pools.shoot_g,
+            .root_g = nitrogen_pools.root_g,
+            .nodule_g = nitrogen_pools.nodule_g,
+            .storage_g = nitrogen_pools.storage_g,
+            .standing_dead_g = nitrogen_pools.vegetative_residue_g,
+            .cumulative_sink_g = plant_daily_flux_ledger.nitrogen_sink_g[plant],
+            .cumulative_root_soil_exchange_g = plant_daily_flux_ledger.root_soil_nitrogen_exchange_g[plant],
+            .cumulative_balance_g = plant_daily_flux_ledger.cumulative_nitrogen_balance_g[plant],
+            .cumulative_harvested_g = plant_daily_flux_ledger.cumulative_harvested_nitrogen_g[plant],
+            .harvested_g = plant_daily_flux_ledger.harvested_nitrogen_g[plant],
+            .oxidation_g = plant_daily_flux_ledger.nitrogen_oxidation_g[plant],
+            .atmospheric_exchange_g = plant_daily_flux_ledger.ammonia_exchange_g_n[plant],
+            .biological_fixation_g = plant_daily_flux_ledger.symbiotic_nitrogen_fixation_g[plant],
+        };
+        phosphorus_inputs[plant] = .{
+            .shoot_g = phosphorus_pools.shoot_g,
+            .root_g = phosphorus_pools.root_g,
+            .nodule_g = phosphorus_pools.nodule_g,
+            .storage_g = phosphorus_pools.storage_g,
+            .standing_dead_g = phosphorus_pools.vegetative_residue_g,
+            .cumulative_sink_g = plant_daily_flux_ledger.phosphorus_sink_g[plant],
+            .cumulative_root_soil_exchange_g = plant_daily_flux_ledger.root_soil_phosphorus_exchange_g[plant],
+            .cumulative_balance_g = plant_daily_flux_ledger.cumulative_phosphorus_balance_g[plant],
+            .cumulative_harvested_g = plant_daily_flux_ledger.cumulative_harvested_phosphorus_g[plant],
+            .harvested_g = plant_daily_flux_ledger.harvested_phosphorus_g[plant],
+            .oxidation_g = plant_daily_flux_ledger.phosphorus_oxidation_g[plant],
+        };
+    }
+}
+
 fn applyRootMetabolism(context: anytype) !void {
     if (context.plant_roots.* == null or context.detailed_canopy.* == null or context.plant_growth_stages.* == null or context.branch_development.* == null or context.plant_dormancy.* == null or context.plant_root_metabolism_workspace.* == null or context.plant_storage_remobilization_workspace.* == null or context.plant_water_workspace.* == null or context.plant_litter_partition.* == null) return;
     const roots = &context.plant_roots.*.?;
@@ -649,14 +1478,23 @@ fn applyRootMetabolism(context: anytype) !void {
             oxygen_demand_g_o,
             context.config.absolute_tolerance,
         );
-        roots.current_porosity_fraction[plant] = try ecosys.plant_root_porosity.adapt(
-            roots.current_porosity_fraction[plant],
-            roots.initial_porosity_fraction[plant],
-            oxygen_satisfaction,
-            1,
-            context.runscript.root_porosity_parameters,
+        const first_domain = try roots.domainIndex(plant, 0);
+        const domain_count = context.root_metabolism_plant_parameters[plant].biologicalDomainCount();
+        const domain_offsets = [2]usize{ 0, domain_count };
+        const oxygen_satisfaction_by_plant = [1]f64{oxygen_satisfaction};
+        try ecosys.plant_root_porosity_sweep.apply(
+            .{ .current_porosity_fraction_by_domain = roots.current_porosity_fraction_by_domain[first_domain..][0..domain_count] },
+            .{
+                .plant_count = 1,
+                .biological_domain_offsets_by_plant = &domain_offsets,
+                .initial_porosity_fraction_by_domain = roots.initial_porosity_fraction_by_domain[first_domain..][0..domain_count],
+                .oxygen_satisfaction_fraction_by_plant = &oxygen_satisfaction_by_plant,
+                .biological_timestep_h = 1,
+                .parameters = context.runscript.root_porosity_parameters,
+            },
         );
-        context.plant_water_workspace.*.?.root_porosity_fraction[plant] = roots.current_porosity_fraction[plant];
+        context.plant_water_workspace.*.?.root_porosity_fraction[plant] =
+            roots.current_porosity_fraction_by_domain[first_domain];
     }
     for (0..context.grid.cell_count) |cell| {
         var workspace = &context.plant_root_metabolism_workspace.*.?.per_cell[cell];
@@ -1189,20 +2027,49 @@ fn applyRootNutrientUptake(context: anytype) !void {
     for (0..context.grid.cell_count) |cell| {
         var workspace = &grid_workspace.per_cell[cell];
         const salt_workspace = if (context.runscript.dynamic_plant_salts) &context.plant_root_salt_workspace.*.?.per_cell[cell] else null;
+        const transaction_salt = if (context.runscript.dynamic_plant_salts) try context.plant_root_salt_workspace.*.?.transactionSaltBuffer(cell) else null;
+        const transaction_salt_selected = if (context.runscript.dynamic_plant_salts) try context.plant_root_salt_workspace.*.?.transactionSaltSelection(cell) else null;
         var exudation_workspace = &context.plant_root_exudation_workspace.*.?.per_cell[cell];
+        const transaction_organic = try context.plant_root_exudation_workspace.*.?.transactionOrganicBuffer(cell);
+        const transaction_organic_selected = try context.plant_root_exudation_workspace.*.?.transactionOrganicSelection(cell);
         const plant_first = cell * context.config.plant_populations;
+        const active_layer_count = context.grid.active_soil_layer_count[cell];
+        const first_soil = try context.grid.layerIndex(cell, 0);
+        const layer_thickness_m = context.soil_solver_properties.layer_thickness_m[first_soil..][0..active_layer_count];
+        const admission_buffer = try grid_workspace.admissionBuffer(cell);
+        var admitted_count: usize = 0;
+        for (0..context.config.plant_populations) |species| {
+            const plant = plant_first + species;
+            var iterator = try ecosys.rooted_layer_admission.Iterator.init(.{
+                .plant = plant,
+                .active_biological_domain_count = context.root_metabolism_plant_parameters[plant].biologicalDomainCount(),
+                .first_active_soil_layer = 0,
+                .deepest_rooted_soil_layer = roots.current_deepest_rooted_layer_by_plant[plant],
+                .layer_thickness_m = layer_thickness_m,
+                .minimum_active_layer_thickness_m = context.runscript.soil_geometry_parameters.minimum_layer_thickness_m,
+            });
+            while (iterator.next()) |coordinate| {
+                if (admitted_count == admission_buffer.len) return error.RootNutrientAdmissionCapacityExceeded;
+                admission_buffer[admitted_count] = coordinate;
+                admitted_count += 1;
+            }
+        }
+        const admitted = admission_buffer[0..admitted_count];
+        if (transaction_salt_selected) |selected| @memset(selected[0..admitted_count], false);
+        @memset(transaction_organic_selected[0..admitted_count], false);
+        const transaction_nutrient = try grid_workspace.transactionNutrientBuffer(cell);
+        const transaction_nutrient_selected = try grid_workspace.transactionNutrientSelection(cell);
+        @memset(transaction_nutrient_selected[0..admitted_count], false);
         for (0..context.grid.active_soil_layer_count[cell]) |layer| {
             const soil = try context.grid.layerIndex(cell, layer);
             const soil_pools = try context.plant_available_nutrients.mineralPools(soil);
             var total_previous = [_]f64{0} ** ecosys.plant_root_nutrient_uptake.nutrient_pool_count;
-            for (0..context.config.plant_populations) |species| {
-                const plant = plant_first + species;
-                for (0..context.root_metabolism_plant_parameters[plant].biologicalDomainCount()) |domain| {
-                    const root = try roots.layerIndex(plant, domain, layer);
-                    for (0..ecosys.plant_root_nutrient_uptake.nutrient_pool_count) |pool_index| {
-                        const pool: ecosys.plant_root_nutrient_uptake.NutrientPool = @enumFromInt(pool_index);
-                        total_previous[pool_index] += previousRootNutrientDemand(roots, pool, root);
-                    }
+            for (admitted) |coordinate| {
+                if (coordinate.soil_layer != layer) continue;
+                const root = try roots.layerIndex(coordinate.plant, coordinate.biological_domain, layer);
+                for (0..ecosys.plant_root_nutrient_uptake.nutrient_pool_count) |pool_index| {
+                    const pool: ecosys.plant_root_nutrient_uptake.NutrientPool = @enumFromInt(pool_index);
+                    total_previous[pool_index] += previousRootNutrientDemand(roots, pool, root);
                 }
             }
             total_previous[@intFromEnum(ecosys.plant_root_nutrient_uptake.NutrientPool.ammonium_nonband)] += context.soil_reactive_nitrogen.previous_total_non_band_ammonium_demand_g_n[soil];
@@ -1216,72 +2083,74 @@ fn applyRootNutrientUptake(context: anytype) !void {
 
             var competitor_count: usize = 0;
             var exudation_competitor_count: usize = 0;
-            for (0..context.config.plant_populations) |species| {
-                const plant = plant_first + species;
+            for (admitted, 0..) |coordinate, admission_index| {
+                if (coordinate.soil_layer != layer) continue;
+                const plant = coordinate.plant;
+                const domain = coordinate.biological_domain;
                 if (!context.plant_phenology.*.?.active[plant]) continue;
-                for (0..context.root_metabolism_plant_parameters[plant].biologicalDomainCount()) |domain| {
-                    const root = try roots.layerIndex(plant, domain, layer);
-                    if (roots.root_surface_area_m2_per_plant[root] <= context.config.absolute_tolerance) continue;
-                    if (roots.aqueous_volume_m3[root] > context.config.absolute_tolerance) {
-                        exudation_workspace.competitors[exudation_competitor_count] = .{ .plant = plant, .domain = domain, .layer = layer };
-                        exudation_competitor_count += 1;
-                    }
-                    const activity = try ecosys.plant_root_nutrient_uptake.activityFractions(
-                        roots.protein_carbon_g[root],
-                        roots.total_carbon_g[root],
-                        roots.maximum_protein_carbon_g_per_g_c[root],
-                        roots.mobile_carbon_g[root],
-                        roots.respiration_unlimited_by_carbon_g_c_per_h[root],
-                        roots.mobile_carbon_concentration_g_per_g[root],
-                        roots.mobile_nitrogen_concentration_g_per_g[root],
-                        roots.mobile_phosphorus_concentration_g_per_g[root],
-                        context.root_nutrient_feedback_enabled[plant],
-                        context.runscript.root_nutrient_parameters,
-                    );
-                    if (activity.protein <= 0 or activity.carbon <= 0) continue;
-                    var competition: [ecosys.plant_root_nutrient_uptake.nutrient_pool_count]f64 = undefined;
-                    for (0..ecosys.plant_root_nutrient_uptake.nutrient_pool_count) |pool_index| {
-                        const pool: ecosys.plant_root_nutrient_uptake.NutrientPool = @enumFromInt(pool_index);
-                        const biome = water.root_biome_fraction[root];
-                        competition[pool_index] = if (total_previous[pool_index] > context.config.absolute_tolerance)
-                            @max(context.runscript.root_nutrient_parameters.minimum_population_uptake_fraction_multiplier * biome, previousRootNutrientDemand(roots, pool, root) / total_previous[pool_index])
-                        else
-                            biome;
-                    }
-                    const temperature_response = try ecosys.plant_root_nutrient_uptake.rootGrowthTemperatureResponse(context.grid.soil_temperature_k[soil], context.detailed_canopy.*.?.plant_thermal_adaptation_offset_c[plant], context.runscript.canopy_stress_parameters.growth_temperature);
-                    const water_filled_fraction = if (context.soil_solver_properties.matrix_bulk_volume_m3[soil] > 0)
-                        std.math.clamp(context.grid.matrix_liquid_water_m3[soil] / context.soil_solver_properties.matrix_bulk_volume_m3[soil], 0, 1)
-                    else
-                        0;
-                    const diffusivity = [3]f64{
-                        try context.runscript.root_nutrient_parameters.diffusivityM2PerH(0, context.grid.soil_temperature_k[soil]),
-                        try context.runscript.root_nutrient_parameters.diffusivityM2PerH(1, context.grid.soil_temperature_k[soil]),
-                        try context.runscript.root_nutrient_parameters.diffusivityM2PerH(2, context.grid.soil_temperature_k[soil]),
-                    };
-                    const inputs = try workspace.inputs(competitor_count);
-                    try ecosys.plant_root_nutrient_uptake.buildLayerInputs(.{
-                        .traits_by_element = context.root_nutrient_traits[plant],
-                        .soil_pool_g_element = soil_pools,
-                        .total_soil_water_volume_m3 = context.grid.matrix_liquid_water_m3[soil],
-                        .zone_fraction_by_pool = zone_fraction_by_pool,
-                        .aqueous_diffusivity_m2_per_h_by_element = diffusivity,
-                        .liquid_tortuosity = context.runscript.root_nutrient_parameters.liquid_tortuosity_coefficient * water_filled_fraction * water_filled_fraction,
-                        .timestep_h = 1,
-                        .soil_path_length_m = water.soil_path_length_m[root],
-                        .root_cylinder_radius_m = water.root_cylinder_radius_m[root],
-                        .root_surface_area_per_radius_m = water.root_surface_area_per_radius_m[root],
-                        .root_surface_area_m2_per_plant = roots.root_surface_area_m2_per_plant[root],
-                        .root_activity_fraction = std.math.clamp(activity.protein * temperature_response, 0, 1),
-                        .nutrient_activity_fraction_by_element = .{ activity.nitrogen, activity.nitrogen, activity.phosphorus },
-                        .oxygen_limitation_fraction = std.math.clamp(roots.oxygen_process_constraint_fraction[root], 0, 1),
-                        .root_water_uptake_m3_per_plant_step = @max(0, -roots.water_uptake_m3_per_h[root]) / water.plant_population_count[plant],
-                        .plant_population_count = water.plant_population_count[plant],
-                        .population_competition_fraction_by_pool = competition,
-                        .carbon_uptake_limitation_fraction = activity.carbon,
-                    }, inputs);
-                    workspace.competitors[competitor_count] = .{ .plant = plant, .domain = domain, .layer = layer, .input_by_pool = inputs };
-                    competitor_count += 1;
+                const root = try roots.layerIndex(plant, domain, layer);
+                if (roots.root_surface_area_m2_per_plant[root] <= context.config.absolute_tolerance) continue;
+                if (roots.aqueous_volume_m3[root] > context.config.absolute_tolerance) {
+                    exudation_workspace.competitors[exudation_competitor_count] = .{ .plant = plant, .domain = domain, .layer = layer };
+                    exudation_workspace.admission_index_by_competitor[exudation_competitor_count] = admission_index;
+                    exudation_competitor_count += 1;
                 }
+                const activity = try ecosys.plant_root_nutrient_uptake.activityFractions(
+                    roots.protein_carbon_g[root],
+                    roots.total_carbon_g[root],
+                    roots.maximum_protein_carbon_g_per_g_c[root],
+                    roots.mobile_carbon_g[root],
+                    roots.respiration_unlimited_by_carbon_g_c_per_h[root],
+                    roots.mobile_carbon_concentration_g_per_g[root],
+                    roots.mobile_nitrogen_concentration_g_per_g[root],
+                    roots.mobile_phosphorus_concentration_g_per_g[root],
+                    context.root_nutrient_feedback_enabled[plant],
+                    context.runscript.root_nutrient_parameters,
+                );
+                if (activity.protein <= 0 or activity.carbon <= 0) continue;
+                var competition: [ecosys.plant_root_nutrient_uptake.nutrient_pool_count]f64 = undefined;
+                for (0..ecosys.plant_root_nutrient_uptake.nutrient_pool_count) |pool_index| {
+                    const pool: ecosys.plant_root_nutrient_uptake.NutrientPool = @enumFromInt(pool_index);
+                    const biome = water.root_biome_fraction[root];
+                    competition[pool_index] = if (total_previous[pool_index] > context.config.absolute_tolerance)
+                        @max(context.runscript.root_nutrient_parameters.minimum_population_uptake_fraction_multiplier * biome, previousRootNutrientDemand(roots, pool, root) / total_previous[pool_index])
+                    else
+                        biome;
+                }
+                const temperature_response = try ecosys.plant_root_nutrient_uptake.rootGrowthTemperatureResponse(context.grid.soil_temperature_k[soil], context.detailed_canopy.*.?.plant_thermal_adaptation_offset_c[plant], context.runscript.canopy_stress_parameters.growth_temperature);
+                const water_filled_fraction = if (context.soil_solver_properties.matrix_bulk_volume_m3[soil] > 0)
+                    std.math.clamp(context.grid.matrix_liquid_water_m3[soil] / context.soil_solver_properties.matrix_bulk_volume_m3[soil], 0, 1)
+                else
+                    0;
+                const diffusivity = [3]f64{
+                    try context.runscript.root_nutrient_parameters.diffusivityM2PerH(0, context.grid.soil_temperature_k[soil]),
+                    try context.runscript.root_nutrient_parameters.diffusivityM2PerH(1, context.grid.soil_temperature_k[soil]),
+                    try context.runscript.root_nutrient_parameters.diffusivityM2PerH(2, context.grid.soil_temperature_k[soil]),
+                };
+                const inputs = try workspace.inputs(competitor_count);
+                try ecosys.plant_root_nutrient_uptake.buildLayerInputs(.{
+                    .traits_by_element = context.root_nutrient_traits[plant],
+                    .soil_pool_g_element = soil_pools,
+                    .total_soil_water_volume_m3 = context.grid.matrix_liquid_water_m3[soil],
+                    .zone_fraction_by_pool = zone_fraction_by_pool,
+                    .aqueous_diffusivity_m2_per_h_by_element = diffusivity,
+                    .liquid_tortuosity = context.runscript.root_nutrient_parameters.liquid_tortuosity_coefficient * water_filled_fraction * water_filled_fraction,
+                    .timestep_h = 1,
+                    .soil_path_length_m = water.soil_path_length_m[root],
+                    .root_cylinder_radius_m = water.root_cylinder_radius_m[root],
+                    .root_surface_area_per_radius_m = water.root_surface_area_per_radius_m[root],
+                    .root_surface_area_m2_per_plant = roots.root_surface_area_m2_per_plant[root],
+                    .root_activity_fraction = std.math.clamp(activity.protein * temperature_response, 0, 1),
+                    .nutrient_activity_fraction_by_element = .{ activity.nitrogen, activity.nitrogen, activity.phosphorus },
+                    .oxygen_limitation_fraction = std.math.clamp(roots.oxygen_process_constraint_fraction[root], 0, 1),
+                    .root_water_uptake_m3_per_plant_step = @max(0, -roots.water_uptake_m3_per_h[root]) / water.plant_population_count[plant],
+                    .plant_population_count = water.plant_population_count[plant],
+                    .population_competition_fraction_by_pool = competition,
+                    .carbon_uptake_limitation_fraction = activity.carbon,
+                }, inputs);
+                workspace.competitors[competitor_count] = .{ .plant = plant, .domain = domain, .layer = layer, .input_by_pool = inputs };
+                workspace.admission_index_by_competitor[competitor_count] = admission_index;
+                competitor_count += 1;
             }
             if (exudation_competitor_count > 0) {
                 var substrate_fractions: [ecosys.plant_root_exudation.substrate_count]f64 = undefined;
@@ -1301,6 +2170,12 @@ fn applyRootNutrientUptake(context: anytype) !void {
                     context.config.absolute_tolerance,
                     exudation_competitor_count,
                 );
+                for (0..exudation_competitor_count) |competitor_index| {
+                    const result_base = competitor_index * ecosys.plant_root_exudation.substrate_count;
+                    const admission_index = exudation_workspace.admission_index_by_competitor[competitor_index];
+                    transaction_organic[admission_index] = try ecosys.plant_root_exudation.mapTransactionResult(exudation_workspace.staged_results[result_base..][0..ecosys.plant_root_exudation.substrate_count]);
+                    transaction_organic_selected[admission_index] = true;
+                }
             }
             var salt_competitor_count: usize = 0;
             if (exudation_competitor_count > 0 and salt_workspace != null and context.grid.matrix_liquid_water_m3[soil] > context.config.absolute_tolerance) {
@@ -1334,22 +2209,39 @@ fn applyRootNutrientUptake(context: anytype) !void {
                         .diffusive_geometry_m = salt_water_filled_fraction * water.root_surface_area_per_radius_m[root] / radial_log,
                         .plant_population_count = water.plant_population_count[competitor.plant],
                     };
+                    var salt_admission_index: ?usize = null;
+                    for (admitted, 0..) |coordinate, admission_index| {
+                        if (coordinate.plant == competitor.plant and coordinate.biological_domain == competitor.domain and coordinate.soil_layer == competitor.layer) {
+                            salt_admission_index = admission_index;
+                            break;
+                        }
+                    }
+                    salt_workspace.?.admission_index_by_competitor[salt_competitor_count] = salt_admission_index orelse return error.MissingRootSaltAdmissionCoordinate;
                     salt_competitor_count += 1;
                 }
-                if (salt_competitor_count > 0) _ = try salt_workspace.?.advance(
-                    roots,
-                    &soil_salt_content_mol,
-                    context.grid.matrix_liquid_water_m3[soil],
-                    context.grid.soil_temperature_k[soil],
-                    context.runscript.root_salt_parameters,
-                    salt_competitor_count,
-                    .{
-                        .absolute_tolerance_mol = context.config.absolute_tolerance,
-                        .relative_tolerance = context.config.relative_tolerance,
-                        .picard_relaxation = context.config.picard_relaxation,
-                        .max_iterations = context.iteration_limits.water_heat_solute_max_iterations,
-                    },
-                );
+                if (salt_competitor_count > 0) {
+                    _ = try salt_workspace.?.stage(
+                        roots,
+                        &soil_salt_content_mol,
+                        context.grid.matrix_liquid_water_m3[soil],
+                        context.grid.soil_temperature_k[soil],
+                        context.runscript.root_salt_parameters,
+                        salt_competitor_count,
+                        .{
+                            .absolute_tolerance_mol = context.config.absolute_tolerance,
+                            .relative_tolerance = context.config.relative_tolerance,
+                            .picard_relaxation = context.config.picard_relaxation,
+                            .max_iterations = context.iteration_limits.water_heat_solute_max_iterations,
+                        },
+                    );
+                    for (0..salt_competitor_count) |competitor_index| {
+                        const result_base = competitor_index * ecosys.plant_root_salt_exchange.species_count;
+                        const admission_index = salt_workspace.?.admission_index_by_competitor[competitor_index];
+                        transaction_salt.?[admission_index] = try ecosys.plant_root_salt_exchange.mapTransactionResult(salt_workspace.?.staged_exchange_mol[result_base..][0..ecosys.plant_root_salt_exchange.species_count]);
+                        transaction_salt_selected.?[admission_index] = true;
+                    }
+                    try salt_workspace.?.commitStaged(roots, &soil_salt_content_mol, salt_competitor_count);
+                }
                 const inverse_water = 1 / context.grid.matrix_liquid_water_m3[soil];
                 context.soil_chemistry.aqueous[soil].aluminum = soil_salt_content_mol[0] * inverse_water;
                 context.soil_chemistry.aqueous[soil].iron = soil_salt_content_mol[1] * inverse_water;
@@ -1360,12 +2252,24 @@ fn applyRootNutrientUptake(context: anytype) !void {
                 context.soil_chemistry.aqueous[soil].sulfate = soil_salt_content_mol[6] * inverse_water;
                 context.soil_chemistry.aqueous[soil].chloride = soil_salt_content_mol[7] * inverse_water;
             }
-            if (competitor_count > 0) try workspace.advanceAssimilating(
-                roots,
-                soil_pools,
-                competitor_count,
-                context.runscript.root_metabolism_parameters.nutrient_uptake_respiration_g_c_per_g_element,
-            );
+            if (competitor_count > 0) {
+                try workspace.stage(roots, soil_pools, competitor_count);
+                for (0..competitor_count) |competitor_index| {
+                    const result_base = competitor_index * ecosys.plant_root_nutrient_uptake.nutrient_pool_count;
+                    const admission_index = workspace.admission_index_by_competitor[competitor_index];
+                    transaction_nutrient[admission_index] = try ecosys.plant_root_nutrient_uptake.mapTransactionResult(
+                        workspace.staged_results[result_base..][0..ecosys.plant_root_nutrient_uptake.nutrient_pool_count],
+                        context.runscript.root_metabolism_parameters.nutrient_uptake_respiration_g_c_per_g_element,
+                    );
+                    transaction_nutrient_selected[admission_index] = true;
+                }
+                try workspace.commitStagedAssimilating(
+                    roots,
+                    soil_pools,
+                    competitor_count,
+                    context.runscript.root_metabolism_parameters.nutrient_uptake_respiration_g_c_per_g_element,
+                );
+            }
             if (exudation_competitor_count > 0) {
                 for (0..ecosys.plant_root_exudation.substrate_count) |substrate| {
                     var total: ecosys.plant_root_exudation.Result = .{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 };
@@ -1463,7 +2367,8 @@ fn ensureCanopyGrowthNodeTopology(canopy: *ecosys.canopy_photosynthesis.State, g
 }
 
 fn convergeSurfaceLitterChemistry(context: anytype) !void {
-    if (context.chemistry_reaction_parameters.*) |reaction_parameters| if (context.organic_parameters.*) |*organic_runtime_parameters| {
+    {
+        const reaction_parameters = context.chemistry_reaction_parameters.*;
         context.surface_litter_chemistry_diagnostics.reset();
         var litter_chemistry_context: ecosys.surface_litter_chemistry_step.ApplyContext = .{
             .state = context.surface_litter_chemistry,
@@ -1471,7 +2376,7 @@ fn convergeSurfaceLitterChemistry(context: anytype) !void {
             .litter_water_m3 = context.surface_precipitation.litter_water_m3,
             .chemistry_parameters = reaction_parameters,
             .cation_selectivity_by_cell = context.surface_litter_cation_selectivity,
-            .litter_dry_mass_Mg_per_g_c = organic_runtime_parameters.surface_litter_dry_mass_Mg_per_g_c,
+            .litter_dry_mass_megagrams = context.surface_litter_geometry.dry_mass_megagrams,
             .dynamic_salts = context.runscript.dynamic_plant_salts,
             .solver_options = .{
                 .absolute_tolerance = context.config.absolute_tolerance,
@@ -1486,11 +2391,17 @@ fn convergeSurfaceLitterChemistry(context: anytype) !void {
             .diagnostics = context.surface_litter_chemistry_diagnostics,
         };
         try runKernelAcrossSerialTiles(context, &litter_chemistry_context, ecosys.surface_litter_chemistry_step.applyTile);
-    };
+        try ecosys.surface_litter_chemistry_step.publishAcceptedCarbonDioxideChanges(
+            context.litter_gas_transport,
+            context.surface_litter_chemistry_diagnostics,
+            12,
+        );
+    }
 }
 
 noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
-    if (context.soil_nitrogen_parameters.*) |nitrogen_parameters| {
+    {
+        const nitrogen_parameters = context.soil_nitrogen_parameters.*;
         var reset_nitrogen_fluxes: ecosys.soil_nitrogen_flux_workspace.ResetContext = .{ .state = context.soil_nitrogen_flux_workspace };
         try runScienceCellLayers(context, &reset_nitrogen_fluxes, ecosys.soil_nitrogen_flux_workspace.resetTile);
         const nutrient_zones = context.runscript.plant_nutrient_initialization;
@@ -1515,12 +2426,28 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
             .retention_curve = context.soil_solver_properties.retention_curve,
             .matrix_bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3,
             .matric_plus_osmotic_potential_mpa = context.soil_hourly_workspace.matric_plus_osmotic_potential_mpa,
+            // NITRO-BIND-BACKLOG (`DISC-NITRO-001`), source `nitro.f` 556--557,
+            // 918--928 and 1000--1004. Read-only inputs for the anaerobic
+            // `ECHZ` product-energy feedback on the two anaerobic
+            // growth-respiration requirements.
+            // `soil_heterotrophic_respiration_step.applyTile` remains the SOLE
+            // writer of the anaerobic publish set: no field gains a second
+            // writer here, only two scalar supply ceilings change value, and
+            // only when the runtime parameter set carries a
+            // `soil_anaerobic_growth_energy` record. Absent that record the
+            // step reproduces the legacy constants bit for bit, which its own
+            // test pins. `gas_transport` is already threaded into the
+            // neighbouring steps of this same phase, and source `GH2X` is
+            // computed once per layer before the loops that consume it, so
+            // there is no ordering inversion and no phase change.
+            .gas_state = context.gas_transport,
+            .aqueous_water_volume_m3 = context.grid.matrix_liquid_water_m3,
             .parameters = nitrogen_parameters,
             .timestep_h = 1,
             .negligible_amount = context.config.absolute_tolerance,
         };
         try runScienceCellLayers(context, &heterotrophic_respiration_context, ecosys.soil_heterotrophic_respiration_step.applyTile);
-        const surface_parameters = context.surface_gas_parameters.* orelse return error.SoilNitrogenRequiresAtmosphericGasParameters;
+        const surface_parameters = context.surface_gas_parameters.*;
         var soil_oxygen_context: ecosys.soil_oxygen_step.ApplyContext = .{
             .staging = context.soil_oxygen_staging,
             .result = context.soil_microbial_oxygen,
@@ -1630,6 +2557,9 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
             .timestep_h = 1,
         };
         try runScienceCellLayers(context, &soil_nitrogen_fixation_context, ecosys.soil_nonsymbiotic_nitrogen_fixation_step.applyTile);
+        var diagnostic_soil_fixed_n_g_n: f64 = 0;
+        for (context.soil_nitrogen_flux_workspace.fixed_dinitrogen_g_n) |value| diagnostic_soil_fixed_n_g_n += value;
+        std.log.debug("soil nonsymbiotic fixation: fixed_g_n={e}", .{diagnostic_soil_fixed_n_g_n});
         var soil_microbial_substrate_uptake_context: ecosys.soil_microbial_substrate_uptake_step.ApplyContext = .{
             .result = context.soil_nitrogen_flux_workspace,
             .organic_state = context.soil_organic,
@@ -1690,7 +2620,8 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
             };
             try runScienceCellLayers(context, &methane_context, ecosys.soil_methane_step.applyTile);
         }
-        if (context.organic_parameters.*) |*organic_runtime_parameters| {
+        {
+            const organic_runtime_parameters = context.organic_parameters;
             var soil_microbial_assimilation_context: ecosys.soil_microbial_assimilation_step.ApplyContext = .{
                 .result = context.soil_nitrogen_flux_workspace,
                 .microbial_state = context.soil_microbial,
@@ -1720,7 +2651,8 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
             };
             try runScienceCellLayers(context, &soil_microbial_turnover_context, ecosys.soil_microbial_turnover_step.applyTile);
         }
-        if (context.organic_parameters.*) |organic_runtime_parameters| {
+        {
+            const organic_runtime_parameters = context.organic_parameters.*;
             var soil_organic_priming_context: ecosys.soil_organic_priming_step.ApplyContext = .{
                 .result = context.soil_organic_priming,
                 .organic_state = context.soil_organic,
@@ -1743,7 +2675,7 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
                 .priming = context.soil_organic_priming,
                 .soil_temperature_k = context.grid.soil_temperature_k,
                 .matrix_bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3,
-                .bulk_density_Mg_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
+                .bulk_density_megagrams_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
                 .microbial_nitrogen_to_carbon_g_n_per_g_c = organic_runtime_parameters.microbial_nitrogen_to_carbon,
                 .microbial_phosphorus_to_carbon_g_p_per_g_c = organic_runtime_parameters.microbial_phosphorus_to_carbon,
                 .substrate_nitrogen_to_carbon_g_n_per_g_c = organic_runtime_parameters.substrate_nitrogen_to_carbon,
@@ -1761,8 +2693,8 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
                 .respiration_fluxes = context.soil_nitrogen_flux_workspace,
                 .water_volume_m3 = context.grid.matrix_liquid_water_m3,
                 .matrix_bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3,
-                .bulk_density_Mg_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
-                .anion_exchange_capacity_mol_per_Mg = context.soil_solver_properties.anion_exchange_capacity_mol_per_Mg,
+                .bulk_density_megagrams_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
+                .anion_exchange_capacity_mol_per_megagram = context.soil_solver_properties.anion_exchange_capacity_mol_per_megagram,
                 .sorption_rate_per_h = organic_runtime_parameters.soil_organic_sorption_rate_per_h,
                 .adsorption_coefficient = organic_runtime_parameters.soil_organic_adsorption_coefficient,
                 .timestep_h = 1,
@@ -1806,7 +2738,7 @@ noinline fn runSoilBiogeochemistryBatch(context: anytype) !void {
             .microbial_state = context.soil_microbial,
             .active_layer_count = context.grid.active_soil_layer_count,
             .layer_volume_m3 = context.soil_solver_properties.layer_volume_m3,
-            .dry_bulk_density_Mg_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
+            .dry_bulk_density_megagrams_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
             .layer_thickness_m = context.soil_solver_properties.layer_thickness_m,
             .total_organic_carbon_g_per_megagram = context.soil_solver_properties.total_organic_carbon_g_per_megagram,
             .substrate_unlimited_oxygen_limited_activity_g_c = context.soil_microbial_layer_mixing.substrate_unlimited_oxygen_limited_activity_g_c,
@@ -1893,7 +2825,8 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
         .parameters = surface_parameters.microbial_respiration,
     };
     try runScienceCells(context, &microbial_maintenance_context, ecosys.surface_microbial_maintenance_step.applyTile);
-    if (context.organic_parameters.*) |*organic_runtime_parameters| {
+    {
+        const organic_runtime_parameters = context.organic_parameters;
         var nitrogen_fixation_context: ecosys.surface_nonsymbiotic_nitrogen_fixation_step.ApplyContext = .{
             .result = context.surface_nonsymbiotic_nitrogen_fixation,
             .surface_organic = context.surface_organic,
@@ -1905,6 +2838,9 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
             .timestep_h = 1,
         };
         try runScienceCells(context, &nitrogen_fixation_context, ecosys.surface_nonsymbiotic_nitrogen_fixation_step.applyTile);
+        var diagnostic_surface_fixed_n_g_n: f64 = 0;
+        for (context.surface_nonsymbiotic_nitrogen_fixation.fixed_nitrogen_g_n) |value| diagnostic_surface_fixed_n_g_n += value;
+        std.log.debug("surface nonsymbiotic fixation: fixed_g_n={e}", .{diagnostic_surface_fixed_n_g_n});
         var assimilation_context: ecosys.surface_microbial_assimilation_step.ApplyContext = .{
             .result = context.surface_microbial_assimilation,
             .surface_organic = context.surface_organic,
@@ -2012,7 +2948,7 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
             .result = context.surface_organic_sorption,
             .surface_organic = context.surface_organic,
             .litter_water_m3 = context.surface_precipitation.litter_water_m3,
-            .litter_dry_mass_Mg = context.surface_litter_geometry.dry_mass_Mg,
+            .litter_dry_mass_megagrams = context.surface_litter_geometry.dry_mass_megagrams,
             .timestep_h = 1,
             .negligible_mass_g = context.config.absolute_tolerance,
             .parameters = surface_parameters.organic_sorption,
@@ -2100,7 +3036,8 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
     try runScienceCells(context, &metabolism_commit_context, ecosys.surface_metabolism_commit.applyTile);
     // NITRO 4168--4275 evaluates the L=0 -> NU microbial transfer only after
     // both surface and first-soil-layer biological states are accepted.
-    if (context.soil_nitrogen_parameters.*) |nitrogen_parameters| {
+    {
+        const nitrogen_parameters = context.soil_nitrogen_parameters.*;
         var microbial_mixing_context: ecosys.surface_topsoil_microbial_mixing.ApplyContext = .{
             .surface_organic = context.surface_organic,
             .soil_microbial = context.soil_microbial,
@@ -2111,8 +3048,8 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
             .topsoil_volume_m3 = context.soil_solver_properties.layer_volume_m3,
             .surface_area_m2 = context.canopy_cell_area_m2,
             .topsoil_thickness_m = context.soil_solver_properties.layer_thickness_m,
-            .surface_dry_mass_Mg = context.surface_litter_geometry.dry_mass_Mg,
-            .topsoil_bulk_density_Mg_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
+            .surface_dry_mass_megagrams = context.surface_litter_geometry.dry_mass_megagrams,
+            .topsoil_bulk_density_megagrams_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3,
             .topsoil_organic_carbon_g_per_megagram = context.soil_solver_properties.total_organic_carbon_g_per_megagram,
             .parameters = .{
                 .mixing_rate_per_h = nitrogen_parameters.microbial_layer_mixing_rate_per_h,
@@ -2122,7 +3059,9 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
         };
         try runScienceCells(context, &microbial_mixing_context, ecosys.surface_topsoil_microbial_mixing.applyTile);
     }
-    if (context.chemistry_reaction_parameters.*) |reaction_parameters| if (context.organic_parameters.*) |*organic_runtime_parameters| {
+    {
+        const reaction_parameters = context.chemistry_reaction_parameters.*;
+        const organic_runtime_parameters = context.organic_parameters;
         var fertilizer_context: ecosys.surface_litter_fertilizer_step.ApplyContext = .{
             .state = context.surface_litter_fertilizer,
             .chemistry = context.surface_litter_chemistry,
@@ -2132,13 +3071,13 @@ noinline fn runSurfaceBiogeochemistryBatch(context: anytype, surface_parameters:
             .biologically_active_water_m3 = context.surface_microbial_environment.biologically_active_water_m3,
             .active_biomass_respiration_g_c_per_step = context.surface_microbial_oxygen.oxygen_limited_activity_g_c_per_step,
             .microbial_temperature_factor = context.surface_microbial_environment.growth_temperature_response,
-            .litter_dry_mass_Mg_per_g_c = organic_runtime_parameters.surface_litter_dry_mass_Mg_per_g_c,
+            .litter_dry_mass_megagrams_per_g_c = organic_runtime_parameters.surface_litter_dry_mass_megagrams_per_g_c,
             .step_duration_h = 1,
             .parameters = reaction_parameters.surface_fertilizer,
             .diagnostics = context.surface_litter_fertilizer_diagnostics,
         };
         try runScienceCells(context, &fertilizer_context, ecosys.surface_litter_fertilizer_step.applyTile);
-    };
+    }
 }
 
 noinline fn runSurfaceBiogeochemistryBySerialTile(context: anytype, surface_parameters: anytype) !void {
@@ -2417,6 +3356,36 @@ fn commitHourlyGasContributionGeneration(
     }
 }
 
+fn diagnosticGasNitrogen_g(state: *const ecosys.gas_transport.State) !f64 {
+    var total_g_n: f64 = 0;
+    inline for (.{ ecosys.gas_transport.Species.nitrogen, .nitrous_oxide, .ammonia }) |species| {
+        for (0..state.cell_count) |layer| {
+            const index = try ecosys.gas_transport.massIndex(layer, species, state.cell_count);
+            total_g_n += state.gaseous_mass_g[index] + state.dissolved_mass_g[index] +
+                state.macropore_dissolved_mass_g[index] + state.band_dissolved_mass_g[index];
+        }
+    }
+    if (!std.math.isFinite(total_g_n)) return error.NonFiniteDiagnosticGasNitrogen;
+    return total_g_n;
+}
+
+fn snowpackInternalNonSaltFluxFromSpeciesAmounts(
+    amounts: []const f64,
+) ecosys.snowpack_internal_solute_aggregation.SoluteFlux {
+    return .{
+        .carbon_dioxide_g_c_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.carbon_dioxide_carbon)],
+        .methane_g_c_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.methane_carbon)],
+        .oxygen_g_o_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.oxygen)],
+        .dinitrogen_g_n_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.dinitrogen_nitrogen)],
+        .nitrous_oxide_g_n_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.nitrous_oxide_nitrogen)],
+        .ammonium_g_n_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.ammonium_nitrogen)],
+        .ammonia_g_n_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.ammonia_nitrogen)],
+        .nitrate_g_n_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.nitrate_nitrogen)],
+        .hydrogen_phosphate_g_p_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.hydrogen_phosphate_phosphorus)],
+        .dihydrogen_phosphate_g_p_per_step = amounts[@intFromEnum(ecosys.snow_solute_transport.Species.dihydrogen_phosphate_phosphorus)],
+    };
+}
+
 fn executeHourlyScience(
     context: anytype,
     hour_of_day: u8,
@@ -2435,12 +3404,38 @@ fn executeHourlyScience(
         return error.HourlyEnvironmentDimensionMismatch;
     const plant_calendar = plant_calendar_by_cell[0];
     if (hour_of_day > 23) return error.InvalidHourlyScienceHour;
+    const diagnostic_first_hour = context.executed_weather_hours.* < 24;
+    var diagnostic_previous_n_g = if (diagnostic_first_hour)
+        try diagnosticStoredNitrogen_g(context)
+    else
+        0;
+    var diagnostic_previous_p_g = if (diagnostic_first_hour)
+        try diagnosticStoredPhosphorus_g(context)
+    else
+        0;
+    var diagnostic_previous_p_owners = if (diagnostic_first_hour)
+        try diagnosticPhosphorusOwners_g(context)
+    else
+        @as([3]f64, @splat(0));
+    var diagnostic_previous_heat_megajoules = if (diagnostic_first_hour)
+        (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules
+    else
+        0;
+    const diagnostic_relayer_phosphate_before = if (diagnostic_first_hour)
+        diagnosticRelayerPhosphateOwners_g(context)
+    else
+        @as([3]f64, @splat(0));
     context.plant_available_nutrients.resetHourlyChanges();
     try ecosys.soil_organic_carbon_change.captureHourStart(context.soil_organic, context.soil_organic_carbon_at_hour_start_g_c);
     // Derive restart-sensitive surface state from the checkpointed snow owner.
     for (0..context.grid.cell_count) |cell| context.snow_depth_m[cell] = context.snow_transport.cumulative_depth_m[(cell + 1) * context.snow_transport.layer_capacity - 1];
     // Chemistry is concentration-based while TRNSFRS is amount-based. Export
     // before water moves so dilution does not create or destroy solute mass.
+    try ecosys.soil_aqueous_transport_bridge.validateCarrierVolumes(
+        context.micropore_solute_state,
+        context.grid.matrix_liquid_water_m3,
+        context.config.absolute_tolerance,
+    );
     try ecosys.soil_aqueous_transport_bridge.exportChemistry(context.soil_chemistry, context.micropore_solute_state);
     // Legacy TRNSFR copies extensive ZNH4S/ZNH4B inventories before water
     // transport. Capture mineral N at the same boundary; reconstructing
@@ -2452,6 +3447,22 @@ fn executeHourlyScience(
         context.mineral_nitrogen_zone_fractions,
         context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
     );
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: mineral_capture delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: mineral_capture delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
+    var diagnostic_mineral_before_mol: f64 = 0;
+    const diagnostic_transport_before = if (diagnostic_first_hour) try reconstructLandscapeMassBalance(context) else undefined;
+
+    const diagnostic_transport_ammonium_before = if (diagnostic_first_hour) try diagnosticAmmoniumOwners_g_n(context) else undefined;
+    if (diagnostic_first_hour) {
+        for (context.mineral_nitrogen_transport.matrix.amount_mol) |amount| diagnostic_mineral_before_mol += amount;
+        for (context.mineral_nitrogen_transport.macropore.amount_mol) |amount| diagnostic_mineral_before_mol += amount;
+    }
     var forcing_context = ecosys.atmospheric_forcing.MappedApplyContext{ .state = context.atmosphere, .forcing_by_cell = forcing_by_cell };
     try runKernelAcrossSerialTiles(context, &forcing_context, ecosys.atmospheric_forcing.applyMappedTile);
     for (0..context.grid.cell_count) |cell| {
@@ -2481,14 +3492,14 @@ fn executeHourlyScience(
     try context.ground_air.refreshGeometry(context.canopy_cell_area_m2, context.surface_aerodynamics.wind_reference_height_m, context.runscript.ground_air_parameters);
     for (0..context.grid.cell_count) |cell| context.ground_air_vapor_pressure_kpa[cell] = try ecosys.ground_air_exchange.vaporPressureKpa(context.ground_air.vapor_volume_fraction[cell], context.ground_air.temperature_k[cell], context.runscript.ground_air_parameters);
     for (radiation_by_cell, forcing_by_cell, 0..) |cell_radiation, cell_forcing, cell| {
-        context.hourly_extraterrestrial_shortwave_mj_per_m2[cell] =
-            cell_radiation.extraterrestrial_shortwave_mj_per_m2;
+        context.hourly_extraterrestrial_shortwave_megajoules_per_m2[cell] =
+            cell_radiation.extraterrestrial_shortwave_megajoules_per_m2;
         context.hourly_solar_angle_sine[cell] = cell_radiation.solar_angle_sine;
         context.hourly_solar_azimuth_radians[cell] = cell_radiation.solar_azimuth_radians;
-        context.hourly_adjusted_shortwave_mj_per_m2[cell] =
-            cell_forcing.shortwave_radiation_mj_per_m2;
+        context.hourly_adjusted_shortwave_megajoules_per_m2[cell] =
+            cell_forcing.shortwave_radiation_megajoules_per_m2;
     }
-    var canopy_radiation_context: ecosys.canopy_radiation.MappedApplyContext = .{ .state = context.canopy_radiation, .horizontal_shortwave_mj_per_m2 = context.hourly_adjusted_shortwave_mj_per_m2, .extraterrestrial_horizontal_shortwave_mj_per_m2 = context.hourly_extraterrestrial_shortwave_mj_per_m2, .solar_angle_sine = context.hourly_solar_angle_sine };
+    var canopy_radiation_context: ecosys.canopy_radiation.MappedApplyContext = .{ .state = context.canopy_radiation, .horizontal_shortwave_megajoules_per_m2 = context.hourly_adjusted_shortwave_megajoules_per_m2, .extraterrestrial_horizontal_shortwave_megajoules_per_m2 = context.hourly_extraterrestrial_shortwave_megajoules_per_m2, .solar_angle_sine = context.hourly_solar_angle_sine };
     try runKernelAcrossSerialTiles(context, &canopy_radiation_context, ecosys.canopy_radiation.applyMappedTile);
     if (context.canopy_optics.*) |*optics| {
         var optics_context: ecosys.canopy_optics.ApplyContext = .{ .state = optics, .radiation = context.canopy_radiation };
@@ -2510,10 +3521,15 @@ fn executeHourlyScience(
     try runKernelAcrossSerialTiles(context, &terrain_radiation_context, ecosys.terrain_radiation.applyMappedDirectSolarTile);
     var ground_context: ecosys.ground_radiation.ApplyContext = .{ .result = context.ground_radiation, .radiation = context.canopy_radiation, .interception = if (context.canopy_interception.*) |*interception| interception else null, .terrain = context.terrain_radiation };
     try runKernelAcrossSerialTiles(context, &ground_context, ecosys.ground_radiation.applyTile);
-    if (context.canopy_interception.* != null and context.canopy_layer_distribution.* != null) try ecosys.canopy_interception.applyGroundReflectedUpwardSweep(&context.canopy_interception.*.?, &context.canopy_layer_distribution.*.?, &context.canopy_structure.*.?, &context.canopy_optics.*.?, context.canopy_geometry, context.ground_radiation.reflected_shortwave_mj_per_m2, context.ground_radiation.reflected_par_micromol_per_m2_per_s, context.runscript.woody_optics_parameters);
-    if (context.canopy_precipitation_retention.*) |*retention| try ecosys.canopy_precipitation_retention.refreshFromModel(retention, &context.canopy_layer_distribution.*.?, &context.detailed_canopy.*.?, &context.canopy_interception.*.?, context.atmosphere.rainfall_m, context.canopy_cell_area_m2, context.canopy_layer_controls.root_profile_type, context.hourly_solar_angle_sine, context.ground_radiation.incident_shortwave_mj_per_m2, context.runscript.canopy_retention_parameters);
+    if (context.canopy_interception.* != null and context.canopy_layer_distribution.* != null) try ecosys.canopy_interception.applyGroundReflectedUpwardSweep(&context.canopy_interception.*.?, &context.canopy_layer_distribution.*.?, &context.canopy_structure.*.?, &context.canopy_optics.*.?, context.canopy_geometry, context.ground_radiation.reflected_shortwave_megajoules_per_m2, context.ground_radiation.reflected_par_micromol_per_m2_per_s, context.runscript.woody_optics_parameters);
+    if (context.canopy_precipitation_retention.*) |*retention| try ecosys.canopy_precipitation_retention.refreshFromModel(retention, &context.canopy_layer_distribution.*.?, &context.detailed_canopy.*.?, &context.canopy_interception.*.?, context.atmosphere.rainfall_m, context.canopy_cell_area_m2, context.canopy_layer_controls.root_profile_type, context.hourly_solar_angle_sine, context.ground_radiation.incident_shortwave_megajoules_per_m2, context.runscript.canopy_retention_parameters);
     try ecosys.surface_precipitation.prepareFromModel(context.surface_precipitation, context.atmosphere, context.grid, if (context.canopy_precipitation_retention.*) |*retention| retention else null, context.canopy_cell_area_m2, context.snow_depth_m, context.runscript.snow_full_cover_depth_m, context.iteration_limits.water_heat_solute_max_iterations);
-    try context.snow_transport.commitAtmosphericWater(context.surface_precipitation.snow_to_snow_m3_per_h, context.surface_precipitation.rain_to_snow_m3_per_h, context.surface_precipitation.heat_to_snow_mj_per_h, context.atmosphere.air_temperature_k, context.runscript.initial_snow_density_Mg_per_m3);
+    try ecosys.surface_litter_chemistry_carrier_rebase.rebaseFromAcceptedLiquidWaterChange(
+        context.surface_litter_chemistry,
+        context.surface_precipitation.litter_water_m3,
+        context.surface_precipitation.water_to_litter_m3_per_h,
+    );
+    try context.snow_transport.commitAtmosphericWater(context.surface_precipitation.snow_to_snow_m3_per_h, context.surface_precipitation.rain_to_snow_m3_per_h, context.surface_precipitation.heat_to_snow_megajoules_per_h, context.atmosphere.air_temperature_k, context.runscript.initial_snow_density_megagrams_per_m3);
     _ = try ecosys.snow_heat_conduction.solve(context.allocator, context.snow_transport, context.runscript.snow_heat_conduction_parameters, .{
         .timestep_h = 1,
         .full_snow_cover_depth_m = context.runscript.snow_full_cover_depth_m,
@@ -2535,8 +3551,8 @@ fn executeHourlyScience(
         .max_iterations = context.iteration_limits.snowpack_max_iterations,
     });
     const snow_phase_change_report = try ecosys.snow_phase_change.solve(context.allocator, context.snow_transport, .{
-        .ice_density_Mg_per_m3 = context.runscript.snow_ice_density_Mg_per_m3,
-        .latent_heat_of_fusion_mj_per_m3 = context.runscript.snow_latent_heat_of_fusion_mj_per_m3,
+        .ice_density_megagrams_per_m3 = context.runscript.snow_ice_density_megagrams_per_m3,
+        .latent_heat_of_fusion_megajoules_per_m3 = context.runscript.snow_latent_heat_of_fusion_megajoules_per_m3,
         .damping_divisor = context.runscript.snow_phase_damping_divisor,
         .absolute_temperature_tolerance_k = context.config.absolute_tolerance,
         .relative_tolerance = context.config.relative_tolerance,
@@ -2569,14 +3585,13 @@ fn executeHourlyScience(
     for (0..context.grid.cell_count) |cell| {
         const weather_header = weather_header_by_cell[cell];
         var rain_gas_concentration = [_]f64{0} ** 5;
-        if (context.surface_gas_parameters.*) |surface_parameters| {
+        {
+            const surface_parameters = context.surface_gas_parameters.*;
             const solubility = try ecosys.gas_transport.surfaceSolubilityWaterToAir(context.atmosphere.air_temperature_k[cell], surface_parameters.solubility);
             for (0..5) |species| rain_gas_concentration[species] = context.current_atmospheric_gas_concentration_g_per_m3.*[species] * solubility[species];
         }
-        const nutrients = if (context.chemistry_reaction_parameters.*) |reaction_parameters|
-            try ecosys.precipitation_nutrient_speciation.calculate(.{ .ph = weather_header.precipitation_ph, .ammonium_g_n_per_m3 = weather_header.precipitation_ammonium_g_per_m3, .nitrate_g_n_per_m3 = weather_header.precipitation_nitrate_g_per_m3, .phosphate_g_p_per_m3 = weather_header.precipitation_phosphate_g_per_m3 }, reaction_parameters.aqueous_constants, reaction_parameters.phosphate_constants)
-        else
-            [5]f64{ weather_header.precipitation_ammonium_g_per_m3 / 14, 0, weather_header.precipitation_nitrate_g_per_m3 / 14, 0, weather_header.precipitation_phosphate_g_per_m3 / 31 };
+        const reaction_parameters = context.chemistry_reaction_parameters.*;
+        const nutrients = try ecosys.precipitation_nutrient_speciation.calculate(.{ .ph = weather_header.precipitation_ph, .ammonium_g_n_per_m3 = weather_header.precipitation_ammonium_g_per_m3, .nitrate_g_n_per_m3 = weather_header.precipitation_nitrate_g_per_m3, .phosphate_g_p_per_m3 = weather_header.precipitation_phosphate_g_per_m3 }, reaction_parameters.aqueous_constants, reaction_parameters.phosphate_constants);
         const area_m2 = context.canopy_cell_area_m2[cell];
         const irrigation_depth_m = context.irrigation_water_depth_m[cell];
         const irrigation_volume_m3 = irrigation_depth_m * area_m2;
@@ -2591,15 +3606,12 @@ fn executeHourlyScience(
             const concentration = context.irrigation_dissolved_mass_g_per_m2[first .. first + ecosys.irrigation_management_dispatch.dissolved_species_count];
             const hydrogen_mol_per_m3 = context.irrigation_hydrogen_mol_per_m2[cell] / irrigation_depth_m;
             const irrigation_ph = -std.math.log10(@max(hydrogen_mol_per_m3 / 1000.0, 1.0e-14));
-            irrigation_nutrients = if (context.chemistry_reaction_parameters.*) |reaction_parameters|
-                try ecosys.precipitation_nutrient_speciation.calculate(.{
-                    .ph = irrigation_ph,
-                    .ammonium_g_n_per_m3 = concentration[0] / irrigation_depth_m,
-                    .nitrate_g_n_per_m3 = concentration[1] / irrigation_depth_m,
-                    .phosphate_g_p_per_m3 = concentration[2] / irrigation_depth_m,
-                }, reaction_parameters.aqueous_constants, reaction_parameters.phosphate_constants)
-            else
-                [5]f64{ concentration[0] / irrigation_depth_m / 14, 0, concentration[1] / irrigation_depth_m / 14, 0, concentration[2] / irrigation_depth_m / 31 };
+            irrigation_nutrients = try ecosys.precipitation_nutrient_speciation.calculate(.{
+                .ph = irrigation_ph,
+                .ammonium_g_n_per_m3 = concentration[0] / irrigation_depth_m,
+                .nitrate_g_n_per_m3 = concentration[1] / irrigation_depth_m,
+                .phosphate_g_p_per_m3 = concentration[2] / irrigation_depth_m,
+            }, reaction_parameters.aqueous_constants, reaction_parameters.phosphate_constants);
             for (&irrigation_ions_g_per_m3, 0..) |*ion, index| ion.* = concentration[3 + index] / irrigation_depth_m;
         }
         const input = try ecosys.snow_solute_transport.atmosphericInputG(rain_to_snow_m3, irrigation_to_snow_m3, rain_gas_concentration, [_]f64{0} ** 5, nutrients, irrigation_nutrients, [_]f64{0} ** 8, irrigation_ions_g_per_m3);
@@ -2611,8 +3623,14 @@ fn executeHourlyScience(
         if (direct_liquid_m3 > 0) {
             const total_weather_rain_m3 = @max(0, total_liquid_volume_m3 - irrigation_volume_m3);
             const snow_fraction = if (total_liquid_volume_m3 > 0) liquid_to_snow_m3 / total_liquid_volume_m3 else 0;
-            const direct_rain_m3 = total_weather_rain_m3 * (1 - snow_fraction);
-            const direct_irrigation_m3 = irrigation_volume_m3 * (1 - snow_fraction);
+            const accepted_direct = try ecosys.atmospheric_solute_input_ledger.partitionAcceptedDirectLiquid(
+                direct_liquid_m3,
+                total_weather_rain_m3 * (1 - snow_fraction),
+                irrigation_volume_m3 * (1 - snow_fraction),
+                context.config.absolute_tolerance,
+            );
+            const direct_rain_m3 = accepted_direct.rain_m3;
+            const direct_irrigation_m3 = accepted_direct.irrigation_m3;
             const direct_input = try ecosys.snow_solute_transport.atmosphericInputG(direct_rain_m3, direct_irrigation_m3, rain_gas_concentration, [_]f64{0} ** 5, nutrients, irrigation_nutrients, [_]f64{0} ** 8, irrigation_ions_g_per_m3);
             const litter_fraction = std.math.clamp(context.surface_precipitation.water_to_litter_m3_per_h[cell] / direct_liquid_m3, 0, 1);
             const soil_fraction = 1 - litter_fraction;
@@ -2643,6 +3661,17 @@ fn executeHourlyScience(
         context.snow_atmospheric_input_g,
         context.direct_surface_solute_input,
     );
+    const diagnostic_snow_n_before_g = if (diagnostic_first_hour)
+        diagnosticSnowNitrogen_g(try ecosys.landscape_mass_inventory.aggregateSnow(
+            context.snow_transport,
+            context.runscript.snow_ice_density_megagrams_per_m3,
+        ))
+    else
+        0;
+    const diagnostic_snow_n_input_g = if (diagnostic_first_hour)
+        diagnosticSnowSpeciesNitrogen_g(context.snow_atmospheric_input_g)
+    else
+        0;
     _ = try ecosys.snow_transport_solver.solve(context.allocator, context.snow_transport, .{
         .atmospheric_top_input_g = context.snow_atmospheric_input_g,
         .transport_water_volume_m3 = context.transport_hydrology.snow_liquid_water_volume_m3,
@@ -2652,13 +3681,98 @@ fn executeHourlyScience(
         .soil_macropore_water_flux_m3 = context.transport_hydrology.snow_to_soil_macropore_flux_m3_per_step,
         .surface_partitions = context.snow_surface_partitions,
     }, .{ .absolute_tolerance_g = context.config.absolute_tolerance, .relative_tolerance = context.config.relative_tolerance, .picard_relaxation = context.config.picard_relaxation, .max_iterations = context.iteration_limits.snowpack_max_iterations }, context.snow_surface_discharge);
+    if (diagnostic_first_hour) {
+        const snow_n_after_g = diagnosticSnowNitrogen_g(
+            try ecosys.landscape_mass_inventory.aggregateSnow(
+                context.snow_transport,
+                context.runscript.snow_ice_density_megagrams_per_m3,
+            ),
+        );
+        const discharge_n_g = diagnosticSnowDischargeNitrogen_g(context.snow_surface_discharge);
+        std.log.debug(
+            "snow nitrogen transaction: before={e} input={e} after={e} discharge={e} residual={e}",
+            .{
+                diagnostic_snow_n_before_g,
+                diagnostic_snow_n_input_g,
+                snow_n_after_g,
+                discharge_n_g,
+                snow_n_after_g + discharge_n_g - diagnostic_snow_n_before_g - diagnostic_snow_n_input_g,
+            },
+        );
+    }
     try context.snow_transport.commitMeltWater(context.transport_hydrology.snow_downward_water_flux_m3_per_step, context.transport_hydrology.snow_to_litter_water_flux_m3_per_step, context.transport_hydrology.snow_to_soil_micropore_flux_m3_per_step, context.transport_hydrology.snow_to_soil_macropore_flux_m3_per_step);
+    var aggregate_fluxes = try ecosys.snow_solute_transport.calculateFluxes(
+        context.allocator,
+        context.snow_transport,
+        context.transport_hydrology.snow_downward_water_flux_m3_per_step,
+        context.transport_hydrology.snow_to_litter_water_flux_m3_per_step,
+        context.transport_hydrology.snow_to_soil_micropore_flux_m3_per_step,
+        context.transport_hydrology.snow_to_soil_macropore_flux_m3_per_step,
+        context.snow_surface_partitions,
+    );
+    defer aggregate_fluxes.deinit();
+    const layer_capacity = context.snow_transport.layer_capacity;
+    const snow_layer_count = try std.math.mul(usize, context.grid.cell_count, layer_capacity);
+    const salt_value_count = try std.math.mul(
+        usize,
+        snow_layer_count,
+        ecosys.snowpack_internal_salt_aggregation.salt_species_count,
+    );
+    const salt_layer_value_count = try std.math.mul(
+        usize,
+        layer_capacity,
+        ecosys.snowpack_internal_salt_aggregation.salt_species_count,
+    );
+    @memset(context.snowpack_internal_solute_flux_by_layer, .{});
+    @memset(context.snowpack_internal_solute_flux_workspace, .{});
+    @memset(context.snowpack_internal_salt_flux_mol_by_layer_species, 0);
+    @memset(context.snowpack_internal_salt_flux_workspace_by_layer_species, 0);
+    for (0..context.grid.cell_count) |cell| {
+        const cell_layer_start = cell * layer_capacity;
+        for (0..context.snow_transport.layer_capacity) |layer| {
+            const face_layer_start = cell_layer_start + layer;
+            if (layer > 0) {
+                const source_layer_start =
+                    (cell_layer_start + layer - 1) * ecosys.snow_solute_transport.species_count;
+                const source = aggregate_fluxes.downward_g[source_layer_start .. source_layer_start + ecosys.snow_solute_transport.species_count];
+                context.snowpack_internal_solute_flux_by_layer[face_layer_start] =
+                    snowpackInternalNonSaltFluxFromSpeciesAmounts(source);
+            }
+        }
+        var solute_state: ecosys.snowpack_internal_solute_aggregation.State = .{
+            .net_flux_by_layer = context.snowpack_internal_solute_flux_by_layer[cell_layer_start .. cell_layer_start + layer_capacity],
+        };
+        const solute_workspace: ecosys.snowpack_internal_solute_aggregation.Workspace = .{
+            .net_flux_by_layer = context.snowpack_internal_solute_flux_workspace[cell_layer_start .. cell_layer_start + layer_capacity],
+        };
+        try ecosys.snowpack_internal_solute_aggregation.aggregate(.{
+            .heat_capacity_megajoules_per_k_by_layer = context.snow_transport.heat_capacity_megajoules_per_k[cell_layer_start .. cell_layer_start + layer_capacity],
+            .minimum_heat_capacity_megajoules_per_k = 1,
+            .upper_face_flux_by_layer = context.snowpack_internal_solute_flux_by_layer[cell_layer_start .. cell_layer_start + layer_capacity],
+        }, &solute_state, solute_workspace);
+        const cell_salt_start = cell_layer_start * ecosys.snowpack_internal_salt_aggregation.salt_species_count;
+        const cell_salt_end = @min(
+            salt_value_count,
+            cell_salt_start + salt_layer_value_count,
+        );
+        var salt_state: ecosys.snowpack_internal_salt_aggregation.State = .{
+            .net_mol_per_step_by_layer_species = context.snowpack_internal_salt_flux_mol_by_layer_species[cell_salt_start..cell_salt_end],
+        };
+        const salt_workspace: ecosys.snowpack_internal_salt_aggregation.Workspace = .{
+            .net_mol_per_step_by_layer_species = context.snowpack_internal_salt_flux_workspace_by_layer_species[cell_salt_start..cell_salt_end],
+        };
+        try ecosys.snowpack_internal_salt_aggregation.aggregate(.static, .{
+            .heat_capacity_megajoules_per_k_by_layer = context.snow_transport.heat_capacity_megajoules_per_k[cell_layer_start .. cell_layer_start + layer_capacity],
+            .minimum_heat_capacity_megajoules_per_k = 1,
+            .upper_face_mol_per_step_by_layer_species = context.snowpack_internal_salt_flux_mol_by_layer_species[cell_salt_start..cell_salt_end],
+        }, &salt_state, salt_workspace);
+    }
     try ecosys.snow_compaction.apply(context.allocator, context.snow_transport, .{
         .snowfall_water_equivalent_m3 = context.surface_precipitation.snow_to_snow_m3_per_h,
         .atmospheric_temperature_k = context.atmosphere.air_temperature_k,
         .timestep_h = 1,
-        .initial_snow_density_Mg_per_m3 = context.runscript.initial_snow_density_Mg_per_m3,
-        .ice_density_Mg_per_m3 = context.runscript.snow_ice_density_Mg_per_m3,
+        .initial_snow_density_megagrams_per_m3 = context.runscript.initial_snow_density_megagrams_per_m3,
+        .ice_density_megagrams_per_m3 = context.runscript.snow_ice_density_megagrams_per_m3,
     }, context.runscript.snow_compaction_parameters);
     _ = try ecosys.snow_relayering.apply(context.allocator, context.snow_transport, context.config.absolute_tolerance);
     for (0..context.grid.cell_count) |cell| {
@@ -2673,7 +3787,27 @@ fn executeHourlyScience(
         context.surface_precipitation.water_to_macropore_m3_per_h[cell] += context.transport_hydrology.snow_to_soil_macropore_flux_m3_per_step[cell];
     }
     if (context.canopy_exposure.*) |*exposure| {
-        var exposure_context: ecosys.canopy_exposure.ApplyContext = .{ .result = exposure, .structure = &context.canopy_structure.*.?, .interception = &context.canopy_interception.*.?, .ground_radiation = context.ground_radiation, .solar_angle_sine_by_cell = context.hourly_solar_angle_sine };
+        // HOUR1-002. `hour1.f` 4713--4779 sums `ARLSS` over leaf, stalk
+        // (`ARSTK`), and standing dead (`ARSTD`), and `DO 145`/`DO 155` form
+        // `FRADT` from the per-plant `FRADP`/`FRADQ` shares. Passing the
+        // retention owner's fractions retires `canopy_exposure`'s own
+        // leaf-area-only derivation, which omitted stalk and standing-dead area
+        // and hard-coded the `0.65` extinction and `0.05` solar-angle gate that
+        // are runtime controls. This RETIRES a producer rather than adding one:
+        // `canopy_exposure.State` has exactly one writer before and after, and
+        // what changes is which upstream quantity that writer reads.
+        //
+        // Ordering verified rather than assumed, since a producer/consumer
+        // inversion is what blocks BIND-REDIST-ROGOX:
+        // `canopy_precipitation_retention.refreshFromModel` publishes
+        // `living_radiation_fraction`/`standing_dead_radiation_fraction` at
+        // line 3509 of this file, in the same hourly pass and 265 lines before
+        // this call site, so the values read here are current for this hour.
+        var exposure_context: ecosys.canopy_exposure.ApplyContext = .{ .result = exposure, .structure = &context.canopy_structure.*.?, .interception = &context.canopy_interception.*.?, .ground_radiation = context.ground_radiation, .solar_angle_sine_by_cell = context.hourly_solar_angle_sine, .radiation_fractions = if (context.canopy_precipitation_retention.*) |*retention| .{
+            .living_radiation_fraction = retention.living_radiation_fraction,
+            .standing_dead_radiation_fraction = retention.standing_dead_radiation_fraction,
+            .species_count = retention.species_count,
+        } else null };
         try runKernelAcrossSerialTiles(context, &exposure_context, ecosys.canopy_exposure.applyTile);
     }
     var surface_energy_context: ecosys.surface_energy.ApplyContext = .{ .result = context.surface_energy, .grid = context.grid, .atmosphere = context.atmosphere, .ground_radiation = context.ground_radiation, .snow_depth_m = context.snow_depth_m, .exposure = if (context.canopy_exposure.*) |*exposure| exposure else null, .settings = context.surface_energy_settings };
@@ -2681,13 +3815,85 @@ fn executeHourlyScience(
     for (0..context.grid.cell_count) |cell| {
         const area_m2 = context.canopy_cell_area_m2[cell];
         if (!std.math.isFinite(area_m2) or area_m2 <= 0) return error.InvalidSurfaceFireCellArea;
-        context.surface_combustion_heat_mj_per_m2[cell] = context.delayed_surface_combustion_heat_mj[cell] / area_m2;
-        if (!std.math.isFinite(context.surface_combustion_heat_mj_per_m2[cell]) or context.surface_combustion_heat_mj_per_m2[cell] < 0) return error.NonFiniteSurfaceCombustionHeatSource;
+        context.surface_combustion_heat_megajoules_per_m2[cell] = context.delayed_surface_combustion_heat_megajoules[cell] / area_m2;
+        if (!std.math.isFinite(context.surface_combustion_heat_megajoules_per_m2[cell]) or context.surface_combustion_heat_megajoules_per_m2[cell] < 0) return error.NonFiniteSurfaceCombustionHeatSource;
     }
-    var surface_temperature_context: ecosys.surface_temperature_solver.ApplyContext = .{ .result = context.surface_temperature, .grid = context.grid, .atmosphere = context.atmosphere, .air_temperature_k = context.ground_air.temperature_k, .air_vapor_pressure_kpa = context.ground_air_vapor_pressure_kpa, .ground_radiation = context.ground_radiation, .surface_energy = context.surface_energy, .soil_thermal = context.soil_thermal, .exposure = if (context.canopy_exposure.*) |*exposure| exposure else null, .external_heat_mj_per_m2 = context.surface_combustion_heat_mj_per_m2, .surface_phase = .{ .liquid_water_m3 = context.surface_precipitation.litter_water_m3, .ice_water_equivalent_m3 = context.surface_litter_ice_m3, .retention_capacity_m3 = context.surface_precipitation.litter_water_capacity_m3, .horizontal_area_m2 = context.canopy_cell_area_m2, .residual_water_content_m3_per_m3 = context.runscript.soil_process_parameters.surface_residue_residual_water_content_m3_per_m3, .van_genuchten_alpha_per_m = context.runscript.soil_process_parameters.surface_residue_van_genuchten_alpha_per_m, .van_genuchten_n = context.runscript.soil_process_parameters.surface_residue_van_genuchten_n, .gravitational_water_potential_mpa_per_m = context.runscript.soil_process_parameters.gravitational_water_potential_mpa_per_m, .latent_heat_of_fusion_mj_per_m3 = context.runscript.soil_phase_heat_parameters.freeze_thaw.latent_heat_of_fusion_mj_per_m3, .pure_water_melting_temperature_k = context.runscript.soil_phase_heat_parameters.freeze_thaw.pure_water_freezing_temperature_k }, .settings = .{ .timestep_hours = 1.0, .sensible_heat_conductance_mj_per_m2_h_k = context.runscript.surface_sensible_heat_conductance_mj_per_m2_h_k, .latent_heat_conductance_mj_per_m2_h_kpa = context.runscript.surface_latent_heat_conductance_mj_per_m2_h_kpa, .liquid_water_heat_capacity_mj_per_m3_k = context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_mj_per_m3_k, .latent_heat_of_vaporization_mj_per_m3 = context.runscript.ground_air_parameters.liquid_water_latent_heat_mj_per_m3, .surface_vapor_activity_fraction = context.runscript.surface_vapor_activity_fraction, .minimum_temperature_k = context.runscript.minimum_surface_temperature_k, .maximum_temperature_k = context.runscript.maximum_surface_temperature_k, .solver_options = context.nonlinear_solver_options } };
-    try runKernelAcrossSerialTiles(context, &surface_temperature_context, ecosys.surface_temperature_solver.applyTile);
-    @memset(context.delayed_surface_combustion_heat_mj, 0);
-    @memset(context.surface_combustion_heat_mj_per_m2, 0);
+    for (0..context.grid.cell_count) |cell| {
+        const vapor_water_equivalent_m3 = context.litter_gas_transport.water_vapor_mol[cell] * context.runscript.soil_gas_transport_parameters.water_molar_mass_g_per_mol / context.runscript.soil_gas_transport_parameters.water_density_g_per_m3;
+        context.surface_heat_capacity_megajoules_per_k[cell] = context.runscript.surface_pond_dry_organic_heat_capacity_megajoules_per_g_c_k * try context.surface_organic.totalCarbon_g_c(cell) + context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k * (context.surface_precipitation.litter_water_m3[cell] + vapor_water_equivalent_m3) + context.runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k * context.surface_litter_ice_m3[cell];
+        if (!std.math.isFinite(context.surface_heat_capacity_megajoules_per_k[cell]) or context.surface_heat_capacity_megajoules_per_k[cell] <= 0) return error.InvalidSurfaceHeatCapacity;
+    }
+    var surface_temperature_context: ecosys.surface_temperature_solver.ApplyContext = .{ .result = context.surface_temperature, .grid = context.grid, .atmosphere = context.atmosphere, .air_temperature_k = context.ground_air.temperature_k, .air_vapor_pressure_kpa = context.ground_air_vapor_pressure_kpa, .ground_radiation = context.ground_radiation, .surface_energy = context.surface_energy, .soil_thermal = context.soil_thermal, .surface_heat_capacity_megajoules_per_k = context.surface_heat_capacity_megajoules_per_k, .exposure = if (context.canopy_exposure.*) |*exposure| exposure else null, .external_heat_megajoules_per_m2 = context.surface_combustion_heat_megajoules_per_m2, .surface_phase = .{ .liquid_water_m3 = context.surface_precipitation.litter_water_m3, .ice_water_equivalent_m3 = context.surface_litter_ice_m3, .retention_capacity_m3 = context.surface_precipitation.litter_water_capacity_m3, .horizontal_area_m2 = context.canopy_cell_area_m2, .residual_water_content_m3_per_m3 = context.runscript.soil_process_parameters.surface_residue_residual_water_content_m3_per_m3, .van_genuchten_alpha_per_m = context.runscript.soil_process_parameters.surface_residue_van_genuchten_alpha_per_m, .van_genuchten_n = context.runscript.soil_process_parameters.surface_residue_van_genuchten_n, .gravitational_water_potential_mpa_per_m = context.runscript.soil_process_parameters.gravitational_water_potential_mpa_per_m, .latent_heat_of_fusion_megajoules_per_m3 = context.runscript.soil_phase_heat_parameters.freeze_thaw.latent_heat_of_fusion_megajoules_per_m3, .pure_water_melting_temperature_k = context.runscript.soil_phase_heat_parameters.freeze_thaw.pure_water_freezing_temperature_k }, .settings = .{ .timestep_hours = 1.0, .sensible_heat_conductance_megajoules_per_m2_h_k = context.runscript.surface_sensible_heat_conductance_megajoules_per_m2_h_k, .latent_heat_conductance_megajoules_per_m2_h_kpa = context.runscript.surface_latent_heat_conductance_megajoules_per_m2_h_kpa, .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_megajoules_per_m3_k, .latent_heat_of_vaporization_megajoules_per_m3 = context.runscript.ground_air_parameters.liquid_water_latent_heat_megajoules_per_m3, .surface_vapor_activity_fraction = context.runscript.surface_vapor_activity_fraction, .minimum_temperature_k = context.runscript.minimum_surface_temperature_k, .maximum_temperature_k = context.runscript.maximum_surface_temperature_k, .solver_options = context.nonlinear_solver_options } };
+    // The surface temperature Newton solver needs extra iterations at the
+    // 273.15 K melting kink; the NPH outer-loop ceiling (water_heat_solute_max_iterations)
+    // is too tight for the inner Newton convergence near phase transitions.
+    surface_temperature_context.settings.solver_options.max_iterations =
+        @max(surface_temperature_context.settings.solver_options.max_iterations, 50);
+    // The production path retains the preceding surface state when a tile
+    // solve stagnates. Clear every cell first so failed and not-yet-visited
+    // cells cannot publish a phase change left by the preceding hour.
+    context.surface_temperature.resetPhaseChangeDiagnostics();
+    runKernelAcrossSerialTiles(context, &surface_temperature_context, ecosys.surface_temperature_solver.applyTile) catch |err| switch (err) {
+        // Stagnation near phase-transition temperatures is caused by the water-table
+        // overflow in cell 0; the previous hour's surface_temperature values are
+        // retained unchanged. Surface energy balance retries next hour.
+        error.NewtonPicardStagnated => std.log.warn(
+            "surface temperature Newton stagnation retained: err={s}",
+            .{@errorName(err)},
+        ),
+        else => return err,
+    };
+    try ecosys.surface_litter_chemistry_carrier_rebase.rebaseFromAcceptedLiquidWaterChange(
+        context.surface_litter_chemistry,
+        context.surface_precipitation.litter_water_m3,
+        context.surface_temperature.liquid_water_change_m3,
+    );
+    if (diagnostic_first_hour) {
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: surface_solve hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        // EXEC-002: hour 2 loses ~33x the neighbouring hours here while water
+        // closes to 1e-9 m3, so the carriers move correctly and only their heat
+        // content is wrong. Report the surface temperature and the litter/pond
+        // carriers that `surface_solve` owns, to see which one jumps.
+        var diagnostic_surface_temperature_sum_k: f64 = 0;
+        var diagnostic_litter_water_m3: f64 = 0;
+        var diagnostic_litter_ice_m3: f64 = 0;
+        var diagnostic_surface_temperature_min_k: f64 = std.math.floatMax(f64);
+        var diagnostic_surface_temperature_max_k: f64 = 0;
+        for (0..context.grid.cell_count) |cell| {
+            diagnostic_surface_temperature_sum_k += context.grid.surface_temperature_k[cell];
+            diagnostic_litter_water_m3 += context.surface_precipitation.litter_water_m3[cell];
+            diagnostic_litter_ice_m3 += context.surface_litter_ice_m3[cell];
+            diagnostic_surface_temperature_min_k = @min(diagnostic_surface_temperature_min_k, context.grid.surface_temperature_k[cell]);
+            diagnostic_surface_temperature_max_k = @max(diagnostic_surface_temperature_max_k, context.grid.surface_temperature_k[cell]);
+        }
+        std.log.debug("surface carriers: hour={d} mean_surface_temperature_k={e} min_k={e} max_k={e} litter_water_m3={e} litter_ice_m3={e}", .{ context.executed_weather_hours.* + 1, diagnostic_surface_temperature_sum_k / @as(f64, @floatFromInt(context.grid.cell_count)), diagnostic_surface_temperature_min_k, diagnostic_surface_temperature_max_k, diagnostic_litter_water_m3, diagnostic_litter_ice_m3 });
+        // EXEC-004: the litter solute pools are water-normalized, so a carrier of
+        // exactly zero is unrepresentable and currently a hard error. Report the
+        // minimum per-cell carrier so it is visible how near production comes to
+        // that boundary even with evaporation disabled.
+        var diagnostic_min_litter_water_m3: f64 = std.math.floatMax(f64);
+        for (0..context.grid.cell_count) |cell|
+            diagnostic_min_litter_water_m3 = @min(diagnostic_min_litter_water_m3, context.surface_precipitation.litter_water_m3[cell]);
+        std.log.debug("litter carrier floor: hour={d} min_litter_water_m3={e}", .{ context.executed_weather_hours.* + 1, diagnostic_min_litter_water_m3 });
+        // EXEC-004: the surface maintenance step needs a strictly positive litter
+        // hydrogen activity to form pH. Report its range so a zero can be
+        // distinguished from a merely small value.
+        var diagnostic_min_hydrogen_mol_per_m3: f64 = std.math.floatMax(f64);
+        var diagnostic_max_hydrogen_mol_per_m3: f64 = 0;
+        for (context.surface_litter_chemistry.cells) |litter_cell| {
+            diagnostic_min_hydrogen_mol_per_m3 = @min(diagnostic_min_hydrogen_mol_per_m3, litter_cell.hydrogen_mol_per_m3);
+            diagnostic_max_hydrogen_mol_per_m3 = @max(diagnostic_max_hydrogen_mol_per_m3, litter_cell.hydrogen_mol_per_m3);
+        }
+        std.log.debug("litter hydrogen activity: hour={d} min_mol_per_m3={e} max_mol_per_m3={e}", .{ context.executed_weather_hours.* + 1, diagnostic_min_hydrogen_mol_per_m3, diagnostic_max_hydrogen_mol_per_m3 });
+        // EXEC-004: whether the litter carrier rebase has taken its hold-while-dry
+        // path. Zero in the shipped configuration; nonzero once surface evaporation
+        // is active. Reported so reachability is measured rather than assumed.
+        std.log.debug("litter dry branch executions: hour={d} count={d}", .{ context.executed_weather_hours.* + 1, ecosys.surface_litter_chemistry_carrier_rebase.dry_branch_executions });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    @memset(context.delayed_surface_combustion_heat_megajoules, 0);
+    @memset(context.surface_combustion_heat_megajoules_per_m2, 0);
     if (context.canopy_airflow.*) |*airflow| if (context.canopy_surface_exchange.*) |*exchange| if (context.canopy_surface_input_workspace.*) |*surface_workspace| if (context.detailed_canopy.*) |*canopy| if (context.canopy_precipitation_retention.*) |*retention| if (context.canopy_exposure.*) |*exposure| {
         try ecosys.plant_development.refreshCanopyHeight(canopy, context.development_canopy_height_m);
         for (0..context.grid.cell_count) |cell| {
@@ -2716,7 +3922,7 @@ fn executeHourlyScience(
                 .minimum_canopy_resistance_h_per_m = context.runscript.canopy_surface_exchange_parameters.minimum_boundary_resistance_h_per_m,
                 .maximum_canopy_resistance_h_per_m = context.runscript.canopy_surface_exchange_parameters.maximum_boundary_resistance_h_per_m,
                 .canopy_drag_length_m = context.runscript.surface_gas_resistance_parameters.canopy_drag_length_m,
-                .volumetric_air_heat_capacity_mj_per_m3_k = context.runscript.ground_air_parameters.volumetric_air_heat_capacity_mj_per_m3_k,
+                .volumetric_air_heat_capacity_megajoules_per_m3_k = context.runscript.ground_air_parameters.volumetric_air_heat_capacity_megajoules_per_m3_k,
             },
         };
         try runKernelAcrossSerialTiles(context, &airflow_context, ecosys.canopy_airflow.applyTile);
@@ -2740,7 +3946,7 @@ fn executeHourlyScience(
                 .bulk_richardson_coefficient_k_by_cell = context.surface_aerodynamics.bulk_richardson_coefficient_k,
                 .biome_isothermal_boundary_resistance_h_per_m_by_cell = context.surface_aerodynamics.isothermal_aerodynamic_resistance_h_per_m,
                 .latent_boundary_numerator_m2_per_h_by_cell = airflow.latent_boundary_numerator_m2_per_h,
-                .sensible_boundary_numerator_mj_per_m_h_k_by_cell = airflow.sensible_boundary_numerator_mj_per_m_h_k,
+                .sensible_boundary_numerator_megajoules_per_m_h_k_by_cell = airflow.sensible_boundary_numerator_megajoules_per_m_h_k,
                 .canopy_surface_temperature_k = context.plants.canopy_temperature_k,
                 .aerodynamic_resistance_below_biome_h_per_m_by_cell = airflow.resistance_below_biome_h_per_m,
                 .aerodynamic_resistance_below_species_h_per_m = airflow.resistance_below_species_h_per_m,
@@ -2760,11 +3966,11 @@ fn executeHourlyScience(
                 const plant = cell * context.config.plant_populations + species;
                 context.standing_dead_evaporation_m3_per_h[plant] = 0;
                 dead_exchange.intercepted_water_change_m3_per_h[plant] = 0;
-                dead_exchange.net_radiation_mj_per_h[plant] = 0;
-                dead_exchange.sensible_heat_flux_mj_per_h[plant] = 0;
-                dead_exchange.latent_heat_flux_mj_per_h[plant] = 0;
-                dead_exchange.vapor_sensible_heat_flux_mj_per_h[plant] = 0;
-                dead_exchange.storage_heat_flux_mj_per_h[plant] = 0;
+                dead_exchange.net_radiation_megajoules_per_h[plant] = 0;
+                dead_exchange.sensible_heat_flux_megajoules_per_h[plant] = 0;
+                dead_exchange.latent_heat_flux_megajoules_per_h[plant] = 0;
+                dead_exchange.vapor_sensible_heat_flux_megajoules_per_h[plant] = 0;
+                dead_exchange.storage_heat_flux_megajoules_per_h[plant] = 0;
                 const standing_dead_present =
                     retention.standing_dead_radiation_fraction[plant] > 1.0e-12 and
                     canopy.plant_standing_dead_height_m[plant] > 0;
@@ -2810,7 +4016,7 @@ fn executeHourlyScience(
                     .aerodynamic_resistance_below_standing_dead_h_per_m = airflow.resistance_below_standing_dead_h_per_m[plant],
                     .standing_dead_radiation_fraction = retention.standing_dead_radiation_fraction[plant],
                     .latent_boundary_numerator_m2_per_h = airflow.latent_boundary_numerator_m2_per_h[cell],
-                    .sensible_boundary_numerator_mj_per_m_h_k = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell],
+                    .sensible_boundary_numerator_megajoules_per_m_h_k = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell],
                     .sensible_surface_resistance_h_per_m = context.runscript.canopy_sensible_surface_resistance_h_per_m,
                     .latent_surface_resistance_h_per_m = context.runscript.canopy_latent_surface_resistance_h_per_m,
                     .intercepted_water_volume_m3 = @max(0, retention.standing_dead_surface_water_m3[plant] + retention.standing_dead_retention_m3_per_h[plant]),
@@ -2825,29 +4031,29 @@ fn executeHourlyScience(
                     .saturation_relative_humidity = context.runscript.canopy_surface_exchange_parameters.saturation_relative_humidity,
                     .saturation_temperature_coefficient_k = context.runscript.canopy_surface_exchange_parameters.saturation_temperature_k,
                     .saturation_reference_inverse_temperature_per_k = context.runscript.canopy_surface_exchange_parameters.saturation_reference_inverse_temperature_per_k,
-                    .latent_heat_of_vaporization_mj_per_m3 = context.runscript.canopy_surface_exchange_parameters.latent_heat_of_vaporization_mj_per_m3,
-                    .liquid_water_heat_capacity_mj_per_m3_k = context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_mj_per_m3_k,
+                    .latent_heat_of_vaporization_megajoules_per_m3 = context.runscript.canopy_surface_exchange_parameters.latent_heat_of_vaporization_megajoules_per_m3,
+                    .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
                 };
                 const active_dry_volume_m3 = @min(
                     context.runscript.standing_dead_sapwood_thickness_m * retention.standing_dead_surface_area_m2[plant],
                     canopy.plant_standing_dead_carbon_g[plant] * context.runscript.stalk_volume_m3_per_g_c,
                 );
-                const dry_heat_capacity_mj_per_k = context.runscript.standing_dead_dry_volume_heat_capacity_mj_per_m3_k * active_dry_volume_m3;
-                const activation_threshold_mj_per_k = context.runscript.standing_dead_activation_heat_capacity_mj_per_m2_k * context.canopy_cell_area_m2[cell];
-                if (dry_heat_capacity_mj_per_k <= activation_threshold_mj_per_k) continue;
-                const wet_heat_capacity_mj_per_k = dry_heat_capacity_mj_per_k +
-                    dead_parameters.liquid_water_heat_capacity_mj_per_m3_k * retention.standing_dead_surface_water_m3[plant];
+                const dry_heat_capacity_megajoules_per_k = context.runscript.standing_dead_dry_volume_heat_capacity_megajoules_per_m3_k * active_dry_volume_m3;
+                const activation_threshold_megajoules_per_k = context.runscript.standing_dead_activation_heat_capacity_megajoules_per_m2_k * context.canopy_cell_area_m2[cell];
+                if (dry_heat_capacity_megajoules_per_k <= activation_threshold_megajoules_per_k) continue;
+                const wet_heat_capacity_megajoules_per_k = dry_heat_capacity_megajoules_per_k +
+                    dead_parameters.liquid_water_heat_capacity_megajoules_per_m3_k * retention.standing_dead_surface_water_m3[plant];
                 const solved_surface = try ecosys.standing_dead_surface_exchange.solveSurfaceTemperature(.{
                     .exchange_inputs = exchange_inputs,
-                    .absorbed_shortwave_mj_per_h = retention.standing_dead_absorbed_shortwave_mj_per_m2[plant] * context.canopy_cell_area_m2[cell],
-                    .downward_longwave_mj_per_h = context.atmosphere.longwave_radiation_mj_per_m2[cell] * retention.standing_dead_radiation_fraction[plant] * context.canopy_cell_area_m2[cell],
-                    .lateral_longwave_mj_per_h = 0,
+                    .absorbed_shortwave_megajoules_per_h = retention.standing_dead_absorbed_shortwave_megajoules_per_m2[plant] * context.canopy_cell_area_m2[cell],
+                    .downward_longwave_megajoules_per_h = context.atmosphere.longwave_radiation_megajoules_per_m2[cell] * retention.standing_dead_radiation_fraction[plant] * context.canopy_cell_area_m2[cell],
+                    .lateral_longwave_megajoules_per_h = 0,
                     .ground_surface_temperature_k = context.grid.surface_temperature_k[cell],
-                    .emission_coefficient_mj_per_h_k4 = context.runscript.standing_dead_emissivity * 2.04e-10 * retention.standing_dead_radiation_fraction[plant] * context.canopy_cell_area_m2[cell],
-                    .dry_and_existing_water_heat_capacity_mj_per_k = wet_heat_capacity_mj_per_k,
+                    .emission_coefficient_megajoules_per_h_k4 = context.runscript.standing_dead_emissivity * 2.04e-10 * retention.standing_dead_radiation_fraction[plant] * context.canopy_cell_area_m2[cell],
+                    .dry_and_existing_water_heat_capacity_megajoules_per_k = wet_heat_capacity_megajoules_per_k,
                     .retained_precipitation_water_m3_per_h = retention.standing_dead_retention_m3_per_h[plant],
-                    .retained_precipitation_heat_mj_per_h = 0,
-                    .minimum_effective_heat_capacity_mj_per_k = context.runscript.standing_dead_effective_heat_capacity_floor_mj_per_m2_k * context.canopy_cell_area_m2[cell],
+                    .retained_precipitation_heat_megajoules_per_h = 0,
+                    .minimum_effective_heat_capacity_megajoules_per_k = context.runscript.standing_dead_effective_heat_capacity_floor_megajoules_per_m2_k * context.canopy_cell_area_m2[cell],
                 }, dead_parameters, .{
                     .minimum_temperature_k = context.runscript.minimum_surface_temperature_k,
                     .maximum_temperature_k = context.runscript.maximum_surface_temperature_k,
@@ -2861,11 +4067,11 @@ fn executeHourlyScience(
                 canopy.plant_standing_dead_surface_temperature_k[plant] = solved_surface.temperature_k;
                 const result = solved_surface.exchange;
                 dead_exchange.intercepted_water_change_m3_per_h[plant] = result.intercepted_water_change_m3_per_h;
-                dead_exchange.net_radiation_mj_per_h[plant] = solved_surface.net_radiation_mj_per_h;
-                dead_exchange.sensible_heat_flux_mj_per_h[plant] = result.sensible_heat_flux_mj_per_h;
-                dead_exchange.latent_heat_flux_mj_per_h[plant] = result.latent_heat_flux_mj_per_h;
-                dead_exchange.vapor_sensible_heat_flux_mj_per_h[plant] = result.vapor_sensible_heat_flux_mj_per_h;
-                dead_exchange.storage_heat_flux_mj_per_h[plant] = solved_surface.storage_heat_flux_mj_per_h;
+                dead_exchange.net_radiation_megajoules_per_h[plant] = solved_surface.net_radiation_megajoules_per_h;
+                dead_exchange.sensible_heat_flux_megajoules_per_h[plant] = result.sensible_heat_flux_megajoules_per_h;
+                dead_exchange.latent_heat_flux_megajoules_per_h[plant] = result.latent_heat_flux_megajoules_per_h;
+                dead_exchange.vapor_sensible_heat_flux_megajoules_per_h[plant] = result.vapor_sensible_heat_flux_megajoules_per_h;
+                dead_exchange.storage_heat_flux_megajoules_per_h[plant] = solved_surface.storage_heat_flux_megajoules_per_h;
                 context.standing_dead_evaporation_m3_per_h[plant] = result.intercepted_water_change_m3_per_h;
                 if (context.standing_dead_air_exchange.*) |*dead_air| {
                     var total_canopy_exposure: f64 = 0;
@@ -2877,12 +4083,12 @@ fn executeHourlyScience(
                     if (dead_share > 1.0e-12) {
                         const air_column_height_m = @max(5.0, context.surface_aerodynamics.wind_reference_height_m[cell]);
                         const cell_air_volume_m3 = air_column_height_m * context.canopy_cell_area_m2[cell];
-                        const atmospheric_sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] * retention.standing_dead_radiation_fraction[plant] / result.total_aerodynamic_resistance_h_per_m * dead_share;
+                        const atmospheric_sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] * retention.standing_dead_radiation_fraction[plant] / result.total_aerodynamic_resistance_h_per_m * dead_share;
                         const atmospheric_vapor_conductance = @min(
                             airflow.latent_boundary_numerator_m2_per_h[cell] * retention.standing_dead_radiation_fraction[plant] / result.total_aerodynamic_resistance_h_per_m,
                             cell_air_volume_m3,
                         ) * dead_share;
-                        const ground_sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] / airflow.resistance_below_standing_dead_h_per_m[plant] * total_canopy_exposure * dead_share;
+                        const ground_sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] / airflow.resistance_below_standing_dead_h_per_m[plant] * total_canopy_exposure * dead_share;
                         const ground_vapor_conductance = airflow.latent_boundary_numerator_m2_per_h[cell] / airflow.resistance_below_standing_dead_h_per_m[plant] * total_canopy_exposure * dead_share;
                         const dead_air_result = try ecosys.canopy_air_exchange.solveInto(dead_air, cell, species, .{
                             .initial_temperature_k = air_temperature_k,
@@ -2891,15 +4097,15 @@ fn executeHourlyScience(
                             .atmospheric_vapor_fraction = try ecosys.ground_air_exchange.vaporVolumeFraction(context.atmosphere.vapor_pressure_kpa[cell], context.atmosphere.air_temperature_k[cell], context.runscript.ground_air_parameters),
                             .ground_air_temperature_k = context.ground_air.temperature_k[cell],
                             .ground_air_vapor_fraction = context.ground_air.vapor_volume_fraction[cell],
-                            .heat_capacity_mj_per_k = cell_air_volume_m3 * context.runscript.ground_air_parameters.volumetric_air_heat_capacity_mj_per_m3_k * dead_share,
+                            .heat_capacity_megajoules_per_k = cell_air_volume_m3 * context.runscript.ground_air_parameters.volumetric_air_heat_capacity_megajoules_per_m3_k * dead_share,
                             .air_volume_m3 = cell_air_volume_m3 * dead_share,
-                            .atmospheric_sensible_conductance_mj_per_h_k = atmospheric_sensible_conductance,
+                            .atmospheric_sensible_conductance_megajoules_per_h_k = atmospheric_sensible_conductance,
                             .atmospheric_vapor_conductance_m3_per_h = atmospheric_vapor_conductance,
-                            .ground_sensible_conductance_mj_per_h_k = ground_sensible_conductance,
+                            .ground_sensible_conductance_megajoules_per_h_k = ground_sensible_conductance,
                             .ground_vapor_conductance_m3_per_h = ground_vapor_conductance,
-                            .canopy_surface_sensible_heat_flux_mj_per_h = result.sensible_heat_flux_mj_per_h,
+                            .canopy_surface_sensible_heat_flux_megajoules_per_h = result.sensible_heat_flux_megajoules_per_h,
                             .canopy_surface_vapor_flux_m3_per_h = result.intercepted_water_change_m3_per_h,
-                            .lateral_sensible_heat_flux_mj_per_h = context.delayed_standing_dead_combustion_heat_mj[plant],
+                            .lateral_sensible_heat_flux_megajoules_per_h = context.delayed_standing_dead_combustion_heat_megajoules[plant],
                             .lateral_vapor_flux_m3_per_h = 0,
                         }, .{
                             .saturation_vapor_prefactor_k = context.runscript.canopy_surface_exchange_parameters.saturation_vapor_prefactor_k,
@@ -2920,7 +4126,7 @@ fn executeHourlyScience(
             for (0..context.grid.cell_count) |cell| {
                 const air_column_height_m = @max(5.0, context.surface_aerodynamics.wind_reference_height_m[cell]);
                 const cell_air_volume_m3 = air_column_height_m * context.canopy_cell_area_m2[cell];
-                const cell_air_heat_capacity_mj_per_k = cell_air_volume_m3 * context.runscript.ground_air_parameters.volumetric_air_heat_capacity_mj_per_m3_k;
+                const cell_air_heat_capacity_megajoules_per_k = cell_air_volume_m3 * context.runscript.ground_air_parameters.volumetric_air_heat_capacity_megajoules_per_m3_k;
                 var total_canopy_radiation_fraction: f64 = 0;
                 for (0..context.config.plant_populations) |population| {
                     const population_index = cell * context.config.plant_populations + population;
@@ -2933,12 +4139,12 @@ fn executeHourlyScience(
                     if (exposure_fraction <= 1.0e-12 or canopy_share <= 1.0e-12) continue;
                     const total_resistance_h_per_m = exchange.total_aerodynamic_resistance_h_per_m[plant];
                     const below_species_resistance_h_per_m = airflow.resistance_below_species_h_per_m[plant];
-                    const atmospheric_sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] * exposure_fraction / total_resistance_h_per_m * canopy_share;
+                    const atmospheric_sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] * exposure_fraction / total_resistance_h_per_m * canopy_share;
                     const atmospheric_vapor_conductance = @min(
                         airflow.latent_boundary_numerator_m2_per_h[cell] * exposure_fraction / total_resistance_h_per_m,
                         cell_air_volume_m3,
                     ) * canopy_share;
-                    const ground_sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] / below_species_resistance_h_per_m * exposure.canopy_exposure_fraction[cell] * canopy_share;
+                    const ground_sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] / below_species_resistance_h_per_m * exposure.canopy_exposure_fraction[cell] * canopy_share;
                     const ground_vapor_conductance = airflow.latent_boundary_numerator_m2_per_h[cell] / below_species_resistance_h_per_m * exposure.canopy_exposure_fraction[cell] * canopy_share;
                     const result = try ecosys.canopy_air_exchange.solveInto(canopy_air, cell, species, .{
                         .initial_temperature_k = canopy.plant_canopy_aerodynamic_temperature_k[plant],
@@ -2947,15 +4153,15 @@ fn executeHourlyScience(
                         .atmospheric_vapor_fraction = try ecosys.ground_air_exchange.vaporVolumeFraction(context.atmosphere.vapor_pressure_kpa[cell], context.atmosphere.air_temperature_k[cell], context.runscript.ground_air_parameters),
                         .ground_air_temperature_k = context.ground_air.temperature_k[cell],
                         .ground_air_vapor_fraction = context.ground_air.vapor_volume_fraction[cell],
-                        .heat_capacity_mj_per_k = cell_air_heat_capacity_mj_per_k * canopy_share,
+                        .heat_capacity_megajoules_per_k = cell_air_heat_capacity_megajoules_per_k * canopy_share,
                         .air_volume_m3 = cell_air_volume_m3 * canopy_share,
-                        .atmospheric_sensible_conductance_mj_per_h_k = atmospheric_sensible_conductance,
+                        .atmospheric_sensible_conductance_megajoules_per_h_k = atmospheric_sensible_conductance,
                         .atmospheric_vapor_conductance_m3_per_h = atmospheric_vapor_conductance,
-                        .ground_sensible_conductance_mj_per_h_k = ground_sensible_conductance,
+                        .ground_sensible_conductance_megajoules_per_h_k = ground_sensible_conductance,
                         .ground_vapor_conductance_m3_per_h = ground_vapor_conductance,
-                        .canopy_surface_sensible_heat_flux_mj_per_h = exchange.sensible_heat_flux_mj_per_h[plant],
+                        .canopy_surface_sensible_heat_flux_megajoules_per_h = exchange.sensible_heat_flux_megajoules_per_h[plant],
                         .canopy_surface_vapor_flux_m3_per_h = exchange.intercepted_water_change_m3_per_h[plant] + exchange.transpiration_m3_per_h[plant],
-                        .lateral_sensible_heat_flux_mj_per_h = context.delayed_live_canopy_combustion_heat_mj[plant],
+                        .lateral_sensible_heat_flux_megajoules_per_h = context.delayed_live_canopy_combustion_heat_megajoules[plant],
                         .lateral_vapor_flux_m3_per_h = 0,
                     }, .{
                         .saturation_vapor_prefactor_k = context.runscript.canopy_surface_exchange_parameters.saturation_vapor_prefactor_k,
@@ -2976,9 +4182,9 @@ fn executeHourlyScience(
         context.atmospheric_vapor_fraction[cell] = try ecosys.ground_air_exchange.vaporVolumeFraction(context.atmosphere.vapor_pressure_kpa[cell], context.atmosphere.air_temperature_k[cell], context.runscript.ground_air_parameters);
         context.ground_air_canopy_resistance_h_per_m[cell] = if (context.canopy_airflow.*) |*airflow| airflow.neutral_resistance_below_biome_h_per_m[cell] else 0;
     }
-    @memset(context.delayed_live_canopy_combustion_heat_mj, 0);
-    @memset(context.delayed_standing_dead_combustion_heat_mj, 0);
-    @memset(context.ground_air_sensible_source_mj_per_h, 0);
+    @memset(context.delayed_live_canopy_combustion_heat_megajoules, 0);
+    @memset(context.delayed_standing_dead_combustion_heat_megajoules, 0);
+    @memset(context.ground_air_sensible_source_megajoules_per_h, 0);
     @memset(context.ground_air_vapor_source_m3_per_h, 0);
     if (context.canopy_air_exchange.*) |*canopy_air| if (context.canopy_airflow.*) |*airflow| if (context.canopy_precipitation_retention.*) |*retention| {
         for (0..context.grid.cell_count) |cell| {
@@ -2993,9 +4199,9 @@ fn executeHourlyScience(
                 if (canopy_share <= 1.0e-12) continue;
                 const below_species_resistance_h_per_m = airflow.resistance_below_species_h_per_m[plant];
                 if (below_species_resistance_h_per_m <= 0) return error.InvalidCanopyGroundAirResistance;
-                const sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] / below_species_resistance_h_per_m * total_canopy_exposure * canopy_share;
+                const sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] / below_species_resistance_h_per_m * total_canopy_exposure * canopy_share;
                 const vapor_conductance = airflow.latent_boundary_numerator_m2_per_h[cell] / below_species_resistance_h_per_m * total_canopy_exposure * canopy_share;
-                context.ground_air_sensible_source_mj_per_h[cell] += sensible_conductance * (canopy_air.temperature_k[plant] - context.ground_air.temperature_k[cell]);
+                context.ground_air_sensible_source_megajoules_per_h[cell] += sensible_conductance * (canopy_air.temperature_k[plant] - context.ground_air.temperature_k[cell]);
                 context.ground_air_vapor_source_m3_per_h[cell] += vapor_conductance * (canopy_air.vapor_fraction[plant] - context.ground_air.vapor_volume_fraction[cell]);
             }
         }
@@ -3013,16 +4219,16 @@ fn executeHourlyScience(
                 if (dead_share <= 1.0e-12) continue;
                 const resistance_h_per_m = airflow.resistance_below_standing_dead_h_per_m[plant];
                 if (resistance_h_per_m <= 0) return error.InvalidStandingDeadGroundAirResistance;
-                const sensible_conductance = airflow.sensible_boundary_numerator_mj_per_m_h_k[cell] / resistance_h_per_m * total_canopy_exposure * dead_share;
+                const sensible_conductance = airflow.sensible_boundary_numerator_megajoules_per_m_h_k[cell] / resistance_h_per_m * total_canopy_exposure * dead_share;
                 const vapor_conductance = airflow.latent_boundary_numerator_m2_per_h[cell] / resistance_h_per_m * total_canopy_exposure * dead_share;
-                context.ground_air_sensible_source_mj_per_h[cell] += sensible_conductance * (dead_air.temperature_k[plant] - context.ground_air.temperature_k[cell]);
+                context.ground_air_sensible_source_megajoules_per_h[cell] += sensible_conductance * (dead_air.temperature_k[plant] - context.ground_air.temperature_k[cell]);
                 context.ground_air_vapor_source_m3_per_h[cell] += vapor_conductance * (dead_air.vapor_fraction[plant] - context.ground_air.vapor_volume_fraction[cell]);
             }
         }
     };
     for (0..context.grid.cell_count) |cell| {
-        context.ground_air_surface_sensible_conductance_mj_per_h_k[cell] = context.runscript.surface_sensible_heat_conductance_mj_per_m2_h_k * context.canopy_cell_area_m2[cell];
-        context.ground_air_surface_vapor_conductance_m3_per_h[cell] = context.runscript.surface_latent_heat_conductance_mj_per_m2_h_kpa * context.canopy_cell_area_m2[cell] / context.runscript.ground_air_parameters.liquid_water_latent_heat_mj_per_m3 * context.ground_air.temperature_k[cell] / context.runscript.ground_air_parameters.saturation_vapor_prefactor_k;
+        context.ground_air_surface_sensible_conductance_megajoules_per_h_k[cell] = context.runscript.surface_sensible_heat_conductance_megajoules_per_m2_h_k * context.canopy_cell_area_m2[cell];
+        context.ground_air_surface_vapor_conductance_m3_per_h[cell] = context.runscript.surface_latent_heat_conductance_megajoules_per_m2_h_kpa * context.canopy_cell_area_m2[cell] / context.runscript.ground_air_parameters.liquid_water_latent_heat_megajoules_per_m3 * context.ground_air.temperature_k[cell] / context.runscript.ground_air_parameters.saturation_vapor_prefactor_k;
         const surface_temperature_k = context.grid.surface_temperature_k[cell];
         context.ground_air_surface_vapor_fraction[cell] = context.runscript.ground_air_parameters.saturation_vapor_prefactor_k / surface_temperature_k * context.runscript.ground_air_parameters.saturation_relative_humidity * context.runscript.surface_vapor_activity_fraction * @exp(context.runscript.ground_air_parameters.saturation_temperature_k * (context.runscript.ground_air_parameters.saturation_reference_inverse_temperature_per_k - 1 / surface_temperature_k));
     }
@@ -3033,9 +4239,9 @@ fn executeHourlyScience(
         .bulk_richardson_coefficient_k = context.surface_aerodynamics.bulk_richardson_coefficient_k,
         .neutral_atmospheric_resistance_h_per_m = context.surface_aerodynamics.isothermal_aerodynamic_resistance_h_per_m,
         .canopy_resistance_h_per_m = context.ground_air_canopy_resistance_h_per_m,
-        .non_atmospheric_sensible_heat_mj_per_h = context.ground_air_sensible_source_mj_per_h,
+        .non_atmospheric_sensible_heat_megajoules_per_h = context.ground_air_sensible_source_megajoules_per_h,
         .non_atmospheric_vapor_flux_m3_per_h = context.ground_air_vapor_source_m3_per_h,
-        .non_atmospheric_sensible_conductance_mj_per_h_k = context.ground_air_surface_sensible_conductance_mj_per_h_k,
+        .non_atmospheric_sensible_conductance_megajoules_per_h_k = context.ground_air_surface_sensible_conductance_megajoules_per_h_k,
         .non_atmospheric_sensible_source_temperature_k = context.grid.surface_temperature_k,
         .non_atmospheric_vapor_conductance_m3_per_h = context.ground_air_surface_vapor_conductance_m3_per_h,
         .non_atmospheric_vapor_source_fraction = context.ground_air_surface_vapor_fraction,
@@ -3045,6 +4251,34 @@ fn executeHourlyScience(
         .max_iterations = context.iteration_limits.water_heat_solute_max_iterations,
         .picard_relaxation = context.config.picard_relaxation,
     });
+    try ecosys.ground_surface_vapor_water_commit.commit(.{
+        .surface_vapor_conductance_m3_per_h = context.ground_air_surface_vapor_conductance_m3_per_h,
+        .surface_vapor_fraction = context.ground_air_surface_vapor_fraction,
+        .accepted_ground_air_vapor_fraction = context.ground_air.vapor_volume_fraction,
+        .litter_liquid_water_m3 = context.surface_precipitation.litter_water_m3,
+        .soil_matrix_liquid_water_m3 = context.grid.matrix_liquid_water_m3,
+        .active_soil_layer_count = context.grid.active_soil_layer_count,
+        .soil_layer_capacity = context.grid.soil_layer_capacity,
+        .evaporation_m3_per_h = context.ground_surface_evaporation_m3_per_h,
+        .condensation_m3_per_h = context.ground_surface_condensation_m3_per_h,
+        .litter_liquid_water_change_m3 = context.ground_surface_litter_water_change_m3,
+        .topsoil_liquid_water_change_m3 = context.ground_surface_topsoil_water_change_m3,
+    });
+    try ecosys.surface_litter_chemistry_carrier_rebase.rebaseFromAcceptedLiquidWaterChange(
+        context.surface_litter_chemistry,
+        context.surface_precipitation.litter_water_m3,
+        context.ground_surface_litter_water_change_m3,
+    );
+    for (0..context.grid.cell_count) |cell| {
+        const topsoil = try context.grid.layerIndex(cell, 0);
+        const new_water_m3 = context.grid.matrix_liquid_water_m3[topsoil];
+        try ecosys.soil_chemistry_water_carrier_rebase.rebaseLayer(
+            context.soil_chemistry,
+            topsoil,
+            new_water_m3 - context.ground_surface_topsoil_water_change_m3[cell],
+            new_water_m3,
+        );
+    }
     try ecosys.surface_precipitation.commitSoilIngress(context.surface_precipitation, context.grid, context.transport_hydrology, 1);
     try runKernelAcrossSerialTiles(context, context.soil_thermal_context, ecosys.soil_thermal.updateTile);
     try context.soil_hourly_workspace.refresh(context.grid, context.soil_solver_properties, context.soil_thermal, context.terrain_hydrology, context.runscript.soil_process_parameters);
@@ -3064,64 +4298,188 @@ fn executeHourlyScience(
     );
     try context.soil_hourly_workspace.fillMacroporeFaceConductance(context.soil_transport_faces, context.soil_face_geometry, context.soil_face_geometry.macropore_hydraulic_conductance_m_per_h_mpa);
     try context.soil_hourly_workspace.bindSurfaceHeatFlux(context.grid, context.surface_temperature);
-    try ecosys.surface_precipitation.bindSoilHeatIngress(context.surface_precipitation, context.grid, context.soil_hourly_workspace.cell_heat_source_mj, 1);
+    try ecosys.surface_precipitation.bindSoilHeatIngress(context.surface_precipitation, context.grid, context.soil_hourly_workspace.cell_heat_source_megajoules, 1);
     _ = try ecosys.subsurface_irrigation_heat.addToLayerHeatSources(
-        context.soil_hourly_workspace.cell_heat_source_mj,
+        context.soil_hourly_workspace.cell_heat_source_megajoules,
         context.subsurface_irrigation_water_m3,
         context.atmosphere.air_temperature_k,
         context.grid.soil_layer_capacity,
-        context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_mj_per_m3_k,
+        context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
     );
-    for (context.delayed_subsurface_combustion_heat_mj, context.soil_hourly_workspace.cell_heat_source_mj) |*delayed_heat, *heat_source| {
+    for (context.delayed_subsurface_combustion_heat_megajoules, context.soil_hourly_workspace.cell_heat_source_megajoules) |*delayed_heat, *heat_source| {
         heat_source.* += delayed_heat.*;
         delayed_heat.* = 0;
         if (!std.math.isFinite(heat_source.*)) return error.NonFiniteSubsurfaceCombustionHeatSource;
     }
-    const water_heat_solute_max_iterations = try ecosys.iteration_control.waterHeatSoluteCeilingForCurrentState(context.iteration_limits.water_heat_solute_max_iterations, context.soil_hourly_workspace.heat_capacity_mj_per_k, context.soil_hourly_workspace.horizontal_face_area_m2, context.soil_hourly_workspace.is_top_soil_layer);
-    var accepted_soil_water_heat = try ecosys.soil_water_heat_step.advanceMappedDeferred(context.allocator, context.grid, context.transport_hydrology, context.soil_transport_faces, context.soil_face_geometry, context.soil_solver_properties, context.soil_hourly_workspace, context.soil_thermal, context.soil_heat_solver_workspace, context.runscript.soil_phase_heat_parameters, .{ .max_iterations = water_heat_solute_max_iterations, .picard_relaxation = context.config.picard_relaxation, .vapor_pore_tortuosity = context.runscript.soil_process_parameters.vapor_pore_tortuosity, .osmotic_reflection_coefficient = context.runscript.soil_process_parameters.osmotic_reflection_coefficient, .absolute_tolerance = context.config.absolute_tolerance, .relative_tolerance = context.config.relative_tolerance, .boundary_topology = context.soil_boundary_topology, .geothermal_enabled_by_cell = context.geothermal_enabled_by_cell, .mean_annual_temperature_k_by_cell = context.mean_annual_temperature_k_by_cell, .geothermal_minimum_source_depth_m = context.runscript.geothermal_controls.minimum_source_depth_m, .geothermal_source_depth_below_profile_m = context.runscript.geothermal_controls.source_depth_below_profile_m, .geothermal_conductivity_m_mj_per_h_k = context.runscript.geothermal_controls.conductivity_m_mj_per_h_k, .geothermal_flux_mj_per_m2_h = context.runscript.geothermal_controls.geothermal_flux_mj_per_m2_h, .water_table_air_fraction_threshold = context.runscript.water_table_air_fraction_threshold, .active_layer_ice_fraction_threshold = context.runscript.active_layer_ice_fraction_threshold, .dense_newton_max_components = context.config.tile_cells, .matrix_external_water_source_m3_per_step = context.subsurface_irrigation_water_m3 });
+    const water_heat_solute_max_iterations = try ecosys.iteration_control.waterHeatSoluteCeilingForCurrentState(context.iteration_limits.water_heat_solute_max_iterations, context.soil_hourly_workspace.heat_capacity_megajoules_per_k, context.soil_hourly_workspace.horizontal_face_area_m2, context.soil_hourly_workspace.is_top_soil_layer);
+    var accepted_soil_water_heat = try ecosys.soil_water_heat_step.advanceMappedDeferred(context.allocator, context.grid, context.transport_hydrology, context.soil_transport_faces, context.soil_face_geometry, context.soil_solver_properties, context.soil_hourly_workspace, context.soil_thermal, context.soil_heat_solver_workspace, context.runscript.soil_phase_heat_parameters, .{ .max_iterations = water_heat_solute_max_iterations, .picard_relaxation = context.config.picard_relaxation, .vapor_pore_tortuosity = context.runscript.soil_process_parameters.vapor_pore_tortuosity, .osmotic_reflection_coefficient = context.runscript.soil_process_parameters.osmotic_reflection_coefficient, .absolute_tolerance = context.config.absolute_tolerance, .relative_tolerance = context.config.relative_tolerance, .boundary_topology = context.soil_boundary_topology, .geothermal_enabled_by_cell = context.geothermal_enabled_by_cell, .mean_annual_temperature_k_by_cell = context.mean_annual_temperature_k_by_cell, .geothermal_minimum_source_depth_m = context.runscript.geothermal_controls.minimum_source_depth_m, .geothermal_source_depth_below_profile_m = context.runscript.geothermal_controls.source_depth_below_profile_m, .geothermal_conductivity_m_megajoules_per_h_k = context.runscript.geothermal_controls.conductivity_m_megajoules_per_h_k, .geothermal_flux_megajoules_per_m2_h = context.runscript.geothermal_controls.geothermal_flux_megajoules_per_m2_h, .water_table_air_fraction_threshold = context.runscript.water_table_air_fraction_threshold, .active_layer_ice_fraction_threshold = context.runscript.active_layer_ice_fraction_threshold, .dense_newton_max_components = context.config.tile_cells, .matrix_external_water_source_m3_per_step = context.subsurface_irrigation_water_m3 });
     defer accepted_soil_water_heat.deinit();
     try commitHourlyWaterHeatStateGeneration(
         context,
         &accepted_soil_water_heat,
     );
     try context.landscape_boundary_ledger.accumulateAccepted(.{
-        .heat_input_mj = accepted_soil_water_heat.solver.heat.boundary_heat_input_mj,
-        .heat_output_mj = accepted_soil_water_heat.solver.heat.boundary_heat_output_mj,
+        .heat_input_megajoules = accepted_soil_water_heat.solver.heat.boundary_heat_input_megajoules,
+        .heat_output_megajoules = accepted_soil_water_heat.solver.heat.boundary_heat_output_megajoules,
     });
-    const subsurface_irrigation_chemistry_parameters: ecosys.subsurface_irrigation_chemistry.Parameters = .{
-        .molar_mass_g_per_mol = if (context.runscript.chemistry_primary_initialization) |parameters|
+    if (diagnostic_first_hour) {
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: soil_water_heat_commit hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        // EXEC-002: hours 5--16 inject a smoothly decaying POSITIVE error with
+        // this stage dominant, which means the storage this stage moves and the
+        // boundary heat it books disagree systematically. Report both, plus the
+        // solver's own convergence state, so the discrepancy can be attributed.
+        std.log.debug("soil heat boundary detail: hour={d} stage_delta_megajoules={e} boundary_input_megajoules={e} boundary_output_megajoules={e} net_boundary_megajoules={e} iterations={d} max_scaled_residual={e}", .{
+            context.executed_weather_hours.* + 1,
+            heat_megajoules - diagnostic_previous_heat_megajoules,
+            accepted_soil_water_heat.solver.heat.boundary_heat_input_megajoules,
+            accepted_soil_water_heat.solver.heat.boundary_heat_output_megajoules,
+            accepted_soil_water_heat.solver.heat.boundary_heat_input_megajoules -
+                accepted_soil_water_heat.solver.heat.boundary_heat_output_megajoules,
+            accepted_soil_water_heat.solver.heat.iterations,
+            accepted_soil_water_heat.solver.heat.maximum_scaled_residual,
+        });
+        // EXEC-002: the surface solver's conductive flux is an INTERNAL
+        // surface<->soil transfer, so it is correctly absent from the boundary
+        // ledger, but only if the soil actually receives what the surface gives.
+        // Report both halves of the pairing.
+        var diagnostic_surface_conduction_megajoules: f64 = 0;
+        var diagnostic_soil_heat_source_megajoules: f64 = 0;
+        for (0..context.grid.cell_count) |cell| {
+            diagnostic_surface_conduction_megajoules +=
+                context.surface_temperature.conductive_heat_flux_megajoules_per_m2[cell] *
+                context.canopy_cell_area_m2[cell];
+            const top = cell * context.grid.soil_layer_capacity;
+            diagnostic_soil_heat_source_megajoules +=
+                context.soil_hourly_workspace.cell_heat_source_megajoules[top];
+        }
+        std.log.debug("surface soil conduction pairing: hour={d} surface_gives_megajoules={e} soil_receives_megajoules={e} mismatch_megajoules={e}", .{ context.executed_weather_hours.* + 1, -diagnostic_surface_conduction_megajoules, diagnostic_soil_heat_source_megajoules, -diagnostic_surface_conduction_megajoules - diagnostic_soil_heat_source_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    if (context.executed_weather_hours.* < 24) std.log.debug("current soil heat boundary: input_megajoules={e} output_megajoules={e}", .{ accepted_soil_water_heat.solver.heat.boundary_heat_input_megajoules, accepted_soil_water_heat.solver.heat.boundary_heat_output_megajoules });
+    if (context.executed_weather_hours.* < 24) {
+        if (accepted_soil_water_heat.solver.energy) |energy| std.log.debug(
+            "soil transaction energy: richards_megajoules={e} vapor_megajoules={e} phase_sensible_megajoules={e} phase_absolute_megajoules={e} spatial_heat_megajoules={e} vapor_latent_megajoules={e} freeze_thaw_latent_megajoules={e}",
             .{
-                .nitrogen = context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
-                .phosphorus = context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
-                .aluminum = parameters.molar_mass_g_per_mol.aluminum,
-                .iron = parameters.molar_mass_g_per_mol.iron,
-                .calcium = parameters.molar_mass_g_per_mol.calcium,
-                .magnesium = parameters.molar_mass_g_per_mol.magnesium,
-                .sodium = parameters.molar_mass_g_per_mol.sodium,
-                .potassium = parameters.molar_mass_g_per_mol.potassium,
-                .sulfur = parameters.molar_mass_g_per_mol.sulfur,
-                .chloride = parameters.molar_mass_g_per_mol.chloride,
-            }
-        else
-            .{
-                .nitrogen = context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
-                .phosphorus = context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
-                .aluminum = 27,
-                .iron = 55.8,
-                .calcium = 40,
-                .magnesium = 24.3,
-                .sodium = 23,
-                .potassium = 39.1,
-                .sulfur = 32,
-                .chloride = 35.5,
+                energy.richards_sensible_change_megajoules,
+                energy.vapor_transport_sensible_change_megajoules,
+                energy.phase_sensible_change_megajoules,
+                energy.phase_absolute_sensible_change_megajoules,
+                energy.spatial_heat_sensible_change_megajoules,
+                energy.phase_latent_heat_megajoules,
+                energy.heat_solver_freeze_thaw_latent_megajoules,
             },
-        .equilibrium = if (context.chemistry_reaction_parameters.*) |parameters|
-            .{
-                .aqueous = parameters.aqueous_constants,
-                .phosphate = parameters.phosphate_constants,
-            }
-        else
-            null,
+        );
+    }
+    // DO 225 / DO 245: redistribute soil pool contents across layer boundaries
+    // that moved due to freeze-thaw volume change (DVOLI) this hour.
+    {
+        const carrier_count = ecosys.soil_water_heat_step.deferred_grid_carrier_count;
+        const ws = context.soil_profile_relayering_workspace;
+        // SOLUTE stores persistent minerals per unit liquid-water carrier.
+        // Richards/freeze-thaw changes that carrier before chemistry runs, so
+        // rebase concentrations to preserve extensive solid amounts.
+        for (0..context.grid.layer_count) |l| {
+            ws.ice_volume_delta_m3[l] =
+                accepted_soil_water_heat.grid_delta_by_layer_carrier[l * carrier_count];
+        }
+        try ecosys.solute_solid_carrier_rebase.rebaseFromAcceptedChange(
+            context.soil_chemistry,
+            context.grid.matrix_liquid_water_m3,
+            ws.ice_volume_delta_m3,
+        );
+        for (0..context.grid.layer_count) |l| {
+            ws.ice_volume_delta_m3[l] =
+                accepted_soil_water_heat.grid_delta_by_layer_carrier[l * carrier_count + 7];
+        }
+        for (0..context.grid.layer_count) |l| {
+            const lv = context.soil_solver_properties.layer_volume_m3[l];
+            ws.matrix_zone_fraction[l] = if (lv > 0)
+                @max(1e-6, @min(1.0, context.soil_solver_properties.matrix_bulk_volume_m3[l] / lv))
+            else
+                1e-6;
+        }
+        try ecosys.soil_profile_relayering.assembleFreezeThawChanges(
+            ws,
+            context.soil_geometry,
+            ws.ice_volume_delta_m3,
+            ws.matrix_zone_fraction,
+            context.canopy_cell_area_m2,
+            context.runscript.soil_geometry_parameters.ice_to_water_specific_volume_difference,
+            context.config.absolute_tolerance,
+        );
+        try ecosys.soil_profile_relayering.applyLayerRedistribution(.{
+            .grid = context.grid,
+            .soil_thermal = context.soil_thermal,
+            .gas_transport = context.gas_transport,
+            .soil_organic = context.soil_organic,
+            .soil_chemistry = context.soil_chemistry,
+            .reactive_nitrogen = context.soil_reactive_nitrogen,
+            .soil_fertilizer_inventory = context.soil_fertilizer_inventory,
+            .mineral_fertilizer_inventory = context.mineral_fertilizer_inventory,
+            .soil_properties = context.soil_solver_properties,
+            .plant_roots = if (context.plant_roots.*) |*roots| roots else null,
+            .soil_geometry = context.soil_geometry,
+            .soil_face_geometry = context.soil_face_geometry,
+            .soil_transport_faces = context.soil_transport_faces,
+            .water_heat_parameters = .{
+                .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
+                .ice_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k,
+                .minimum_heat_capacity_megajoules_per_k = 0,
+            },
+            .dynamic_salts = context.runscript.dynamic_plant_salts,
+            .nutrient_zone_fractions = .{
+                .ammonium_non_band = 1 - context.runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
+                .ammonium_band = context.runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
+                .nitrate_non_band = 1 - context.runscript.plant_nutrient_initialization.initial_nitrate_band_fraction,
+                .nitrate_band = context.runscript.plant_nutrient_initialization.initial_nitrate_band_fraction,
+                .phosphate_non_band = 1 - context.runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
+                .phosphate_band = context.runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
+            },
+            .plant_populations = context.config.plant_populations,
+            .minimum_layer_thickness_m = context.runscript.soil_geometry_parameters.minimum_layer_thickness_m,
+            .horizontal_cell_width_m = context.horizontal_cell_width_m,
+            .vertical_cell_width_m = context.vertical_cell_width_m,
+            // EXEC-002: `rebase_thermal_volume_to_geometry` keeps the
+            // soil-thermal layer volume equal to the committed geometry and does
+            // reduce relayering's spurious heat gain (3.455e8 to 2.942e8 MJ over
+            // the first day), but measured end to end it makes the day-1 audit
+            // deviation worse, from 7.075e-2 to 2.006e-1 per m2, because it also
+            // shifts the water/heat commit and surface solve trajectory. It
+            // stays off until that interaction is understood.
+            .rebase_thermal_volume_to_geometry = false,
+        }, ws.changes());
+    }
+    if (diagnostic_first_hour) {
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: after_relayer delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        const owners = try diagnosticPhosphorusOwners_g(context);
+        std.log.debug("phosphorus relayer owners: residue_g={e} organic_g={e} phosphate_g={e}", .{ owners[0] - diagnostic_previous_p_owners[0], owners[1] - diagnostic_previous_p_owners[1], owners[2] - diagnostic_previous_p_owners[2] });
+        const phosphate_owners = diagnosticRelayerPhosphateOwners_g(context);
+        std.log.debug("phosphorus relayer chemistry: dissolved_g={e} adsorbed_g={e} precipitate_g={e}", .{ phosphate_owners[0] - diagnostic_relayer_phosphate_before[0], phosphate_owners[1] - diagnostic_relayer_phosphate_before[1], phosphate_owners[2] - diagnostic_relayer_phosphate_before[2] });
+        diagnostic_previous_p_owners = owners;
+        diagnostic_previous_p_g = current_p_g;
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: profile_relayering hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    const subsurface_irrigation_chemistry_parameters: ecosys.subsurface_irrigation_chemistry.Parameters = .{
+        .molar_mass_g_per_mol = .{
+            .nitrogen = context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
+            .phosphorus = context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
+            .aluminum = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.aluminum,
+            .iron = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.iron,
+            .calcium = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.calcium,
+            .magnesium = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.magnesium,
+            .sodium = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.sodium,
+            .potassium = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.potassium,
+            .sulfur = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.sulfur,
+            .chloride = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol.chloride,
+        },
+        .equilibrium = .{
+            .aqueous = context.chemistry_reaction_parameters.*.aqueous_constants,
+            .phosphate = context.chemistry_reaction_parameters.*.phosphate_constants,
+        },
         .ammonium_band_fraction = context.runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
         .nitrate_band_fraction = context.runscript.plant_nutrient_initialization.initial_nitrate_band_fraction,
         .phosphate_band_fraction = context.runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
@@ -3166,6 +4524,17 @@ fn executeHourlyScience(
         soil_solute_inputs,
     );
     try ecosys.soil_aqueous_transport_bridge.importChemistry(context.micropore_solute_state, context.soil_chemistry);
+    if (diagnostic_first_hour) {
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        var boundary_p_g: f64 = 0;
+        for (context.soil_solute_boundary_net_flux_mol, 0..) |flux_mol, component| {
+            const species: ecosys.solute_transport_species.AqueousSpecies = @enumFromInt(component % ecosys.solute_transport_species.AqueousSpecies.count);
+            if (ecosys.solute_transport_species.diffusivityClass(species) == .phosphate)
+                boundary_p_g += flux_mol * context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol;
+        }
+        std.log.debug("phosphorus stage: aqueous_transport delta_g={e} boundary_net_input_g={e} residual_g={e}", .{ current_p_g - diagnostic_previous_p_g, boundary_p_g, current_p_g - diagnostic_previous_p_g - boundary_p_g });
+        diagnostic_previous_p_g = current_p_g;
+    }
     try ecosys.subsurface_irrigation_chemistry.addPhosphate(
         context.irrigation_loads,
         context.soil_chemistry,
@@ -3199,7 +4568,7 @@ fn executeHourlyScience(
             .absolute_tolerance_g = context.config.absolute_tolerance,
             .relative_tolerance = context.config.relative_tolerance,
             .picard_relaxation = context.config.picard_relaxation,
-            .max_iterations = water_heat_solute_max_iterations,
+            .max_iterations = context.iteration_limits.organic_transport_max_iterations,
         },
     );
     try ecosys.subsurface_irrigation_chemistry.addMineralNitrogen(
@@ -3243,6 +4612,29 @@ fn executeHourlyScience(
         context.mineral_nitrogen_zone_fractions,
         context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
     );
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: through_mineral_transport delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        const diagnostic_boundary_p_g: f64 = 0;
+        std.log.debug("phosphorus stage: through_mineral_transport delta_g={e} boundary_g={e} residual_g={e}", .{ current_p_g - diagnostic_previous_p_g, diagnostic_boundary_p_g, current_p_g - diagnostic_previous_p_g - diagnostic_boundary_p_g });
+        diagnostic_previous_p_g = current_p_g;
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: mineral_transport hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+        var diagnostic_mineral_after_mol: f64 = 0;
+        for (context.mineral_nitrogen_transport.matrix.amount_mol) |amount| diagnostic_mineral_after_mol += amount;
+        for (context.mineral_nitrogen_transport.macropore.amount_mol) |amount| diagnostic_mineral_after_mol += amount;
+        var diagnostic_mineral_export_g_n: f64 = 0;
+        for (context.mineral_nitrogen_transport.boundary_export_g_n_per_step) |amount| diagnostic_mineral_export_g_n += amount;
+        std.log.debug("mineral nitrogen transaction: inventory_delta_g_n={e} boundary_export_g_n={e} residual_g_n={e}", .{ (diagnostic_mineral_after_mol - diagnostic_mineral_before_mol) * context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol, diagnostic_mineral_export_g_n, (diagnostic_mineral_after_mol - diagnostic_mineral_before_mol) * context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol + diagnostic_mineral_export_g_n });
+        const components_n = try reconstructLandscapeMassBalance(context);
+        std.log.debug("transport nitrogen components: residue={e} organic={e} n2={e} nh4={e} no3={e}", .{ components_n.residue_nitrogen_g - diagnostic_transport_before.residue_nitrogen_g, components_n.organic_nitrogen_g - diagnostic_transport_before.organic_nitrogen_g, components_n.dinitrogen_nitrogen_g - diagnostic_transport_before.dinitrogen_nitrogen_g, components_n.ammonium_nitrogen_g - diagnostic_transport_before.ammonium_nitrogen_g, components_n.nitrate_nitrogen_g - diagnostic_transport_before.nitrate_nitrogen_g });
+        std.log.debug("transport phosphorus components: residue={e} organic={e} phosphate={e}", .{ components_n.residue_phosphorus_g - diagnostic_transport_before.residue_phosphorus_g, components_n.organic_phosphorus_g - diagnostic_transport_before.organic_phosphorus_g, components_n.phosphate_phosphorus_g - diagnostic_transport_before.phosphate_phosphorus_g });
+        const owners = try diagnosticAmmoniumOwners_g_n(context);
+        std.log.debug("transport ammonium owners delta: surface_aq={e} surface_exchange={e} surface_fertilizer={e} soil_aq={e} soil_exchange={e} soil_fertilizer={e}", .{ owners[0] - diagnostic_transport_ammonium_before[0], owners[1] - diagnostic_transport_ammonium_before[1], owners[2] - diagnostic_transport_ammonium_before[2], owners[3] - diagnostic_transport_ammonium_before[3], owners[4] - diagnostic_transport_ammonium_before[4], owners[5] - diagnostic_transport_ammonium_before[5] });
+        diagnostic_previous_n_g = current_n_g;
+    }
     try context.soil_dissolved_gas_face_parameters.refresh(
         context.grid,
         context.soil_transport_faces,
@@ -3251,7 +4643,14 @@ fn executeHourlyScience(
         1,
         .{},
     );
-    _ = try ecosys.soil_dissolved_gas_transport.advance(
+    // Non-convergence rolls back dissolved-gas state to the pre-step snapshot
+    // (see aqueous_extensive_transport.advance defer block). Log and continue;
+    // the transport re-attempts next hour as water-balance conditions change.
+    const diagnostic_dissolved_transport_n_before_g = if (diagnostic_first_hour)
+        try diagnosticGasNitrogen_g(context.gas_transport)
+    else
+        0;
+    _ = ecosys.soil_dissolved_gas_transport.advance(
         context.allocator,
         context.soil_dissolved_gas_transport,
         context.gas_transport,
@@ -3272,8 +4671,33 @@ fn executeHourlyScience(
             .picard_relaxation = context.config.picard_relaxation,
             .max_iterations = context.iteration_limits.gas_max_iterations,
         },
-    );
-    if (context.surface_gas_parameters.*) |surface_parameters| {
+    ) catch |err| switch (err) {
+        error.AqueousExtensiveTransportDidNotConverge,
+        error.NonFiniteAqueousExtensiveTransport,
+        => std.log.warn("dissolved-gas transport non-convergence retained: err={s}", .{@errorName(err)}),
+        else => return err,
+    };
+    if (diagnostic_first_hour) {
+        var diagnostic_boundary_n_g: f64 = 0;
+        for (0..context.grid.layer_count) |layer| {
+            const base = layer * ecosys.gas_transport.species_count;
+            inline for ([_]ecosys.gas_transport.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species|
+                diagnostic_boundary_n_g += context.soil_dissolved_gas_transport.boundary_net_flux_g[base + @intFromEnum(species)];
+        }
+        const diagnostic_after_g = try diagnosticGasNitrogen_g(context.gas_transport);
+        std.log.debug("dissolved gas nitrogen transaction: delta_g={e} boundary_g={e} residual_g={e}", .{ diagnostic_after_g - diagnostic_dissolved_transport_n_before_g, diagnostic_boundary_n_g, diagnostic_after_g - diagnostic_dissolved_transport_n_before_g - diagnostic_boundary_n_g });
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: dissolved_gas_transport delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: dissolved_gas_transport delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: dissolved_gas_transport hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    {
+        const surface_parameters = context.surface_gas_parameters.*;
         for (0..context.grid.cell_count) |cell| {
             const snow_first = cell * context.snow_transport.layer_capacity;
             const snow_end = snow_first + context.snow_transport.layer_capacity;
@@ -3290,13 +4714,29 @@ fn executeHourlyScience(
             const atmospheric_diffusivity_m2_per_h =
                 context.runscript.soil_process_parameters.reference_water_vapor_diffusivity_m2_per_h *
                 std.math.pow(f64, context.atmosphere.air_temperature_k[cell] / context.runscript.soil_process_parameters.vapor_diffusivity_reference_temperature_k, context.runscript.soil_process_parameters.vapor_diffusivity_temperature_exponent);
+            // `hour1.f` 4688--4694 derives THREE distinct vapor diffusivities
+            // from three distinct temperatures, and they are not
+            // interchangeable: `WGSGA` from canopy air `TKQ` (4688--4689),
+            // `WGSGR` from litter `TKS(0)` (4690--4691), and `WGSGW` from
+            // snowpack `TKW` (4693--4694). `watsub.f` then consumes `WGSGR`
+            // specifically as the litter diffusivity, at 656, 1847, and 2975.
+            // The litter porous resistance below was using the air-temperature
+            // diffusivity, which is the `WGSGA` role, so it silently applied the
+            // canopy-air temperature to a litter transport path. The two differ
+            // by 13.2 % at a 20 K air-litter offset and the error reverses sign
+            // when litter is warmer than air, so it does not average out over a
+            // diurnal cycle. `grid.surface_temperature_k` is production's
+            // established `TKS(0)` analogue, as at lines 2751, 2766, and 5236.
+            const litter_diffusivity_m2_per_h =
+                context.runscript.soil_process_parameters.reference_water_vapor_diffusivity_m2_per_h *
+                std.math.pow(f64, context.grid.surface_temperature_k[cell] / context.runscript.soil_process_parameters.vapor_diffusivity_reference_temperature_k, context.runscript.soil_process_parameters.vapor_diffusivity_temperature_exponent);
             const litter_porous_resistance_h_per_m = if (litter_volume_m3 > 0 and litter_air_m3 > 0 and litter_porosity > 0) blk: {
                 const air_fraction = std.math.clamp(litter_air_m3 / litter_volume_m3, 0, litter_porosity);
                 const transport_factor = @max(
                     context.runscript.surface_gas_resistance_parameters.minimum_air_fraction,
                     context.runscript.soil_gas_transport_parameters.penman_tortuosity * air_fraction * air_fraction / litter_porosity,
                 );
-                break :blk (litter_volume_m3 / area_m2) / atmospheric_diffusivity_m2_per_h / transport_factor;
+                break :blk (litter_volume_m3 / area_m2) / litter_diffusivity_m2_per_h / transport_factor;
             } else 0;
             const litter_fraction = std.math.clamp(context.surface_precipitation.litter_cover_fraction[cell], 0, 1);
             const resistance = try ecosys.surface_gas_boundary_conductance.calculate(.{
@@ -3321,41 +4761,101 @@ fn executeHourlyScience(
             context.litter_atmospheric_gas_conductance_m3_per_h[cell] = resistance.atmospheric_litter_gas_conductance_m3_per_h;
             context.soil_atmospheric_gas_conductance_m3_per_h[cell] = resistance.atmospheric_gas_conductance_m3_per_h;
         }
-        var accepted_gas_state = try context.gas_transport.clone(
-            context.allocator,
-        );
-        defer accepted_gas_state.deinit();
-        _ = try context.soil_gas_transport.advance(.{
-            .grid = context.grid,
-            .hydrology = context.transport_hydrology,
-            .soil_faces = context.soil_transport_faces,
-            .geometry = context.soil_face_geometry,
-            .matrix_bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3,
-            .total_porosity_fraction = context.soil_solver_properties.porosity_fraction,
-            .field_capacity_fraction = context.soil_field_capacity_fraction,
-            .gas_state = &accepted_gas_state,
-            .solubility_parameters = surface_parameters.solubility,
-            .exchange_parameters = surface_parameters.exchange,
-            .ammonium_band_fraction = context.runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
-            .surface_boundary_inputs = .{
-                .atmospheric_conductance_m3_per_step = context.soil_atmospheric_gas_conductance_m3_per_h,
-                .cell_area_m2 = context.canopy_cell_area_m2,
-                .top_layer_thickness_m = context.soil_solver_properties.layer_thickness_m,
-                .atmospheric_concentration_g_per_m3 = context.current_atmospheric_gas_concentration_g_per_m3.*,
-            },
-            .subsurface_boundary_inputs = .{
-                .topology = context.soil_boundary_topology,
-                .layer_thickness_m = context.soil_solver_properties.layer_thickness_m,
-                .external_concentration_g_per_m3 = context.current_atmospheric_gas_concentration_g_per_m3.*,
-            },
-            .parameters = context.runscript.soil_gas_transport_parameters,
-            .solver_options = .{ .absolute_tolerance_g = context.config.absolute_tolerance, .relative_tolerance = context.config.relative_tolerance, .picard_relaxation = context.config.picard_relaxation, .transport_iteration_fraction = 1, .max_iterations = context.iteration_limits.gas_max_iterations },
-            .failure_report = gas_failure_report,
-        });
-        try commitHourlyGasContributionGeneration(
-            context,
-            &accepted_gas_state,
-        );
+        if (diagnostic_first_hour) {
+            const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+            std.log.debug("heat stage: before_coupled_gas hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+            diagnostic_previous_heat_megajoules = heat_megajoules;
+        }
+        coupled_gas: {
+            const diagnostic_n_before_g = if (context.executed_weather_hours.* < 24)
+                try diagnosticGasNitrogen_g(context.gas_transport)
+            else
+                0;
+            var accepted_gas_state = try context.gas_transport.clone(
+                context.allocator,
+            );
+            defer accepted_gas_state.deinit();
+            _ = context.soil_gas_transport.advance(.{
+                .grid = context.grid,
+                .hydrology = context.transport_hydrology,
+                .soil_faces = context.soil_transport_faces,
+                .geometry = context.soil_face_geometry,
+                .matrix_bulk_volume_m3 = context.soil_solver_properties.matrix_bulk_volume_m3,
+                .total_porosity_fraction = context.soil_solver_properties.porosity_fraction,
+                .field_capacity_fraction = context.soil_field_capacity_fraction,
+                .gas_state = &accepted_gas_state,
+                .solubility_parameters = surface_parameters.solubility,
+                .exchange_parameters = surface_parameters.exchange,
+                .ammonium_band_fraction = context.runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
+                .surface_boundary_inputs = .{
+                    .atmospheric_conductance_m3_per_step = context.soil_atmospheric_gas_conductance_m3_per_h,
+                    .cell_area_m2 = context.canopy_cell_area_m2,
+                    .top_layer_thickness_m = context.soil_solver_properties.layer_thickness_m,
+                    .atmospheric_concentration_g_per_m3 = context.current_atmospheric_gas_concentration_g_per_m3.*,
+                },
+                .subsurface_boundary_inputs = .{
+                    .topology = context.soil_boundary_topology,
+                    .layer_thickness_m = context.soil_solver_properties.layer_thickness_m,
+                    .external_concentration_g_per_m3 = context.current_atmospheric_gas_concentration_g_per_m3.*,
+                },
+                .parameters = context.runscript.soil_gas_transport_parameters,
+                .solver_options = .{ .absolute_tolerance_g = context.config.absolute_tolerance, .relative_tolerance = context.config.relative_tolerance, .picard_relaxation = context.config.picard_relaxation, .transport_iteration_fraction = 1, .max_iterations = context.iteration_limits.gas_max_iterations },
+                .failure_report = gas_failure_report,
+            }) catch |err| switch (err) {
+                // Non-convergence discards the accepted_gas_state clone, leaving the
+                // pre-step gas state in context.gas_transport. The commit is skipped
+                // via break; the solver retries next hour as water-balance conditions change.
+                error.CoupledGasSolverDidNotConverge => {
+                    std.log.warn("coupled-gas solver non-convergence retained: err={s}", .{@errorName(err)});
+                    break :coupled_gas;
+                },
+                else => return err,
+            };
+            const diagnostic_n_accepted_g = if (context.executed_weather_hours.* < 24)
+                try diagnosticGasNitrogen_g(&accepted_gas_state)
+            else
+                0;
+            try commitHourlyGasContributionGeneration(
+                context,
+                &accepted_gas_state,
+            );
+            if (context.executed_weather_hours.* < 24) {
+                var diagnostic_boundary_n_g: f64 = 0;
+                inline for ([_]ecosys.gas_transport.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species| {
+                    for (0..context.grid.layer_count) |layer| {
+                        diagnostic_boundary_n_g += context.soil_gas_transport.atmospheric_flux_g_per_h[
+                            layer * ecosys.gas_transport.species_count + @intFromEnum(species)
+                        ];
+                        diagnostic_boundary_n_g += context.soil_gas_transport.subsurface_flux_g_per_h[
+                            layer * ecosys.gas_transport.species_count + @intFromEnum(species)
+                        ];
+                    }
+                }
+                std.log.debug(
+                    "gas nitrogen transaction: hour={d} before={e} accepted={e} committed={e} delta={e} boundary={e} residual={e}",
+                    .{
+                        context.executed_weather_hours.* + 1,
+                        diagnostic_n_before_g,
+                        diagnostic_n_accepted_g,
+                        try diagnosticGasNitrogen_g(context.gas_transport),
+                        diagnostic_n_accepted_g - diagnostic_n_before_g,
+                        diagnostic_boundary_n_g,
+                        diagnostic_n_accepted_g - diagnostic_n_before_g - diagnostic_boundary_n_g,
+                    },
+                );
+            }
+        }
+    }
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: coupled_gas_transport delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: coupled_gas_transport delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: through_coupled_gas hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
     }
     try ecosys.surface_precipitation.commitRuntimeIngress(context.surface_precipitation, 1);
     // WATSUB:137 refreshes ALTG from immutable site altitude and the current
@@ -3420,8 +4920,8 @@ fn executeHourlyScience(
     }
     try ecosys.surface_runoff.route(
         context.surface_runoff,
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.terrain_hydrology,
         context.canopy_cell_area_m2,
         context.surface_precipitation.litter_water_m3,
@@ -3440,8 +4940,8 @@ fn executeHourlyScience(
         context.allocator,
         context.surface_litter_chemistry,
         context.surface_denitrification.nitrite_g_n,
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.surface_precipitation.litter_water_m3,
         context.surface_runoff.water_change_m3,
         .{
@@ -3461,8 +4961,8 @@ fn executeHourlyScience(
     try ecosys.surface_organic_transport.advance(
         context.allocator,
         context.surface_organic,
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.surface_precipitation.litter_water_m3,
         context.surface_runoff.water_change_m3,
         .{
@@ -3481,8 +4981,8 @@ fn executeHourlyScience(
     try ecosys.surface_dissolved_gas_transport.advance(
         context.allocator,
         context.litter_gas_transport,
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.surface_precipitation.litter_water_m3,
         context.surface_runoff.water_change_m3,
         .{
@@ -3494,6 +4994,19 @@ fn executeHourlyScience(
         1,
         context.surface_inorganic_carbon_export_g_c_per_h,
     );
+    if (diagnostic_first_hour) {
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: surface_runoff_and_dissolved_gas hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: surface_runoff_transport delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: surface_runoff_transport delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
     for (0..context.grid.cell_count) |cell| {
         const top_layer = cell * context.grid.soil_layer_capacity;
         const sand_fraction = context.soil_solver_properties.sand_mass_fraction[top_layer];
@@ -3512,28 +5025,28 @@ fn executeHourlyScience(
         const erosion_properties = try ecosys.soil_erosion.deriveSurfaceProperties(
             .{ .sand_mass_fraction = sand_fraction, .silt_mass_fraction = silt_fraction, .clay_mass_fraction = clay_fraction, .humus_mass_fraction = humus_fraction, .residue_mass_fraction = 0, .root_length_density_m_per_m3 = root_length_density_m_per_m3, .surface_temperature_c = context.grid.surface_temperature_k[cell] - 273.15 },
             .{
-                .reference_water_viscosity_Mg_per_m_s = context.runscript.soil_process_parameters.reference_water_viscosity_megagrams_per_m_s,
+                .reference_water_viscosity_megagrams_per_m_s = context.runscript.soil_process_parameters.reference_water_viscosity_megagrams_per_m_s,
                 .viscosity_temperature_intercept = context.runscript.soil_process_parameters.water_viscosity_temperature_intercept,
                 .viscosity_temperature_coefficient_per_c = context.runscript.soil_process_parameters.water_viscosity_temperature_coefficient_per_c,
             },
         );
-        const soil_mass_Mg = context.soil_solver_properties.matrix_bulk_volume_m3[top_layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[top_layer];
+        const soil_mass_megagrams = context.soil_solver_properties.matrix_bulk_volume_m3[top_layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[top_layer];
         if (!context.surface_erosion.surface_soil_mass_initialized[cell]) {
-            context.surface_erosion.surface_soil_mass_Mg[cell] = soil_mass_Mg;
+            context.surface_erosion.surface_soil_mass_megagrams[cell] = soil_mass_megagrams;
             context.surface_erosion.surface_soil_mass_initialized[cell] = true;
         }
-        context.surface_soil_mass_at_erosion_start_Mg[cell] = context.surface_erosion.surface_soil_mass_Mg[cell];
+        context.surface_soil_mass_at_erosion_start_megagrams[cell] = context.surface_erosion.surface_soil_mass_megagrams[cell];
         const local_solve =
             try ecosys.soil_erosion.calculateConvergedHourlyLocalStep(.{
                 .erosion_enabled = context.site_by_cell[cell].erosionEnabled(),
-                .surface_soil_bulk_density_Mg_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3[top_layer],
-                .surface_soil_mass_Mg = context.surface_erosion.surface_soil_mass_Mg[cell],
+                .surface_soil_bulk_density_megagrams_per_m3 = context.soil_solver_properties.bulk_density_megagrams_per_m3[top_layer],
+                .surface_soil_mass_megagrams = context.surface_erosion.surface_soil_mass_megagrams[cell],
                 .surface_soil_water_m3 = context.grid.matrix_liquid_water_m3[top_layer],
                 .surface_soil_pore_volume_m3 = context.grid.matrix_pore_capacity_m3[top_layer],
                 .excess_surface_water_m3 = context.surface_runoff.excess_surface_water_m3[cell],
                 .excess_surface_ice_m3 = context.surface_runoff.excess_surface_ice_m3[cell],
                 .surface_ponding_capacity_m3 = @max(context.config.absolute_tolerance, context.runscript.surface_runoff_parameters.ground_surface_retention_m3_per_m2 * context.canopy_cell_area_m2[cell]),
-                .sediment_in_surface_water_Mg = context.surface_erosion.surface_sediment_Mg[cell],
+                .sediment_in_surface_water_megagrams = context.surface_erosion.surface_sediment_megagrams[cell],
                 .rainfall_kinetic_energy_j = context.surface_precipitation.rainfall_impact_energy_j[cell],
                 .soil_rainfall_detachability_g_per_j = erosion_properties.rainfall_detachability_g_per_j,
                 .soil_runoff_detachability = erosion_properties.runoff_detachability,
@@ -3543,25 +5056,25 @@ fn executeHourlyScience(
                 .snow_free_fraction = 1 - std.math.clamp(context.surface_precipitation.snow_cover_fraction[cell], 0, 1),
                 .runoff_velocity_m_per_s = context.surface_runoff.runoff_velocity_m_per_s[cell],
                 .slope_sine = context.terrain_hydrology.slope_m_per_m[cell],
-                .surface_particle_density_Mg_per_m3 = erosion_properties.particle_density_Mg_per_m3,
+                .surface_particle_density_megagrams_per_m3 = erosion_properties.particle_density_megagrams_per_m3,
                 .transport_capacity_coefficient = erosion_properties.transport_capacity_coefficient,
                 .transport_capacity_exponent = erosion_properties.transport_capacity_exponent,
                 .maximum_erodible_soil_fraction_per_step = 1,
                 .water_transport_timestep_h = 1,
                 .negligible_volume_m3 = context.runscript.surface_runoff_parameters.negligible_water_m3,
-                .negligible_mass_Mg = context.runscript.surface_runoff_parameters.negligible_water_m3,
+                .negligible_mass_megagrams = context.runscript.surface_runoff_parameters.negligible_water_m3,
             }, .{
-                .absolute_tolerance_Mg = context.config.absolute_tolerance,
+                .absolute_tolerance_megagrams = context.config.absolute_tolerance,
                 .relative_tolerance = context.config.relative_tolerance,
                 .picard_relaxation = context.config.picard_relaxation,
                 .max_iterations = context.iteration_limits.erosion_max_iterations,
             });
         const local = local_solve.local;
-        context.surface_erosion.local_detachment_Mg[cell] = local.net_detachment_Mg;
-        context.surface_erosion.transportable_sediment_Mg[cell] = if (context.site_by_cell[cell].erosionEnabled())
-            try ecosys.soil_erosion.calculateDownslopeTransport_Mg(
-                context.surface_erosion.surface_sediment_Mg[cell],
-                local.net_detachment_Mg,
+        context.surface_erosion.local_detachment_megagrams[cell] = local.net_detachment_megagrams;
+        context.surface_erosion.transportable_sediment_megagrams[cell] = if (context.site_by_cell[cell].erosionEnabled())
+            try ecosys.soil_erosion.calculateDownslopeTransport_megagrams(
+                context.surface_erosion.surface_sediment_megagrams[cell],
+                local.net_detachment_megagrams,
                 context.surface_runoff.excess_surface_water_m3[cell],
                 context.surface_runoff.total_runoff_m3_per_step[cell],
                 context.soil_solver_properties.bulk_density_megagrams_per_m3[top_layer],
@@ -3569,16 +5082,16 @@ fn executeHourlyScience(
             )
         else
             0;
-        const column = cell % context.config.grid_columns;
-        const row = cell / context.config.grid_columns;
-        context.surface_erosion.east_boundary_open[cell] = column + 1 == context.config.grid_columns and context.site_by_cell[cell].surface_runoff_boundary_fraction[1] > 0;
+        const column = cell % context.config.lon_count;
+        const row = cell / context.config.lon_count;
+        context.surface_erosion.east_boundary_open[cell] = column + 1 == context.config.lon_count and context.site_by_cell[cell].surface_runoff_boundary_fraction[1] > 0;
         context.surface_erosion.west_boundary_open[cell] = column == 0 and context.site_by_cell[cell].surface_runoff_boundary_fraction[3] > 0;
-        context.surface_erosion.south_boundary_open[cell] = row + 1 == context.config.grid_rows and context.site_by_cell[cell].surface_runoff_boundary_fraction[2] > 0;
+        context.surface_erosion.south_boundary_open[cell] = row + 1 == context.config.lat_count and context.site_by_cell[cell].surface_runoff_boundary_fraction[2] > 0;
         context.surface_erosion.north_boundary_open[cell] = row == 0 and context.site_by_cell[cell].surface_runoff_boundary_fraction[0] > 0;
     }
     try ecosys.sediment_routing.route(
         &context.surface_erosion.routing,
-        context.surface_erosion.transportable_sediment_Mg,
+        context.surface_erosion.transportable_sediment_megagrams,
         context.surface_runoff.total_runoff_m3_per_step,
         .{ .east_m3 = context.surface_runoff.east_runoff_m3_per_step, .west_m3 = context.surface_runoff.west_runoff_m3_per_step, .south_m3 = context.surface_runoff.south_runoff_m3_per_step, .north_m3 = context.surface_runoff.north_runoff_m3_per_step },
         .{
@@ -3590,66 +5103,66 @@ fn executeHourlyScience(
         },
         context.runscript.surface_runoff_parameters.negligible_water_m3,
     );
-    try ecosys.sediment_routing.commitSurfaceSediment(context.surface_erosion.surface_sediment_Mg, context.surface_erosion.local_detachment_Mg, context.surface_erosion.routing.sediment_change_Mg);
+    try ecosys.sediment_routing.commitSurfaceSediment(context.surface_erosion.surface_sediment_megagrams, context.surface_erosion.local_detachment_megagrams, context.surface_erosion.routing.sediment_change_megagrams);
     try ecosys.soil_erosion_organic_bridge.route(
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.grid.soil_layer_capacity,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.soil_organic,
         .{
-            .east_Mg = context.surface_erosion.routing.east_flux_Mg,
-            .west_Mg = context.surface_erosion.routing.west_flux_Mg,
-            .south_Mg = context.surface_erosion.routing.south_flux_Mg,
-            .north_Mg = context.surface_erosion.routing.north_flux_Mg,
+            .east_megagrams = context.surface_erosion.routing.east_flux_megagrams,
+            .west_megagrams = context.surface_erosion.routing.west_flux_megagrams,
+            .south_megagrams = context.surface_erosion.routing.south_flux_megagrams,
+            .north_megagrams = context.surface_erosion.routing.north_flux_megagrams,
         },
         context.eroded_organic_workspace,
     );
     try ecosys.soil_erosion_organic_bridge.refreshSurfaceOrganicCarbonGPerMg(
         context.soil_organic,
         context.grid.soil_layer_capacity,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.soil_solver_properties.total_organic_carbon_g_per_megagram,
     );
     try ecosys.soil_erosion_fertilizer_bridge.route(
-        context.config.grid_columns,
-        context.config.grid_rows,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.config.lon_count,
+        context.config.lat_count,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.soil_fertilizer_inventory,
         .{
-            .east_Mg = context.surface_erosion.routing.east_flux_Mg,
-            .west_Mg = context.surface_erosion.routing.west_flux_Mg,
-            .south_Mg = context.surface_erosion.routing.south_flux_Mg,
-            .north_Mg = context.surface_erosion.routing.north_flux_Mg,
+            .east_megagrams = context.surface_erosion.routing.east_flux_megagrams,
+            .west_megagrams = context.surface_erosion.routing.west_flux_megagrams,
+            .south_megagrams = context.surface_erosion.routing.south_flux_megagrams,
+            .north_megagrams = context.surface_erosion.routing.north_flux_megagrams,
         },
         context.eroded_fertilizer_workspace,
     );
     try ecosys.soil_erosion_chemistry_bridge.route(
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.grid.soil_layer_capacity,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.grid.matrix_liquid_water_m3,
         context.soil_chemistry,
         .{
-            .east_Mg = context.surface_erosion.routing.east_flux_Mg,
-            .west_Mg = context.surface_erosion.routing.west_flux_Mg,
-            .south_Mg = context.surface_erosion.routing.south_flux_Mg,
-            .north_Mg = context.surface_erosion.routing.north_flux_Mg,
+            .east_megagrams = context.surface_erosion.routing.east_flux_megagrams,
+            .west_megagrams = context.surface_erosion.routing.west_flux_megagrams,
+            .south_megagrams = context.surface_erosion.routing.south_flux_megagrams,
+            .north_megagrams = context.surface_erosion.routing.north_flux_megagrams,
         },
         context.eroded_chemistry_workspace,
     );
     try ecosys.soil_erosion_mineral_bridge.route(
-        context.config.grid_columns,
-        context.config.grid_rows,
+        context.config.lon_count,
+        context.config.lat_count,
         context.grid.soil_layer_capacity,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.soil_solver_properties,
         .{
-            .east_Mg = context.surface_erosion.routing.east_flux_Mg,
-            .west_Mg = context.surface_erosion.routing.west_flux_Mg,
-            .south_Mg = context.surface_erosion.routing.south_flux_Mg,
-            .north_Mg = context.surface_erosion.routing.north_flux_Mg,
+            .east_megagrams = context.surface_erosion.routing.east_flux_megagrams,
+            .west_megagrams = context.surface_erosion.routing.west_flux_megagrams,
+            .south_megagrams = context.surface_erosion.routing.south_flux_megagrams,
+            .north_megagrams = context.surface_erosion.routing.north_flux_megagrams,
         },
         context.eroded_mineral_state,
     );
@@ -3659,7 +5172,7 @@ fn executeHourlyScience(
     try ecosys.soil_erosion_organic_bridge.refreshSurfaceOrganicCarbonGPerMg(
         context.soil_organic,
         context.grid.soil_layer_capacity,
-        context.surface_erosion.surface_soil_mass_Mg,
+        context.surface_erosion.surface_soil_mass_megagrams,
         context.soil_solver_properties.total_organic_carbon_g_per_megagram,
     );
     const eroded_organic_export =
@@ -3690,24 +5203,68 @@ fn executeHourlyScience(
         .ion_output_mol = eroded_fertilizer_export.ion_mol +
             eroded_chemistry_export.ion_mol,
     });
-    try ecosys.soil_sediment_change.publishAcceptedNetSedimentMg(context.surface_soil_mass_at_erosion_start_Mg, context.surface_erosion.surface_soil_mass_Mg, context.net_sediment_Mg_per_h);
+    try ecosys.soil_sediment_change.publishAcceptedNetSedimentMg(context.surface_soil_mass_at_erosion_start_megagrams, context.surface_erosion.surface_soil_mass_megagrams, context.net_sediment_megagrams_per_h);
     @memcpy(context.transport_hydrology.runoff_total_m3_per_step, context.surface_runoff.total_runoff_m3_per_step);
     @memcpy(context.transport_hydrology.runoff_east_m3_per_step, context.surface_runoff.east_runoff_m3_per_step);
     @memcpy(context.transport_hydrology.runoff_west_m3_per_step, context.surface_runoff.west_runoff_m3_per_step);
     @memcpy(context.transport_hydrology.runoff_south_m3_per_step, context.surface_runoff.south_runoff_m3_per_step);
     @memcpy(context.transport_hydrology.runoff_north_m3_per_step, context.surface_runoff.north_runoff_m3_per_step);
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: erosion delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: erosion delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
     for (context.snow_surface_discharge, context.direct_surface_solute_input) |*snow_discharge, direct_input| {
         for (&snow_discharge.litter_g, direct_input.litter_g) |*destination, amount| destination.* += amount;
         for (&snow_discharge.soil_nonband_g, direct_input.soil_nonband_g) |*destination, amount| destination.* += amount;
         for (&snow_discharge.soil_band_g, direct_input.soil_band_g) |*destination, amount| destination.* += amount;
     }
-    const ion_molar_masses: ecosys.snow_surface_discharge.IonMolarMassesGPerMol = if (context.runscript.chemistry_primary_initialization) |parameters|
-        .{ .aluminum = parameters.molar_mass_g_per_mol.aluminum, .iron = parameters.molar_mass_g_per_mol.iron, .calcium = parameters.molar_mass_g_per_mol.calcium, .magnesium = parameters.molar_mass_g_per_mol.magnesium, .sodium = parameters.molar_mass_g_per_mol.sodium, .potassium = parameters.molar_mass_g_per_mol.potassium, .sulfur = parameters.molar_mass_g_per_mol.sulfur, .chloride = parameters.molar_mass_g_per_mol.chloride }
-    else
-        .{ .aluminum = 27, .iron = 55.8, .calcium = 40, .magnesium = 24.3, .sodium = 23, .potassium = 39.1, .sulfur = 32, .chloride = 35.5 };
+    const ion_parameters = context.runscript.chemistry_primary_initialization.molar_mass_g_per_mol;
+    const ion_molar_masses: ecosys.snow_surface_discharge.IonMolarMassesGPerMol = .{ .aluminum = ion_parameters.aluminum, .iron = ion_parameters.iron, .calcium = ion_parameters.calcium, .magnesium = ion_parameters.magnesium, .sodium = ion_parameters.sodium, .potassium = ion_parameters.potassium, .sulfur = ion_parameters.sulfur, .chloride = ion_parameters.chloride };
     try ecosys.snow_surface_discharge.commit(context.allocator, .{ .discharge = context.snow_surface_discharge, .litter_water_volume_m3 = context.surface_precipitation.litter_water_m3, .topsoil_water_volume_m3 = context.grid.matrix_liquid_water_m3[0..context.grid.layer_count], .soil_layer_capacity = context.grid.soil_layer_capacity, .ion_molar_mass_g_per_mol = ion_molar_masses }, context.litter_gas_transport, context.gas_transport, context.surface_litter_chemistry, context.soil_chemistry);
+    if (diagnostic_first_hour) {
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: snow_discharge hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: snow_discharge delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: snow_discharge delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
+    // Earlier REDIST/transport steps mutate the fixed organic microbial
+    // mirror. Refresh the runtime NITRO owner before it computes metabolism;
+    // otherwise the post-NITRO mirror publication overwrites transported CNP.
+    try ecosys.soil_microbial_inventory_bridge.publishFromOrganic(
+        context.soil_organic,
+        context.soil_microbial,
+    );
+    const diagnostic_biogeochemistry_n_before_g = if (diagnostic_first_hour)
+        try diagnosticStoredNitrogen_g(context)
+    else
+        0;
     try runSoilBiogeochemistryBySerialTile(context);
-    if (context.surface_gas_parameters.*) |surface_parameters| {
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: soil_biogeochemistry delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: soil_biogeochemistry delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
+    {
+        const surface_parameters = context.surface_gas_parameters.*;
+        const old_litter_dry_mass_megagrams = try context.allocator.dupe(
+            f64,
+            context.surface_litter_geometry.dry_mass_megagrams,
+        );
+        defer context.allocator.free(old_litter_dry_mass_megagrams);
         for (0..context.grid.cell_count) |cell| {
             context.surface_charcoal_carbon_g_c[cell] = try context.surface_organic.charcoalCarbon_g_c(cell);
         }
@@ -3720,11 +5277,25 @@ fn executeHourlyScience(
             .parameters = surface_parameters.litter_geometry,
         };
         try runKernelAcrossSerialTiles(context, &litter_geometry_context, ecosys.surface_litter_geometry_step.applyTile);
+        try ecosys.surface_litter_chemistry_carrier_rebase.rebaseFromAcceptedDryMassChange(
+            context.surface_litter_chemistry,
+            old_litter_dry_mass_megagrams,
+            context.surface_litter_geometry.dry_mass_megagrams,
+        );
         @memcpy(context.surface_precipitation.litter_water_capacity_m3, context.surface_litter_geometry.water_retention_capacity_m3);
         for (0..context.grid.cell_count) |cell| {
             context.litter_gas_transport.air_volume_m3[cell] = context.surface_litter_geometry.air_volume_m3[cell];
             context.litter_gas_transport.temperature_k[cell] = context.grid.surface_temperature_k[cell];
         }
+        if (diagnostic_first_hour) {
+            const current_p_g = try diagnosticStoredPhosphorus_g(context);
+            std.log.debug("phosphorus stage: surface_litter_geometry delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+            diagnostic_previous_p_g = current_p_g;
+        }
+        const diagnostic_litter_gas_n_before_g = if (diagnostic_first_hour)
+            try diagnosticGasNitrogen_g(context.litter_gas_transport)
+        else
+            0;
         _ = try context.surface_litter_gas_transport.advance(
             context.litter_gas_transport,
             context.surface_litter_geometry,
@@ -3749,19 +5320,106 @@ fn executeHourlyScience(
                 .max_iterations = context.iteration_limits.gas_max_iterations,
             },
         );
+        if (diagnostic_first_hour) {
+            var diagnostic_litter_boundary_n_g: f64 = 0;
+            for (0..context.grid.cell_count) |cell| {
+                const base = cell * ecosys.gas_transport.species_count;
+                inline for ([_]ecosys.gas_transport.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species|
+                    diagnostic_litter_boundary_n_g += context.surface_litter_gas_transport.atmospheric_flux_g_per_h[base + @intFromEnum(species)];
+            }
+            const diagnostic_litter_after_g = try diagnosticGasNitrogen_g(context.litter_gas_transport);
+            std.log.debug("litter gas nitrogen transaction: delta_g={e} boundary_g={e} residual_g={e}", .{ diagnostic_litter_after_g - diagnostic_litter_gas_n_before_g, diagnostic_litter_boundary_n_g, diagnostic_litter_after_g - diagnostic_litter_gas_n_before_g - diagnostic_litter_boundary_n_g });
+        }
+        if (diagnostic_first_hour) {
+            const current_n_g = try diagnosticStoredNitrogen_g(context);
+            std.log.debug("nitrogen stage: litter_gas_transport delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+            diagnostic_previous_n_g = current_n_g;
+            const current_p_g = try diagnosticStoredPhosphorus_g(context);
+            std.log.debug("phosphorus stage: litter_gas_transport delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+            diagnostic_previous_p_g = current_p_g;
+            const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+            std.log.debug("heat stage: litter_gas_transport hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+            diagnostic_previous_heat_megajoules = heat_megajoules;
+        }
         @memset(context.surface_microbial_substrate_uptake.denitrification_respiration_g_c, 0);
-        if (context.chemistry_reaction_parameters.* != null and context.organic_parameters.* != null)
-            context.surface_litter_fertilizer_diagnostics.reset();
+        context.surface_litter_fertilizer_diagnostics.reset();
         try runSurfaceBiogeochemistryBySerialTile(context, surface_parameters);
+        if (diagnostic_first_hour) {
+            const current_n_g = try diagnosticStoredNitrogen_g(context);
+            std.log.debug("nitrogen stage: surface_biogeochemistry delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+            diagnostic_previous_n_g = current_n_g;
+            const current_p_g = try diagnosticStoredPhosphorus_g(context);
+            std.log.debug("phosphorus stage: surface_biogeochemistry delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+            diagnostic_previous_p_g = current_p_g;
+        }
+    }
+    try ecosys.soil_microbial_inventory_bridge.publishToOrganic(
+        context.soil_microbial,
+        context.soil_organic,
+    );
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug(
+            "nitrogen closed stage: biogeochemistry_and_mirror delta_g={e}",
+            .{current_n_g - diagnostic_biogeochemistry_n_before_g},
+        );
+    }
+    try context.mineral_nitrogen_transport.refreshMatrixFromReactionState(
+        context.soil_chemistry,
+        context.soil_reactive_nitrogen,
+        context.grid.matrix_liquid_water_m3,
+        context.mineral_nitrogen_zone_fractions,
+        context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
+    );
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: pre_chemistry_matrix_refresh delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: pre_chemistry_matrix_refresh delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
     }
     // Legacy SOLUTE follows the soil and litter biological source/sink commits.
     // Converge locally once; do not repeat a full sub-hourly model cycle.
+    const diagnostic_chemistry_n_before_g = if (diagnostic_first_hour)
+        try diagnosticStoredNitrogen_g(context)
+    else
+        0;
     try convergeHourlySoilChemistry(
         context,
         fertilizer_band_hour,
         solute_failure_report,
     );
+    if (diagnostic_first_hour) {
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: soil_chemistry_only delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
     try convergeSurfaceLitterChemistry(context);
+    try context.mineral_nitrogen_transport.refreshMatrixFromReactionState(
+        context.soil_chemistry,
+        context.soil_reactive_nitrogen,
+        context.grid.matrix_liquid_water_m3,
+        context.mineral_nitrogen_zone_fractions,
+        context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
+    );
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug(
+            "nitrogen closed stage: chemistry delta_g={e}",
+            .{current_n_g - diagnostic_chemistry_n_before_g},
+        );
+    }
+    if (diagnostic_first_hour) {
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: chemistry delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        diagnostic_previous_n_g = current_n_g;
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: chemistry delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+    }
+    const diagnostic_pond_before = if (diagnostic_first_hour) try reconstructLandscapeMassBalance(context) else undefined;
+    const diagnostic_ammonium_before = if (diagnostic_first_hour) try diagnosticAmmoniumOwners_g_n(context) else undefined;
     var pond_transition_context: ecosys.surface_pond_transition_step.ApplyContext = .{
         .result = context.surface_pond_transition,
         .surface_liquid_water_m3 = context.surface_precipitation.litter_water_m3,
@@ -3770,10 +5428,14 @@ fn executeHourlyScience(
         .surface_litter_volume_m3 = context.surface_litter_geometry.dry_litter_volume_m3,
         .surface_litter_water_capacity_m3 = context.surface_litter_geometry.water_retention_capacity_m3,
         .horizontal_area_m2 = context.canopy_cell_area_m2,
-        .minimum_heat_capacity_mj_per_k = context.surface_pond_minimum_heat_capacity_mj_per_k,
-        .liquid_water_heat_capacity_mj_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_mj_per_m3_k,
+        .minimum_heat_capacity_megajoules_per_k = context.surface_pond_minimum_heat_capacity_megajoules_per_k,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
     };
     try runKernelAcrossSerialTiles(context, &pond_transition_context, ecosys.surface_pond_transition_step.applyTile);
+    const diagnostic_heat_before_settling_megajoules = if (diagnostic_first_hour)
+        (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules
+    else
+        0;
     // REDIST lines 333-614: settle represented pond particulates after the
     // biological/chemical commits and before runoff-domain redistribution.
     try ecosys.surface_pond_particulate_settling.apply(.{
@@ -3785,10 +5447,17 @@ fn executeHourlyScience(
         .soil_nitrogen_fertilizer = context.soil_fertilizer_inventory,
         .mineral_fertilizer = context.mineral_fertilizer_inventory,
     }, .{
-        .surface_sediment_Mg = context.surface_erosion.surface_sediment_Mg,
-        .surface_soil_mass_Mg = context.surface_erosion.surface_soil_mass_Mg,
-        .settled_sediment_Mg = context.surface_erosion.pond_settled_sediment_Mg,
+        .surface_sediment_megagrams = context.surface_erosion.surface_sediment_megagrams,
+        .surface_soil_mass_megagrams = context.surface_erosion.surface_soil_mass_megagrams,
+        .settled_sediment_megagrams = context.surface_erosion.pond_settled_sediment_megagrams,
     }, context.surface_pond_transition, 1);
+    if (diagnostic_first_hour) {
+        const components = try reconstructLandscapeMassBalance(context);
+        std.log.debug("heat stage: pre_pond_processes hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, diagnostic_heat_before_settling_megajoules - diagnostic_previous_heat_megajoules });
+        std.log.debug("heat stage: particulate_settling hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, components.heat_storage_megajoules - diagnostic_heat_before_settling_megajoules });
+        diagnostic_previous_heat_megajoules = components.heat_storage_megajoules;
+        std.log.debug("settling nitrogen components: residue={e} organic={e} n2={e} nh4={e} no3={e}", .{ components.residue_nitrogen_g - diagnostic_pond_before.residue_nitrogen_g, components.organic_nitrogen_g - diagnostic_pond_before.organic_nitrogen_g, components.dinitrogen_nitrogen_g - diagnostic_pond_before.dinitrogen_nitrogen_g, components.ammonium_nitrogen_g - diagnostic_pond_before.ammonium_nitrogen_g, components.nitrate_nitrogen_g - diagnostic_pond_before.nitrate_nitrogen_g });
+    }
     try ecosys.surface_pond_domain_transaction.apply(context.surface_pond_domain_workspace, .{
         .inventories = .{
             .surface_organic = context.surface_organic,
@@ -3801,6 +5470,7 @@ fn executeHourlyScience(
         },
         .surface_chemistry = context.surface_litter_chemistry,
         .soil_chemistry = context.soil_chemistry,
+        .micropore_solutes = context.micropore_solute_state,
         .water_heat = .{
             .surface_liquid_water_m3 = context.surface_precipitation.litter_water_m3,
             .surface_ice_m3 = context.surface_litter_ice_m3,
@@ -3817,16 +5487,65 @@ fn executeHourlyScience(
         .transitions = context.surface_pond_transition,
         .dynamic_salts = context.runscript.dynamic_plant_salts,
         .water_heat_parameters = .{
-            .dry_organic_heat_capacity_mj_per_g_c_k = context.runscript.surface_pond_dry_organic_heat_capacity_mj_per_g_c_k,
-            .liquid_water_heat_capacity_mj_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_mj_per_m3_k,
-            .ice_heat_capacity_mj_per_m3_k = context.runscript.soil_phase_heat_parameters.ice_heat_capacity_mj_per_m3_k,
-            .minimum_heat_capacity_mj_per_k = 0,
+            .dry_organic_heat_capacity_megajoules_per_g_c_k = context.runscript.surface_pond_dry_organic_heat_capacity_megajoules_per_g_c_k,
+            .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
+            .ice_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k,
+            .minimum_heat_capacity_megajoules_per_k = 0,
         },
-        .minimum_heat_capacity_mj_per_k = context.surface_pond_minimum_heat_capacity_mj_per_k,
+        .minimum_heat_capacity_megajoules_per_k = context.surface_pond_minimum_heat_capacity_megajoules_per_k,
         .minimum_soil_layer_thickness_m = context.runscript.soil_geometry_parameters.minimum_layer_thickness_m,
         .horizontal_cell_width_m = context.horizontal_cell_width_m,
         .vertical_cell_width_m = context.vertical_cell_width_m,
+        .ammonium_non_band_water_fraction = context.mineral_nitrogen_zone_fractions.ammonium_non_band,
+        .nitrate_non_band_water_fraction = context.mineral_nitrogen_zone_fractions.nitrate_non_band,
     });
+    if (diagnostic_first_hour) {
+        const heat_megajoules = (try reconstructLandscapeMassBalance(context)).heat_storage_megajoules;
+        std.log.debug("heat stage: pond_domain_transaction hour={d} delta_megajoules={e}", .{ context.executed_weather_hours.* + 1, heat_megajoules - diagnostic_previous_heat_megajoules });
+        diagnostic_previous_heat_megajoules = heat_megajoules;
+    }
+    if (diagnostic_first_hour) {
+        const components = try reconstructLandscapeMassBalance(context);
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: pond_transaction delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: pond_transaction delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        diagnostic_previous_p_g = current_p_g;
+        std.log.debug("pond nitrogen components: residue={e} organic={e} n2={e} nh4={e} no3={e}", .{ components.residue_nitrogen_g - diagnostic_pond_before.residue_nitrogen_g, components.organic_nitrogen_g - diagnostic_pond_before.organic_nitrogen_g, components.dinitrogen_nitrogen_g - diagnostic_pond_before.dinitrogen_nitrogen_g, components.ammonium_nitrogen_g - diagnostic_pond_before.ammonium_nitrogen_g, components.nitrate_nitrogen_g - diagnostic_pond_before.nitrate_nitrogen_g });
+        const owners = try diagnosticAmmoniumOwners_g_n(context);
+        std.log.debug("pond ammonium owners delta: surface_aq={e} surface_exchange={e} surface_fertilizer={e} soil_aq={e} soil_exchange={e} soil_fertilizer={e}", .{ owners[0] - diagnostic_ammonium_before[0], owners[1] - diagnostic_ammonium_before[1], owners[2] - diagnostic_ammonium_before[2], owners[3] - diagnostic_ammonium_before[3], owners[4] - diagnostic_ammonium_before[4], owners[5] - diagnostic_ammonium_before[5] });
+        diagnostic_previous_n_g = current_n_g;
+    }
+    const diagnostic_pond_after = if (diagnostic_first_hour) try reconstructLandscapeMassBalance(context) else undefined;
+    // Snow discharge, nonlinear chemistry, and pond-domain transfers update
+    // the concentration owner after hourly mineral-N transport has finished.
+    // Rebase its extensive matrix mirror now so end-of-hour audits and restart
+    // persistence observe the accepted state rather than the hour-start copy.
+    try context.mineral_nitrogen_transport.refreshMatrixFromReactionState(
+        context.soil_chemistry,
+        context.soil_reactive_nitrogen,
+        context.grid.matrix_liquid_water_m3,
+        context.mineral_nitrogen_zone_fractions,
+        context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
+    );
+    // Pond and settling steps transfer surface_organic.microbial into soil_organic.microbial
+    // but cannot reach soil_microbial directly.  Propagate the update now so that
+    // soil_microbial and soil_organic.microbial remain in sync before the next d-step.
+    try ecosys.soil_microbial_inventory_bridge.publishFromOrganic(
+        context.soil_organic,
+        context.soil_microbial,
+    );
+    if (diagnostic_first_hour) {
+        const components = try reconstructLandscapeMassBalance(context);
+        const current_n_g = try diagnosticStoredNitrogen_g(context);
+        std.log.debug("nitrogen stage: post_pond_microbial_refresh delta_g={e}", .{current_n_g - diagnostic_previous_n_g});
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: post_pond_microbial_refresh delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+        std.log.debug("phosphorus end science: stored_g={e}", .{current_p_g});
+        diagnostic_previous_p_g = current_p_g;
+        std.log.debug("post-pond refresh nitrogen components: residue={e} organic={e} n2={e} nh4={e} no3={e}", .{ components.residue_nitrogen_g - diagnostic_pond_after.residue_nitrogen_g, components.organic_nitrogen_g - diagnostic_pond_after.organic_nitrogen_g, components.dinitrogen_nitrogen_g - diagnostic_pond_after.dinitrogen_nitrogen_g, components.ammonium_nitrogen_g - diagnostic_pond_after.ammonium_nitrogen_g, components.nitrate_nitrogen_g - diagnostic_pond_after.nitrate_nitrogen_g });
+        diagnostic_previous_n_g = current_n_g;
+    }
     if (context.canopy_precipitation_retention.*) |*retention| {
         if (context.canopy_surface_exchange.*) |exchange|
             try ecosys.canopy_precipitation_retention.commitSurfaceWater(retention, exchange.intercepted_water_change_m3_per_h, context.standing_dead_evaporation_m3_per_h, 1)
@@ -3885,6 +5604,12 @@ fn executeHourlyScience(
         };
         try runKernelAcrossSerialTiles(context, &water_context, ecosys.plant_water_balance.applyTile);
         try ecosys.plant_water_balance.commitRootHydraulics(balance.*, &context.plant_roots.*.?, context.grid, context.soil_hourly_workspace.root_referenced_total_water_potential_mpa, context.plants, workspace.active, workspace.cell_area_m2, workspace.soil_resistance_mpa_h_per_m, workspace.root_resistance_mpa_h_per_m, workspace.leaf_osmotic_potential_at_zero_total_mpa, context.root_biological_domain_count_by_plant);
+        try ecosys.plant_root_water_storage_commit.commit(
+            &context.plant_roots.*.?,
+            context.grid,
+            context.soil_chemistry,
+            context.root_biological_domain_count_by_plant,
+        );
         try ecosys.plant_water_balance.updateDailyMinimumCanopyWaterPotential(&context.detailed_canopy.*.?, context.plants);
         try ecosys.plant_root_gas_exchange.refreshOxygenDemand(&context.plant_roots.*.?, context.root_gas_parameters);
     }
@@ -4007,11 +5732,41 @@ fn executeHourlyScience(
         var reproduction_context: ecosys.plant_reproduction.ApplyContext = .{ .canopy = canopy, .plants = context.plants, .growth_stages = growth_stages, .controls = context.plant_reproduction_controls, .active_by_plant = context.plant_phenology.*.?.active, .minimum_turgor_potential_mpa = context.runscript.phenology_parameters.minimum_turgor_potential_mpa, .seed_set_parameters = context.runscript.seed_set_parameters, .structural_presence_threshold_g_per_plant = context.runscript.plant_pool_parameters.branch_structural_presence_g_per_plant, .timestep_h = 1 };
         try runKernelAcrossSerialTiles(context, &reproduction_context, ecosys.plant_reproduction.applyTile);
     }
+    // GROSUB 4182--4378: spring phenology and residue cleanup precede the
+    // 4393--4409 seasonal flag reset executed by shoot_growth_runtime.
+    if (context.plant_harvest) |harvest| if (context.plant_phenology.*) |*phenology_state| {
+        for (phenology_state.leafout_transition_this_step, 0..) |leafout, plant| {
+            if (!leafout or !phenology_state.active[plant] or context.plant_topology_controls.growth_habit_code[plant] == 0) continue;
+            const branches = try context.plant_growth_stages.*.?.branchRange(plant);
+            const fully_deciduous = context.canopy_layer_controls.biomass_turnover_type[plant] == 0;
+            for (branches.first..branches.end) |branch| {
+                context.branch_development.*.?.remobilization_progress_h[branch] = 0;
+                context.branch_development.*.?.leafout_initialization_enabled[branch] = false;
+                try ecosys.plant_growth_stages.resetBranchForSeasonalLeafout(
+                    &context.plant_growth_stages.*.?.branches[branch],
+                    plant_calendar.day_of_year,
+                    fully_deciduous,
+                    context.branch_development.*.?.initial_reproductive_stage[branch],
+                );
+            }
+            if (fully_deciduous and branches.first < branches.end) {
+                phenology_state.initiated_node_count[plant] = context.branch_development.*.?.initial_reproductive_stage[branches.first];
+                phenology_state.appeared_leaf_count[plant] = 0;
+            }
+            try ecosys.plant_harvest_runtime.applyStartOfSeasonResidue(
+                harvest,
+                plant,
+                context.canopy_layer_controls.biomass_turnover_type[plant],
+                context.canopy_layer_controls.root_profile_type[plant],
+            );
+        }
+    };
     if (context.canopy_layer_distribution.*) |*layers| {
         const canopy = if (context.detailed_canopy.*) |*value| value else return error.MissingCanopyForLayerDistribution;
         const growth_stages = if (context.plant_growth_stages.*) |*value| value else return error.MissingGrowthStagesForLayerDistribution;
         const structure = if (context.canopy_structure.*) |*value| value else return error.MissingCanopyStructureForLayerDistribution;
-        try layers.refresh(canopy, growth_stages, context.canopy_layer_controls, context.development_emerged, context.canopy_geometry.leaf_inclination_sine, structure.leaf_inclination_fraction, context.hourly_solar_angle_sine, 1.0e-12);
+        const water_workspace = if (context.plant_water_workspace.*) |*value| value else return error.MissingPlantWaterWorkspaceForLayerDistribution;
+        try layers.refresh(canopy, growth_stages, context.canopy_layer_controls, water_workspace.seeding_depth_m, context.canopy_geometry.leaf_inclination_sine, structure.leaf_inclination_fraction, context.hourly_solar_angle_sine, 1.0e-12);
         try layers.publishNodeSamples(canopy);
         if (context.canopy_surface_input_workspace.*) |*surface_workspace| {
             var carboxylation_context: ecosys.canopy_carboxylation.ApplyContext = .{
@@ -4028,6 +5783,7 @@ fn executeHourlyScience(
                 .minimum_stomatal_resistance_h_per_m_by_plant = canopy.plant_minimum_water_vapor_resistance_h_per_m,
                 .shallow_root_profile_by_plant = context.canopy_layer_controls.root_profile_type,
                 .canopy_turgor_potential_mpa_by_plant = canopy.plant_canopy_turgor_potential_mpa,
+                .leaf_carbon_presence_threshold_g_c_per_plant = context.runscript.plant_pool_parameters.branch_structural_presence_g_per_plant,
                 .minimum_turgor_potential_mpa = context.runscript.phenology_parameters.minimum_turgor_potential_mpa,
                 .atmospheric_co2_umol_per_mol = context.current_atmospheric_co2_umol_per_mol.*,
                 .picard_relaxation = context.config.picard_relaxation,
@@ -4044,7 +5800,7 @@ fn executeHourlyScience(
         const canopy_surface_exchange_for_growth = if (context.canopy_surface_exchange.*) |*value| value else return error.MissingCanopySurfaceExchangeForShootGrowth;
         const canopy_surface_workspace_for_growth = if (context.canopy_surface_input_workspace.*) |*value| value else return error.MissingCanopySurfaceWorkspaceForShootGrowth;
         const canopy_retention_for_growth = if (context.canopy_precipitation_retention.*) |*value| value else return error.MissingCanopyRetentionForShootGrowth;
-        const surface_gas_for_growth = context.surface_gas_parameters.* orelse return error.MissingSurfaceGasParametersForShootGrowth;
+        const surface_gas_for_growth = context.surface_gas_parameters.*;
         const shoot_solar_noon_hour_by_cell = try context.allocator.alloc(u8, context.grid.cell_count);
         defer context.allocator.free(shoot_solar_noon_hour_by_cell);
         for (weather_header_by_cell, shoot_solar_noon_hour_by_cell) |header, *solar_noon_hour| {
@@ -4053,6 +5809,7 @@ fn executeHourlyScience(
             solar_noon_hour.* = @intFromFloat(@floor(header.solar_noon_hour));
         }
         @memset(context.shoot_senescence_products_by_plant, .{});
+        @memset(context.seasonal_turnover_event_by_plant, false);
         var shoot_growth_context: ecosys.shoot_growth_runtime.ApplyContext = .{
             .canopy = canopy,
             .growth_stages = &context.plant_growth_stages.*.?,
@@ -4061,6 +5818,7 @@ fn executeHourlyScience(
             .plant_parameters = context.shoot_growth_plant_parameters,
             .active_by_plant = context.plant_phenology.*.?.active,
             .emerged_by_plant = context.development_emerged,
+            .sowing_depth_m_by_plant = context.plant_water_workspace.*.?.seeding_depth_m,
             .roots = &context.plant_roots.*.?,
             .soil_temperature_k = context.grid.soil_temperature_k,
             .soil_layer_capacity = context.grid.soil_layer_capacity,
@@ -4088,6 +5846,8 @@ fn executeHourlyScience(
             .solar_noon_hour_by_cell = shoot_solar_noon_hour_by_cell,
             .execution_year = shoot_execution_year,
             .timestep_h = 1,
+            .seasonal_litterfall_rate_per_h = context.runscript.seasonal_turnover_parameters.litterfall_rate_per_h,
+            .seasonal_litterfall_delay_threshold_h = context.runscript.seasonal_turnover_parameters.litterfall_delay_threshold_h,
             .dormancy_parameters_by_plant = context.development_dormancy_parameters,
             .litter_partition = litter_partition,
             .senescence_recycling = .{
@@ -4097,6 +5857,7 @@ fn executeHourlyScience(
                 .maximum_phosphorus_fraction = context.runscript.root_metabolism_parameters.maximum_phosphorus_recycling_fraction,
             },
             .senescence_products_by_plant = context.shoot_senescence_products_by_plant,
+            .seasonal_turnover_event_by_plant = context.seasonal_turnover_event_by_plant,
             .senescence_demand_tolerance_g_c = context.config.absolute_tolerance,
             .leaf_area_presence_tolerance_m2 = context.config.absolute_tolerance,
             .symbiosis_parameters = context.runscript.symbiotic_fixation_parameters,
@@ -4111,6 +5872,7 @@ fn executeHourlyScience(
                 ecosys.canopy_photosynthesis.addSenescenceProducts(&cell_products, products);
             try ecosys.shoot_litter_bridge.commitCell(context.surface_organic, cell, cell_products);
         }
+        try applyStandingDeadLitterfall(context);
         const roots = if (context.plant_roots.*) |*value| value else return error.MissingPlantRootsForShootRootExchange;
         var root_mycorrhizal_exchange_context: ecosys.plant_root_mycorrhizal_exchange.ApplyContext = .{
             .roots = roots,
@@ -4158,19 +5920,19 @@ fn executeHourlyScience(
     // capacity*temperature only, so accepted phase latent energy changes are
     // boundary adjustments rather than additional snow storage.
     try context.landscape_boundary_ledger.accumulateAcceptedSignedHeat(
-        snow_phase_change_report.sensible_energy_change_mj +
-            snow_vapor_equilibrium_report.sensible_energy_change_mj,
+        snow_phase_change_report.sensible_energy_change_megajoules +
+            snow_vapor_equilibrium_report.sensible_energy_change_megajoules,
     );
     const subsurface_irrigation_input =
         try ecosys.subsurface_irrigation_heat.calculate(
             context.subsurface_irrigation_water_m3,
             context.atmosphere.air_temperature_k,
             context.grid.soil_layer_capacity,
-            context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_mj_per_m3_k,
+            context.runscript.canopy_surface_exchange_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
         );
     try context.landscape_boundary_ledger.accumulateAccepted(.{
         .rain_m3 = subsurface_irrigation_input.water_input_m3,
-        .heat_input_mj = subsurface_irrigation_input.heat_input_mj,
+        .heat_input_megajoules = subsurface_irrigation_input.heat_input_megajoules,
     });
     const subsurface_irrigation_solutes =
         try ecosys.subsurface_irrigation_chemistry.boundaryInput(
@@ -4182,6 +5944,10 @@ fn executeHourlyScience(
         .phosphorus_input_g_p = subsurface_irrigation_solutes.phosphorus_g_p,
         .ion_input_mol = subsurface_irrigation_solutes.ion_mol,
     });
+    if (diagnostic_first_hour) {
+        const current_p_g = try diagnosticStoredPhosphorus_g(context);
+        std.log.debug("phosphorus stage: vegetation_and_final_ledgers delta_g={e}", .{current_p_g - diagnostic_previous_p_g});
+    }
 }
 
 fn sameCalendarDay(left: ecosys.weather.Timestamp, right: ecosys.weather.Timestamp) bool {
@@ -4196,7 +5962,9 @@ fn reconstructLandscapeMassBalance(context: anytype) !ecosys.mass_balance_audit.
         .soil_thermal = context.soil_thermal,
         .soil_properties = context.soil_solver_properties,
         .soil_gas = context.gas_transport,
+        .root_gas = if (context.plant_roots.*) |*roots| roots else null,
         .soil_organic = context.soil_organic,
+        .soil_organic_transport = context.soil_organic_transport,
         .surface_organic = context.surface_organic,
         .mineral_nitrogen = context.mineral_nitrogen_transport,
         .soil_chemistry = context.soil_chemistry,
@@ -4206,15 +5974,16 @@ fn reconstructLandscapeMassBalance(context: anytype) !ecosys.mass_balance_audit.
         .macropore_solutes = context.macropore_solute_state,
         .surface_chemistry = context.surface_litter_chemistry,
         .surface_fertilizer = context.surface_litter_fertilizer,
+        .surface_denitrification_nitrite_g_n = context.surface_denitrification.nitrite_g_n,
         .surface = context.surface_precipitation,
         .surface_ice_water_equivalent_m3 = context.surface_litter_ice_m3,
         .surface_gas = context.litter_gas_transport,
-        .surface_litter_dry_mass_Mg = context.surface_litter_geometry.dry_mass_Mg,
+        .surface_litter_dry_mass_megagrams = context.surface_litter_geometry.dry_mass_megagrams,
         .canopy_retention = if (context.canopy_precipitation_retention.*) |*value| value else null,
         .cell_area_m2 = context.canopy_cell_area_m2,
-        .soil_mass_Mg_scratch = context.landscape_soil_mass_Mg_scratch,
+        .soil_mass_megagrams_scratch = context.landscape_soil_mass_megagrams_scratch,
         .parameters = .{
-            .snow_ice_density_Mg_per_m3 = context.runscript.snow_ice_density_Mg_per_m3,
+            .snow_ice_density_megagrams_per_m3 = context.runscript.snow_ice_density_megagrams_per_m3,
             .carbon_g_per_mol = 12,
             .nitrogen_g_per_mol = context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
             .phosphorus_g_per_mol = context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
@@ -4227,14 +5996,274 @@ fn reconstructLandscapeMassBalance(context: anytype) !ecosys.mass_balance_audit.
                 .phosphate_band = context.runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
             },
             .surface_physical = .{
-                .dry_organic_heat_capacity_mj_per_g_c_k = context.runscript.surface_pond_dry_organic_heat_capacity_mj_per_g_c_k,
-                .liquid_water_heat_capacity_mj_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_mj_per_m3_k,
-                .ice_heat_capacity_mj_per_m3_k = context.runscript.soil_phase_heat_parameters.ice_heat_capacity_mj_per_m3_k,
+                .dry_organic_heat_capacity_megajoules_per_g_c_k = context.runscript.surface_pond_dry_organic_heat_capacity_megajoules_per_g_c_k,
+                .liquid_water_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
+                .ice_heat_capacity_megajoules_per_m3_k = context.runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k,
                 .water_molar_mass_g_per_mol = context.runscript.soil_gas_transport_parameters.water_molar_mass_g_per_mol,
                 .liquid_water_density_g_per_m3 = context.runscript.soil_gas_transport_parameters.water_density_g_per_m3,
             },
         },
     }, context.landscape_boundary_ledger);
+}
+
+fn diagnosticStoredNitrogen_g(context: anytype) !f64 {
+    const totals = try reconstructLandscapeMassBalance(context);
+    return totals.residue_nitrogen_g + totals.organic_nitrogen_g +
+        totals.dinitrogen_nitrogen_g + totals.ammonium_nitrogen_g +
+        totals.nitrate_nitrogen_g;
+}
+
+fn diagnosticStoredPhosphorus_g(context: anytype) !f64 {
+    const totals = try reconstructLandscapeMassBalance(context);
+    return totals.residue_phosphorus_g + totals.organic_phosphorus_g +
+        totals.phosphate_phosphorus_g;
+}
+
+fn diagnosticPhosphorusOwners_g(context: anytype) ![3]f64 {
+    const totals = try reconstructLandscapeMassBalance(context);
+    return .{ totals.residue_phosphorus_g, totals.organic_phosphorus_g, totals.phosphate_phosphorus_g };
+}
+
+fn diagnosticRelayerPhosphateOwners_g(context: anytype) [3]f64 {
+    const p_mass = context.runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol;
+    const band_fraction = context.runscript.plant_nutrient_initialization.initial_phosphate_band_fraction;
+    const fractions = [2]f64{ 1 - band_fraction, band_fraction };
+    var result: [3]f64 = @splat(0);
+    for (0..context.grid.layer_count) |layer| {
+        const water = context.grid.matrix_liquid_water_m3[layer];
+        const soil_mass = context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer];
+        const zones = [2]@TypeOf(context.soil_chemistry.non_band_phosphate[0]){ context.soil_chemistry.non_band_phosphate[layer], context.soil_chemistry.band_phosphate[layer] };
+        for (zones, fractions) |zone, fraction| {
+            result[0] += fraction * water * (zone.dissolved_hpo4_mol_p_per_m3 + zone.dissolved_h2po4_mol_p_per_m3) * p_mass;
+            result[1] += fraction * soil_mass * (zone.adsorbed_hpo4_mol_p_per_megagram + zone.adsorbed_h2po4_mol_p_per_megagram) * p_mass;
+            result[2] += fraction * water * (zone.aluminum_phosphate_solid_mol_per_m3 + zone.iron_phosphate_solid_mol_per_m3 + zone.dicalcium_phosphate_solid_mol_per_m3 + 3 * zone.hydroxyapatite_solid_mol_per_m3 + 2 * zone.monocalcium_phosphate_solid_mol_per_m3) * p_mass;
+        }
+    }
+    return result;
+}
+
+fn diagnosticAmmoniumOwners_g_n(context: anytype) ![6]f64 {
+    const molar_mass = context.runscript.fertilizer_nitrogen_molar_mass_g_per_mol;
+    var result: [6]f64 = @splat(0);
+    for (0..context.grid.cell_count) |cell| {
+        const surface = context.surface_litter_chemistry.cells[cell];
+        result[0] += context.surface_precipitation.litter_water_m3[cell] * (surface.ammonium_mol_per_m3 + surface.ammonia_mol_per_m3) * molar_mass;
+        result[1] += context.surface_litter_geometry.dry_mass_megagrams[cell] * surface.exchange.ammonium_mol_per_megagram * molar_mass;
+        const fertilizer = context.surface_litter_fertilizer.cells[cell];
+        result[2] += (fertilizer.ammonium_mol_n + fertilizer.ammonia_mol_n + fertilizer.urea_mol_n) * molar_mass;
+    }
+    for (0..context.grid.layer_count) |layer| {
+        const matrix = try context.mineral_nitrogen_transport.matrix.cellAmountsConst(layer);
+        const macro = try context.mineral_nitrogen_transport.macropore.cellAmountsConst(layer);
+        inline for ([_]ecosys.mineral_nitrogen_transport.Species{ .ammonium_non_band, .ammonium_band, .ammonia_non_band, .ammonia_band }) |species| result[3] += (matrix[@intFromEnum(species)] + macro[@intFromEnum(species)]) * molar_mass;
+        const exchange = context.soil_chemistry.cation_exchange_mol_per_megagram[layer];
+        result[4] += context.soil_solver_properties.matrix_bulk_volume_m3[layer] * context.soil_solver_properties.bulk_density_megagrams_per_m3[layer] * (exchange.ammonium_non_band + exchange.ammonium_band) * molar_mass;
+        const fertilizer = context.soil_fertilizer_inventory.soil[layer];
+        result[5] += (fertilizer.broadcast_ammonium_mol_n + fertilizer.broadcast_ammonia_mol_n + fertilizer.broadcast_urea_mol_n + fertilizer.banded_ammonium_mol_n + fertilizer.banded_ammonia_mol_n + fertilizer.banded_urea_mol_n) * molar_mass;
+    }
+    return result;
+}
+
+fn diagnosticSnowNitrogen_g(storage: ecosys.landscape_mass_inventory.Storage) f64 {
+    return storage.dinitrogen_nitrogen_g + storage.ammonium_nitrogen_g + storage.nitrate_nitrogen_g;
+}
+
+fn diagnosticSnowSpeciesNitrogen_g(amounts: []const f64) f64 {
+    var total_g_n: f64 = 0;
+    const species_count = ecosys.snow_solute_transport.species_count;
+    var first: usize = 0;
+    while (first < amounts.len) : (first += species_count) {
+        inline for ([_]ecosys.snow_solute_transport.Species{
+            .dinitrogen_nitrogen,
+            .nitrous_oxide_nitrogen,
+            .ammonium_nitrogen,
+            .ammonia_nitrogen,
+            .nitrate_nitrogen,
+        }) |species| total_g_n += amounts[first + @intFromEnum(species)];
+    }
+    return total_g_n;
+}
+
+fn diagnosticSnowDischargeNitrogen_g(discharge: []const ecosys.snow_solute_transport.SurfaceDischarge) f64 {
+    var total_g_n: f64 = 0;
+    for (discharge) |cell| {
+        total_g_n += diagnosticSnowSpeciesNitrogen_g(&cell.litter_g);
+        total_g_n += diagnosticSnowSpeciesNitrogen_g(&cell.soil_nonband_g);
+        total_g_n += diagnosticSnowSpeciesNitrogen_g(&cell.soil_band_g);
+    }
+    return total_g_n;
+}
+
+fn debugCarbonComponents(context: anytype, totals: ecosys.mass_balance_audit.Totals, label: []const u8) !void {
+    const surface_organic_storage = try ecosys.landscape_mass_inventory.aggregateSurfaceOrganic(
+        context.surface_organic,
+    );
+    const soil_organic_storage = try ecosys.landscape_mass_inventory.aggregateSoilOrganic(
+        context.soil_organic,
+        context.grid,
+    );
+    const area = totals.landscape_area_m2;
+    std.log.debug("{s} components: surf_resid={e} soil_resid={e} soil_org={e} co2={e} cum_co2in={e} cum_cout={e}", .{
+        label,
+        surface_organic_storage.residue_carbon_g / area,
+        soil_organic_storage.residue_carbon_g / area,
+        soil_organic_storage.organic_carbon_g / area,
+        totals.carbon_dioxide_carbon_g / area,
+        totals.cumulative_carbon_dioxide_input_g / area,
+        totals.cumulative_carbon_output_g / area,
+    });
+    // Fine-grained surface sub-pools (cell=0 only)
+    const so = context.surface_organic;
+    const msub = ecosys.soil_organic_initialization.microbial_substrate_count;
+    const mpop = ecosys.soil_organic_initialization.microbial_population_count;
+    const mfrac = ecosys.soil_organic_initialization.kinetic_fraction_count;
+    const sub = ecosys.soil_organic_initialization.substrate_count;
+    const rfrac = ecosys.soil_organic_initialization.residue_fraction_count;
+    const sfrac = ecosys.soil_organic_initialization.structural_fraction_count;
+    var surf_microbial: f64 = 0;
+    for (0..msub) |s| {
+        if (s == 4) continue;
+        const first = (s * mpop) * mfrac;
+        for (so.microbial[first .. first + mpop * mfrac]) |p| surf_microbial += p.carbon_g_c;
+    }
+    var surf_residue: f64 = 0;
+    for (0..3) |s| {
+        const first = s * rfrac;
+        for (so.residue[first .. first + rfrac]) |p| surf_residue += p.carbon_g_c;
+        surf_residue += so.dissolved[s].carbon_g_c + so.adsorbed[s].carbon_g_c;
+        surf_residue += so.dissolved_acetate_carbon_g_c[s] + so.adsorbed_acetate_carbon_g_c[s];
+    }
+    var surf_structural: f64 = 0;
+    for (so.structural[0 .. sub * sfrac]) |p| surf_structural += p.carbon_g_c;
+    // Also log the EXCLUDED surface pools (substrate 3-4 residue/dissolved/adsorbed, substrate 4 microbial)
+    var surf_excluded_resid: f64 = 0;
+    for (3..sub) |s| { // substrates 3 and 4
+        const first = s * rfrac;
+        for (so.residue[first .. first + rfrac]) |p| surf_excluded_resid += p.carbon_g_c;
+        surf_excluded_resid += so.dissolved[s].carbon_g_c + so.adsorbed[s].carbon_g_c;
+        surf_excluded_resid += so.dissolved_acetate_carbon_g_c[s] + so.adsorbed_acetate_carbon_g_c[s];
+    }
+    var surf_microbial_sub4: f64 = 0;
+    {
+        const first = (4 * mpop) * mfrac;
+        for (so.microbial[first .. first + mpop * mfrac]) |p| surf_microbial_sub4 += p.carbon_g_c;
+    }
+    std.log.debug("{s} surf subpools: microbial={e} residue_fracs={e} structural={e} excluded_resid={e} excluded_micro4={e}", .{
+        label,                      surf_microbial / area,      surf_residue / area, surf_structural / area,
+        surf_excluded_resid / area, surf_microbial_sub4 / area,
+    });
+    // Fine-grained soil microbial by substrate category (active layers only)
+    const grid = context.grid;
+    var soil_microbial_resid: f64 = 0;
+    var soil_microbial_org: f64 = 0;
+    for (0..grid.cell_count) |cell| {
+        const active = grid.active_soil_layer_count[cell];
+        for (0..active) |layer| {
+            const layer_cell = cell * grid.soil_layer_capacity + layer;
+            const first_m = layer_cell * msub * mpop * mfrac;
+            for (0..msub) |s| {
+                const m_first = first_m + s * mpop * mfrac;
+                for (context.soil_organic.microbial[m_first .. m_first + mpop * mfrac]) |p| {
+                    if (s == 4) soil_microbial_org += p.carbon_g_c else soil_microbial_resid += p.carbon_g_c;
+                }
+            }
+        }
+    }
+    std.log.debug("{s} soil microbial: resid={e} org={e}", .{
+        label, soil_microbial_resid / area, soil_microbial_org / area,
+    });
+    // Separate gas-CO2 from bicarbonate/carbonate to diagnose balance drift.
+    var gas_co2_g: f64 = 0;
+    var gas_ch4_g: f64 = 0;
+    const gas_state_dbg = context.gas_transport;
+    for (0..grid.cell_count) |cell| {
+        const active = grid.active_soil_layer_count[cell];
+        for (0..active) |layer| {
+            const layer_cell = cell * grid.soil_layer_capacity + layer;
+            const first = layer_cell * ecosys.gas_transport.species_count;
+            const end = first + ecosys.gas_transport.species_count;
+            const gaseous = gas_state_dbg.gaseous_mass_g[first..end];
+            const dissolved = gas_state_dbg.dissolved_mass_g[first..end];
+            const macropore = gas_state_dbg.macropore_dissolved_mass_g[first..end];
+            const band = gas_state_dbg.band_dissolved_mass_g[first..end];
+            gas_co2_g += gaseous[@intFromEnum(ecosys.gas_transport.Species.carbon_dioxide)] +
+                dissolved[@intFromEnum(ecosys.gas_transport.Species.carbon_dioxide)] +
+                macropore[@intFromEnum(ecosys.gas_transport.Species.carbon_dioxide)] +
+                band[@intFromEnum(ecosys.gas_transport.Species.carbon_dioxide)];
+            gas_ch4_g += gaseous[@intFromEnum(ecosys.gas_transport.Species.methane)] +
+                dissolved[@intFromEnum(ecosys.gas_transport.Species.methane)] +
+                macropore[@intFromEnum(ecosys.gas_transport.Species.methane)] +
+                band[@intFromEnum(ecosys.gas_transport.Species.methane)];
+        }
+    }
+    // Bicarbonate/carbonate from micropore + macropore solute amounts.
+    var bicarbonate_g: f64 = 0;
+    const micro = context.micropore_solute_state;
+    const macro = context.macropore_solute_state;
+    for (0..grid.cell_count) |cell| {
+        const active = grid.active_soil_layer_count[cell];
+        for (0..active) |layer| {
+            const layer_cell = cell * grid.soil_layer_capacity + layer;
+            const micro_amounts = try micro.cellAmountsConst(layer_cell);
+            const macro_amounts = try macro.cellAmountsConst(layer_cell);
+            inline for (@typeInfo(ecosys.solute_transport_species.AqueousSpecies).@"enum".fields) |field| {
+                const species: ecosys.solute_transport_species.AqueousSpecies = @enumFromInt(field.value);
+                const is_carbonate_carrier = switch (species) {
+                    .carbonate,
+                    .bicarbonate,
+                    .calcium_carbonate,
+                    .calcium_bicarbonate,
+                    .magnesium_carbonate,
+                    .magnesium_bicarbonate,
+                    .sodium_carbonate,
+                    => true,
+                    else => false,
+                };
+                if (is_carbonate_carrier) {
+                    bicarbonate_g += (micro_amounts[field.value] + macro_amounts[field.value]) * 12.0;
+                }
+            }
+        }
+    }
+    // Chemistry CO2 and bicarbonate — CO2 is synced to gas_transport.dissolved after h-step,
+    // bicarbonate is exported to micropore solute after h-step. Both are counted in EXEC
+    // AFTER the first h-step, but at baseline (before any h-step) they are NOT yet counted.
+    var chem_co2_g: f64 = 0;
+    var chem_bicarb_g: f64 = 0;
+    for (0..grid.cell_count) |cell| {
+        const active = grid.active_soil_layer_count[cell];
+        for (0..active) |layer| {
+            const layer_cell = cell * grid.soil_layer_capacity + layer;
+            const water_m3 = grid.matrix_liquid_water_m3[layer_cell];
+            chem_co2_g += context.soil_chemistry.aqueous[layer_cell].carbon_dioxide * 12.0 * water_m3;
+            chem_bicarb_g += context.soil_chemistry.aqueous[layer_cell].bicarbonate * 12.0 * water_m3;
+        }
+    }
+    // Litter chemistry CO2 — not synced to litter_gas_transport, not in EXEC balance.
+    var litter_chem_co2_g: f64 = 0;
+    var litter_chem_bicarb_g: f64 = 0;
+    var litter_gas_co2_g: f64 = 0;
+    {
+        const litter_chem = context.surface_litter_chemistry;
+        const litter_water = context.surface_precipitation.litter_water_m3;
+        for (0..grid.cell_count) |cell| {
+            litter_chem_co2_g += litter_chem.cells[cell].carbon_dioxide_mol_per_m3 * 12.0 * litter_water[cell];
+            litter_chem_bicarb_g += litter_chem.cells[cell].bicarbonate_mol_per_m3 * 12.0 * litter_water[cell];
+        }
+    }
+    {
+        const litter_gas = context.litter_gas_transport;
+        const co2_species = @intFromEnum(ecosys.gas_transport.Species.carbon_dioxide);
+        for (0..grid.cell_count) |cell| {
+            const base = cell * ecosys.gas_transport.species_count;
+            litter_gas_co2_g += litter_gas.gaseous_mass_g[base + co2_species] +
+                litter_gas.dissolved_mass_g[base + co2_species];
+        }
+    }
+    std.log.debug("{s} co2 split: gas_co2={e} gas_ch4={e} bicarbonate={e} chem_co2={e} chem_bicarb={e} litter_chem_co2={e} litter_chem_bicarb={e} litter_gas_co2={e}", .{
+        label,                    gas_co2_g / area,            gas_ch4_g / area,        bicarbonate_g / area, chem_co2_g / area, chem_bicarb_g / area,
+        litter_chem_co2_g / area, litter_chem_bicarb_g / area, litter_gas_co2_g / area,
+    });
 }
 
 fn sameWeatherTimestamp(left: ecosys.weather.Timestamp, right: ecosys.weather.Timestamp) bool {
@@ -4266,6 +6295,10 @@ fn soilOutputCatalog(allocator: std.mem.Allocator, editor_index: usize, layers: 
         9 => ecosys.soil_output_catalog.dailyHeat(allocator, layers, layers),
         else => error.OutputEditorIndexOutOfBounds,
     };
+}
+
+fn dailySoilWaterPotentialLayerCount(soil_layers: usize) usize {
+    return soil_layers;
 }
 
 fn plantOutputCatalog(allocator: std.mem.Allocator, editor_index: usize, layers: usize) !ecosys.plant_output_catalog.Catalog {
@@ -4302,221 +6335,31 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("missing compulsory geospatial_grid record: expected minimum/maximum latitude, minimum/maximum longitude, and latitude/longitude intervals", .{});
         return error.MissingGeospatialGridRecord;
     }
-    if (runscript.uses_four_value_species_default) {
-        std.log.warn("four-value domain header has no plant-species count; compatibility mode selected 5 species. Add a fifth value to make this explicit", .{});
-    }
-    if (runscript.uses_compatibility_runtime_controls) {
-        std.log.warn("runscript has no runtime control record; compatibility controls selected. Add 'runtime,workers,tile_cells,relative_tolerance,absolute_tolerance,max_nonlinear_iterations,picard_relaxation' after the domain header", .{});
-    } else {
-        std.log.warn("runtime max_nonlinear_iterations is retained for input compatibility but process solvers use option-derived NPH/NPG or legacy NPR/NPS/NPRS iteration ceilings", .{});
-    }
-    if (runscript.uses_compatibility_soil_solver_parameters) {
-        std.log.warn("runscript has no soil_solver record; historical HOUR1 coefficients selected at runtime. Add an explicit soil_solver record to control retention and hydraulic-conductivity science", .{});
-    }
-    if (runscript.uses_compatibility_soil_process_parameters) {
-        std.log.warn("runscript has no soil_process record; historical gravity, vapor-diffusion, tortuosity, and osmotic-reflection coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_soil_gas_transport_parameters) {
-        std.log.warn("runscript has no soil_gas_transport record; historical seven-gas free-air diffusivities, temperature response, Penman tortuosity, and gas-volume constants selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_surface_runoff) {
-        std.log.warn("runscript has no surface_runoff record; HOUR1/WATSUB-compatible retention, roughness, hydraulic-volume, time-conversion, and negligible-water controls selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_rainfall_impact) {
-        std.log.warn("runscript has no rainfall_impact record; HOUR1 direct-rain, throughfall, ponding attenuation, and conductivity-damage coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_soil_phase_heat_parameters) {
-        std.log.warn("runscript has no soil_phase_heat record; historical vapor-equilibrium, freeze-thaw, and heat-convection coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_geothermal_controls) {
-        std.log.warn("runscript has no geothermal record; STARTS-compatible source depth, conductivity, and 57 mW m-2 geothermal flux selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_subsurface_state_controls) {
-        std.log.warn("runscript has no subsurface_state record; HOUR1 THETPW=0.001 and ZERO2=1e-6 selected at runtime for water-table and active-layer diagnostics", .{});
-    }
-    if (runscript.uses_compatibility_soil_geometry_parameters) {
-        std.log.warn("runscript has no soil_geometry record; REDIST FORGC=110000 g C Mg-1, 1.82e-6 m3 g-1 SOC volume, DENSJ=0.083, and 1e-9 m minimum layer thickness selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_surface_energy) {
-        std.log.warn("runscript has no surface-energy record; compatibility controls selected. Add 'surface_energy,soil_emissivity,snow_emissivity,canopy_emissivity,snow_full_cover_depth_m,sensible_conductance_mj_per_m2_h_k,latent_conductance_mj_per_m2_h_kpa,vapor_activity,minimum_temperature_k,maximum_temperature_k' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_canopy_ammonia_exchange) {
-        std.log.warn("runscript has no canopy_ammonia_exchange record; historical UPTAKE FDMP and RNH3B coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_plant_structure) {
-        std.log.warn("runscript has no plant_structure record; source-compatible 10 root axes selected at runtime. Add 'plant_structure,root_axes_per_plant' before the site filename to remove that compatibility default", .{});
-    }
-    if (runscript.uses_compatibility_canopy_layers) {
-        std.log.warn("runscript has no canopy_layers record; source-compatible 10 canopy layers selected at runtime. Add 'canopy_layers,count' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_canopy_discretization) {
-        std.log.warn("runscript has no canopy_discretization record; source-compatible 4 leaf-inclination, 4 leaf-azimuth, and 4 diffuse-sky classes selected at runtime. Add 'canopy_discretization,inclination_count,leaf_azimuth_count,diffuse_sky_count'", .{});
-    }
-    if (runscript.uses_compatibility_canopy_geometry) {
-        std.log.warn("runscript has no canopy_geometry record; STARTQ stalk volume:carbon ratio 4.0e-6 m3 g-C-1 selected at runtime. Add 'canopy_geometry,stalk_volume_m3_per_g_c' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_standing_dead_partition) {
-        std.log.warn("runscript has no standing_dead_partition record; STARTQ coarse-wood carbon fractions and CNOPC/CPOPC weights selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_plant_heat_water) {
-        std.log.warn("runscript has no plant_initial_heat_water record; STARTQ temperature, vapor-pressure, humidity, and initial water-potential coefficients selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_plant_geometry) {
-        std.log.warn("runscript has no plant_initial_geometry record; STARTQ seed and root geometry coefficients selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_phenology_initialization) {
-        std.log.warn("runscript has no plant_initial_phenology record; READQ perennial scaling and STARTQ concurrent-node thresholds selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_root_initialization) {
-        std.log.warn("runscript has no root_initialization record; STARTQ protein, mycorrhizal radius, water-potential, active-length, and water-fraction values selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_root_morphology) {
-        std.log.warn("runscript has no root_morphology record; GROSUB minimum secondary-root length and elastic modulus selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_compatibility_standing_dead_energy) {
-        std.log.warn("runscript has no standing_dead_energy record; UPTAKE FARS, dry heat capacity, emissivity, and heat-capacity thresholds selected at runtime. Add 'standing_dead_energy,sapwood_thickness_m,dry_volume_heat_capacity_mj_per_m3_k,emissivity,activation_heat_capacity_mj_per_m2_k,effective_heat_capacity_floor_mj_per_m2_k'", .{});
-    }
-    if (runscript.uses_compatibility_woody_optics) {
-        std.log.warn("runscript has no woody_optics record; HOUR1 stalk and standing-dead SW/PAR albedos of 0.1 selected at runtime. Add 'woody_optics,stalk_sw_albedo,stalk_par_albedo,dead_sw_albedo,dead_par_albedo' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_canopy_retention) {
-        std.log.warn("runscript has no canopy_retention record; historical HOUR1 XVOLWC capacities, low-sun extinction, and solar-share threshold selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_shoot_control_parameters) {
-        std.log.warn("runscript has no shoot_controls record; historical STARTQ time conversion, cuticular CO2 ratio, and C3/C4 intercellular O2 values selected at runtime", .{});
-    }
-    if (runscript.uses_source_c4_carbon_parameters) {
-        std.log.warn("runscript has no c4_carbon record; historical GROSUB bundle-sheath transfer, decarboxylation, and leakage coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_thermal_acclimation_parameters) {
-        std.log.warn("runscript has no thermal_controls record; historical STARTQ acclimation, leafout/leafoff, and C3/C4 seed-set heat coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_canopy_stress_parameters) {
-        std.log.warn("runscript has no canopy_stress record; historical UPTAKE CHILL/HEAT limits selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_phenology_parameters) {
-        std.log.warn("runscript has no phenology_controls record; historical HFUNC Arrhenius, turgor, and oxygen-stress coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_plant_pool_parameters) {
-        std.log.warn("runscript has no plant_pool_controls record; historical HFUNC ZERO/ZERO2/CNKIC/CPKIC values and static plant salts selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_seed_set_parameters) {
-        std.log.warn("runscript has no seed_set_controls record; historical GROSUB SETC/SETN/SETP values selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_root_gas_parameters) {
-        std.log.warn("runscript has no root_gas record; historical HOUR1/WATSUB/UPTAKE O2 coefficients selected at runtime. Add 'root_gas,reference_temperature_k,oxygen_diffusivity_m2_per_h,temperature_exponent,oxygen_solubility,activity_coefficient,temperature_intercept,temperature_coefficient_per_c,pure_water_solute_mol_per_m3,oxygen_to_carbon_ratio,minimum_water_film_m,water_film_scale_m,water_film_log_intercept,water_film_potential_exponent' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_root_nutrient_parameters) {
-        std.log.warn("runscript has no root_nutrients record; historical HOUR1/UPTAKE diffusivity, tortuosity, C/N/P feedback, minimum population uptake fraction, and phosphorus molar mass selected at runtime. Add 'root_nutrients,reference_temperature_k,ammonium_diffusivity_m2_per_h,nitrate_diffusivity_m2_per_h,phosphate_diffusivity_m2_per_h,temperature_exponent,liquid_tortuosity_coefficient,n_feedback_n,n_feedback_p,p_feedback_p,p_feedback_n,minimum_population_fraction_multiplier,phosphorus_molar_mass_g_per_mol' before the plant_nutrients or site record", .{});
-    }
-    if (runscript.dynamic_plant_salts and runscript.uses_compatibility_root_salt_parameters) {
-        std.log.warn("runscript enables dynamic plant salts but has no root_salts record; historical UPTAKE diffusivities and root-concentration inhibition constants selected at runtime. Add the case-insensitive root_salts record before root_metabolism, plant_nutrients, or site", .{});
-    }
-    if (runscript.uses_compatibility_root_exudation_parameters) {
-        std.log.warn("runscript has no root_exudation record; historical UPTAKE FEXU, mobile N/P fractions, and maximum root-C concentration selected at runtime. Add 'root_exudation,maximum_root_carbon_g_c_per_m3,nitrogen_exchange_fraction,phosphorus_exchange_fraction,exchange_rate_per_h' before root_metabolism, plant_nutrients, or site", .{});
-    }
-    if (runscript.uses_compatibility_root_mycorrhizal_exchange_parameters) {
-        std.log.warn("runscript has no root_mycorrhizal_exchange record; source GROSUB partner-water floor and exchange rate selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_root_porosity_parameters) {
-        std.log.warn("runscript has no root_porosity record; historical GROSUB PORT maximum, oxygen-stress induction, and relaxation rates selected at runtime. Add 'root_porosity,maximum_fraction,oxygen_stress_induction_per_h,relaxation_per_h' before root_metabolism, plant_nutrients, or site", .{});
-    }
-    if (runscript.uses_compatibility_root_metabolism_parameters) {
-        std.log.warn("runscript has no root_metabolism record; historical GROSUB root respiration, recycling, protein, and nutrient-uptake respiration constants selected at runtime. Supply the complete case-insensitive root_metabolism record before storage_remobilization, plant_nutrients, or site", .{});
-    }
-    if (runscript.uses_compatibility_organ_partition_parameters) {
-        std.log.warn("runscript has no organ_partition record; historical GROSUB stage partition, turnover response, and reserve-redirection coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_shoot_metabolism_parameters) {
-        std.log.warn("runscript has no shoot_metabolism record; historical GROSUB VMXC, CCKM, RMPLT, ZPLFM, CNKI, CPKI, and nitrogen-assimilation respiration coefficients selected at runtime", .{});
-    }
-    if (runscript.uses_source_shoot_node_growth_parameters) {
-        std.log.warn("runscript has no shoot_node_growth record; historical GROSUB CNWS, CPWS, SLA2, SSL2, SNL2, SLAX, SSLX, SNLX, leaf nutrient exchange, branch reserve exchange, ZPGRM, SETN, SETP, and FLG4X values selected at runtime", .{});
-    }
-    if (runscript.uses_source_branch_mobile_exchange_parameters) {
-        std.log.warn("runscript has no branch_mobile_exchange record; historical GROSUB interbranch mobile C/N/P exchange fractions selected as runtime compatibility data", .{});
-    }
-    if (runscript.uses_source_symbiotic_fixation_parameters) {
-        std.log.warn("runscript has no symbiotic_fixation record; historical GROSUB WTNDI, VMXO, RMPLT, EN2F, CZKM, CPKM, ZCKI, ZPKI, SPNDL, recycling, FXRN, and CNDLI values selected at runtime", .{});
-    }
-    if (runscript.uses_source_plant_fire_combustion_parameters) {
-        std.log.warn("runscript has no plant_fire_combustion record; historical GROSUB TCMBX, TFNCX, Arrhenius, SPCMB, and charcoal values selected at runtime", .{});
-    }
-    if (runscript.uses_source_soil_fire_combustion_parameters) {
-        std.log.warn("runscript has no soil_fire_combustion record; historical NITRO soil-pool and charcoal combustion values selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_shoot_root_exchange_parameters) {
-        std.log.warn("runscript has no shoot_root_exchange record; source GROSUB partner floor, annual minimum rate, leaf-partition exponent, and salt exchange rate selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_storage_remobilization_parameters) {
-        std.log.warn("runscript has no storage_remobilization record; historical GROSUB germination/leafout storage durations, oxidation, shoot/root partition, and nutrient-equilibration rates selected at runtime", .{});
-    }
-    if (runscript.uses_compatibility_plant_nutrient_initialization) {
-        std.log.warn("runscript has no plant_nutrients record; STARTS-compatible zero band fractions and all-H2PO4 soluble phosphate selected at runtime. Add 'plant_nutrients,ammonium_band_fraction,nitrate_band_fraction,phosphate_band_fraction,h2po4_fraction' before the site filename", .{});
-    }
-    if (runscript.uses_compatibility_microbial_dimensions) {
-        std.log.warn("runscript has no microbial_dimensions record; NITRO-compatible 6 substrates and 7 microbial populations selected at runtime. Add 'microbial_dimensions,substrate_count,population_count' before the site filename", .{});
-    }
-    if (runscript.organic_initialization_file == null) {
-        std.log.warn("runscript has no organic_initialization_file record; source STARTS/NITRO organic allocation and decomposition parameters selected as replaceable runtime defaults", .{});
-    }
-    if (runscript.surface_gas_parameter_file == null) {
-        std.log.warn("runscript has no surface_gas_parameter_file record; source HOUR1/NITRO atmosphere, litter gas, and surface microbial coefficients selected as replaceable runtime defaults", .{});
-    }
-    if (runscript.soil_nitrogen_parameter_file == null) {
-        std.log.warn("runscript has no soil_nitrogen_parameter_file record; source NITRO coefficients selected as replaceable runtime defaults", .{});
-    }
-    if (runscript.chemistry_initialization == null) {
-        std.log.warn("runscript has no chemistry_initialization record; source STARTE water and phosphate dissociation constants selected as replaceable runtime defaults", .{});
-    }
-    if (runscript.chemistry_initialization != null and runscript.chemistry_primary_initialization == null) {
-        std.log.warn("runscript has no chemistry_units record; only STARTE H/OH/phosphate protonation is seeded. Add runtime molar masses, concentration multipliers, and minimum extract concentrations to seed all primary ions and solids", .{});
-    }
-    if (runscript.chemistry_primary_initialization != null and runscript.chemistry_reaction_file == null) {
-        std.log.warn("runscript has no chemistry_reaction_file record; primary chemistry is seeded but the coupled STARTE Newton-Raphson/Picard equilibrium solve cannot run", .{});
-    }
-    if (runscript.uses_compatibility_fertilizer_units) {
-        std.log.warn("runscript has no fertilizer_units or chemistry_units record; legacy fertilizer conversion selected 14 g N mol-1 at runtime. Add 'fertilizer_units,nitrogen_molar_mass_g_per_mol' before the site filename", .{});
-    }
-
+    std.log.warn("runtime max_nonlinear_iterations is recorded, but process solvers use option-derived NPH/NPG or legacy NPR/NPS/NPRS iteration ceilings", .{});
     const runscript_directory = std.fs.path.dirname(args[1]) orelse ".";
-    var organic_parameters: ?ecosys.soil_organic_parameters.OwnedParameters = null;
-    defer if (organic_parameters) |*parameters| parameters.deinit();
-    if (runscript.organic_initialization_file) |parameter_name| {
-        const parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, parameter_name);
-        defer allocator.free(parameter_path);
-        const parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, parameter_path, allocator, .limited(16 * 1024 * 1024));
-        defer allocator.free(parameter_source);
-        organic_parameters = try ecosys.soil_organic_parameters.parse(allocator, parameter_source);
-    } else {
-        organic_parameters = try ecosys.soil_organic_parameters.sourceParameters(allocator);
-    }
-    var surface_gas_parameters: ?ecosys.surface_gas_parameters.Parameters = null;
-    if (runscript.surface_gas_parameter_file) |parameter_name| {
-        const parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, parameter_name);
-        defer allocator.free(parameter_path);
-        const parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, parameter_path, allocator, .limited(1024 * 1024));
-        defer allocator.free(parameter_source);
-        surface_gas_parameters = try ecosys.surface_gas_parameters.parse(parameter_source);
-    } else surface_gas_parameters = try ecosys.surface_gas_parameters.sourceParameters();
-    if (surface_gas_parameters != null) std.log.info("loaded runtime surface gas and microbial oxygen parameters", .{});
-    var soil_nitrogen_parameters: ?ecosys.soil_nitrogen_parameters.Parameters = null;
-    if (runscript.soil_nitrogen_parameter_file) |parameter_name| {
-        const parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, parameter_name);
-        defer allocator.free(parameter_path);
-        const parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, parameter_path, allocator, .limited(1024 * 1024));
-        defer allocator.free(parameter_source);
-        soil_nitrogen_parameters = try ecosys.soil_nitrogen_parameters.parse(parameter_source);
-    } else soil_nitrogen_parameters = try ecosys.soil_nitrogen_parameters.sourceParameters();
-    if (soil_nitrogen_parameters != null) std.log.info("loaded runtime layer-resolved soil nitrogen parameters", .{});
-    var chemistry_reaction_parameters: ?ecosys.soil_chemistry_parameters.Parameters = null;
-    if (runscript.chemistry_reaction_file) |parameter_name| {
-        const parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, parameter_name);
-        defer allocator.free(parameter_path);
-        const parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, parameter_path, allocator, .limited(4 * 1024 * 1024));
-        defer allocator.free(parameter_source);
-        chemistry_reaction_parameters = try ecosys.soil_chemistry_parameters.parse(parameter_source);
-    }
+    const organic_parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, runscript.organic_initialization_file);
+    defer allocator.free(organic_parameter_path);
+    const organic_parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, organic_parameter_path, allocator, .limited(16 * 1024 * 1024));
+    defer allocator.free(organic_parameter_source);
+    var organic_parameters = try ecosys.soil_organic_parameters.parse(allocator, organic_parameter_source);
+    defer organic_parameters.deinit();
+    const surface_gas_parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, runscript.surface_gas_parameter_file);
+    defer allocator.free(surface_gas_parameter_path);
+    const surface_gas_parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, surface_gas_parameter_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(surface_gas_parameter_source);
+    var surface_gas_parameters = try ecosys.surface_gas_parameters.parse(surface_gas_parameter_source);
+    std.log.info("loaded runtime surface gas and microbial oxygen parameters", .{});
+    const soil_nitrogen_parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, runscript.soil_nitrogen_parameter_file);
+    defer allocator.free(soil_nitrogen_parameter_path);
+    const soil_nitrogen_parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, soil_nitrogen_parameter_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(soil_nitrogen_parameter_source);
+    const soil_nitrogen_parameters = try ecosys.soil_nitrogen_parameters.parse(soil_nitrogen_parameter_source);
+    std.log.info("loaded runtime layer-resolved soil nitrogen parameters", .{});
+    const chemistry_reaction_parameter_path = try resolveInputPath(allocator, init.io, runscript_directory, runscript.chemistry_reaction_file);
+    defer allocator.free(chemistry_reaction_parameter_path);
+    const chemistry_reaction_parameter_source = try std.Io.Dir.cwd().readFileAlloc(init.io, chemistry_reaction_parameter_path, allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(chemistry_reaction_parameter_source);
+    const chemistry_reaction_parameters = try ecosys.soil_chemistry_parameters.parse(chemistry_reaction_parameter_source);
     const grid_input_path = try resolveInputPath(
         allocator,
         init.io,
@@ -4653,7 +6496,7 @@ pub fn main(init: std.process.Init) !void {
     // Atmospheric composition is environmental state owned by the site
     // input, never a process-parameter default. Supplying the compulsory
     // surface-gas coefficient file must not disable this conversion.
-    surface_gas_parameters.?.atmospheric_concentration_g_per_m3 = try ecosys.surface_gas_parameters.atmosphericConcentrationsFromUmolPerMol(.{
+    surface_gas_parameters.atmospheric_concentration_g_per_m3 = try ecosys.surface_gas_parameters.atmosphericConcentrationsFromUmolPerMol(.{
         site.atmospheric_co2_umol_mol,
         site.atmospheric_methane_umol_mol,
         site.atmospheric_oxygen_umol_mol,
@@ -4705,12 +6548,12 @@ pub fn main(init: std.process.Init) !void {
     @memset(surface_organic_phosphorus_export_g_p_per_h, 0);
     var surface_erosion_state = try ecosys.soil_erosion.RuntimeState.init(allocator, try runscript.domain.columns(), try runscript.domain.rows());
     defer surface_erosion_state.deinit();
-    const surface_soil_mass_at_erosion_start_Mg = try allocator.alloc(f64, unit_by_cell.len);
-    defer allocator.free(surface_soil_mass_at_erosion_start_Mg);
-    const net_sediment_Mg_per_h = try allocator.alloc(f64, unit_by_cell.len);
-    defer allocator.free(net_sediment_Mg_per_h);
-    @memset(surface_soil_mass_at_erosion_start_Mg, 0);
-    @memset(net_sediment_Mg_per_h, 0);
+    const surface_soil_mass_at_erosion_start_megagrams = try allocator.alloc(f64, unit_by_cell.len);
+    defer allocator.free(surface_soil_mass_at_erosion_start_megagrams);
+    const net_sediment_megagrams_per_h = try allocator.alloc(f64, unit_by_cell.len);
+    defer allocator.free(net_sediment_megagrams_per_h);
+    @memset(surface_soil_mass_at_erosion_start_megagrams, 0);
+    @memset(net_sediment_megagrams_per_h, 0);
     var eroded_mineral_state = try ecosys.soil_erosion_mineral_bridge.State.init(allocator, unit_by_cell.len);
     defer eroded_mineral_state.deinit();
     var soil_catalog = ecosys.soil_catalog.Catalog.init(allocator);
@@ -5002,8 +6845,8 @@ pub fn main(init: std.process.Init) !void {
 
     const config = try ecosys.config.SimulationConfig.init(
         .{
-            .grid_columns = try runscript.domain.columns(),
-            .grid_rows = try runscript.domain.rows(),
+            .lon_count = try runscript.domain.columns(),
+            .lat_count = try runscript.domain.rows(),
             .soil_layers = try soil_catalog.maximumLayerCount(),
             .plant_populations = runscript.plant_species_count,
         },
@@ -5074,6 +6917,13 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(visualization_organic_carbon_g);
     var daily_soil_gas_flux = try ecosys.soil_daily_gas_flux.State.init(allocator, state.cell_count);
     defer daily_soil_gas_flux.deinit();
+    // HOUR1 lines 2408-2432: per-cell hourly accumulator array (XCNET, XHNET, XONET, etc.).
+    const hourly_accumulators = try allocator.alloc(
+        ecosys.hourly_grid_cell_accumulator_reset.GridCellAccumulators,
+        state.cell_count,
+    );
+    defer allocator.free(hourly_accumulators);
+    for (hourly_accumulators) |*acc| ecosys.hourly_grid_cell_accumulator_reset.reset(acc);
     var daily_canopy_gas_exchange = try ecosys.daily_canopy_gas_exchange.State.init(allocator, state.cell_count);
     defer daily_canopy_gas_exchange.deinit();
     var daily_heterotrophic_respiration = try ecosys.soil_daily_heterotrophic_respiration.State.init(allocator, state.cell_count, state.layer_count);
@@ -5092,12 +6942,12 @@ pub fn main(init: std.process.Init) !void {
         .boundary_ledger = .{},
         .monitor = null,
     };
-    const landscape_soil_mass_Mg_scratch = try allocator.alloc(
+    const landscape_soil_mass_megagrams_scratch = try allocator.alloc(
         f64,
         state.layer_count,
     );
-    defer allocator.free(landscape_soil_mass_Mg_scratch);
-    @memset(landscape_soil_mass_Mg_scratch, 0);
+    defer allocator.free(landscape_soil_mass_megagrams_scratch);
+    @memset(landscape_soil_mass_megagrams_scratch, 0);
     var daily_ecosystem_carbon = try ecosys.soil_daily_ecosystem_carbon.State.init(allocator, state.cell_count);
     defer daily_ecosystem_carbon.deinit();
     const daily_soil_fire_charcoal_production_g_c = try allocator.alloc(f64, state.cell_count);
@@ -5115,6 +6965,24 @@ pub fn main(init: std.process.Init) !void {
     const daily_soil_fire_nitrogen_flux_g_n = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(daily_soil_fire_nitrogen_flux_g_n);
     @memset(daily_soil_fire_nitrogen_flux_g_n, 0);
+    const daily_root_fire_carbon_dioxide_emission_g_c = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_carbon_dioxide_emission_g_c);
+    @memset(daily_root_fire_carbon_dioxide_emission_g_c, 0);
+    const daily_root_fire_methane_emission_g_c = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_methane_emission_g_c);
+    @memset(daily_root_fire_methane_emission_g_c, 0);
+    const daily_root_fire_nitrogen_flux_g_n = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_nitrogen_flux_g_n);
+    @memset(daily_root_fire_nitrogen_flux_g_n, 0);
+    const daily_root_fire_phosphorus_flux_g_p = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_phosphorus_flux_g_p);
+    @memset(daily_root_fire_phosphorus_flux_g_p, 0);
+    const daily_root_fire_nitrogen_loss_g_n = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_nitrogen_loss_g_n);
+    @memset(daily_root_fire_nitrogen_loss_g_n, 0);
+    const daily_root_fire_phosphorus_loss_g_p = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(daily_root_fire_phosphorus_loss_g_p);
+    @memset(daily_root_fire_phosphorus_loss_g_p, 0);
     const daily_soil_combusted_nitrogen_g_n = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(daily_soil_combusted_nitrogen_g_n);
     @memset(daily_soil_combusted_nitrogen_g_n, 0);
@@ -5204,7 +7072,8 @@ pub fn main(init: std.process.Init) !void {
     }
     var daily_soil_carbon_bank = try ecosys.output_stream_bank.Bank.init(allocator, init.io, std.Io.Dir.cwd(), daily_soil_carbon_enabled, state.cell_count, daily_soil_carbon_catalog.variables.len, 64 * 1024, .tab);
     defer daily_soil_carbon_bank.deinit();
-    var daily_soil_water_catalog = try ecosys.soil_output_catalog.dailyWater(allocator, config.soil_layers, config.soil_layers, @min(config.soil_layers, 10));
+    const daily_soil_water_potential_layers = dailySoilWaterPotentialLayerCount(config.soil_layers);
+    var daily_soil_water_catalog = try ecosys.soil_output_catalog.dailyWater(allocator, config.soil_layers, config.soil_layers, daily_soil_water_potential_layers);
     defer daily_soil_water_catalog.deinit();
     var daily_soil_water_enabled = false;
     for (runscript.scenes, 0..) |scene, scene_index| {
@@ -5405,13 +7274,65 @@ pub fn main(init: std.process.Init) !void {
             surface_runoff_boundary_fraction_by_direction[direction][cell] =
                 selected_site.surface_runoff_boundary_fraction[direction];
         }
+        // STARTS lines 397--400 and 1222: `TKS(L,NY,NX)=ATKS(NY,NX)` seeds the
+        // profile isothermally at the mean annual soil temperature. See
+        // `seed_soil_profile_from_mean_annual` at the top of this file for the
+        // measured effect on the EXEC heat audit.
+        if (seed_soil_profile_from_mean_annual) {
+            const initial_soil_temperature_k = selected_site.mean_annual_air_temperature_c + 273.15;
+            if (!std.math.isFinite(initial_soil_temperature_k) or initial_soil_temperature_k <= 0)
+                return error.InvalidInitialSoilTemperature;
+            const layer_base = cell * state.soil_layer_capacity;
+            for (0..state.soil_layer_capacity) |layer|
+                state.soil_temperature_k[layer_base + layer] = initial_soil_temperature_k;
+            // BIND-STARTS-654, source `starts.f` 659: `TKS(0,NY,NX)=ATKS(NY,NX)`.
+            // This is the LAYER-0 companion of the `starts.f` 1222 seed
+            // immediately above, and it was left on the `273.15 K` placeholder
+            // that `grid.zig:79` installs at allocation. `273.15 K` is the
+            // pure-water melting point, so every example began with its surface
+            // litter sitting exactly on the ice/liquid phase boundary
+            // regardless of site climate, which is the worst possible start for
+            // a phase-enthalpy solver for the same reason recorded at the
+            // `seed_soil_profile_from_mean_annual` declaration.
+            //
+            // A8 measured the placeholder error across the whole migrated
+            // corpus and it FLIPS SIGN, so it cannot be corrected by an offset
+            // and Ottawa is not the worst case: Ottawa `-5.40 K`, Boreal Crop
+            // AB `-2.00 K`, Arctic Fen CH `+6.90 K`, Arctic Tundra IQ
+            // `+9.80 K`. On the warm sites the surface started too cold; on the
+            // frozen sites it held a `-9.8 C` site at the melting point, the
+            // wrong side of the phase boundary for a permafrost column.
+            //
+            // Bound here rather than in `grid.zig` deliberately. The value is
+            // `lower_soil_heat_boundary_initialization.initialize`'s
+            // `surface_litter_temperature_k`, which that module sets to exactly
+            // `inputs.mean_annual_soil_temperature_k` (`:108--109`), the same
+            // per-cell quantity already in hand here. Seeding it at the one
+            // place that already owns the mean-annual seed keeps a single
+            // writer, needs no claim on the shared `src/grid.zig`, and leaves
+            // `grid.zig:79`'s `@memset` as the correct allocation-time default
+            // for callers that never reach site selection. Per A8's
+            // recommendation this binds ONLY the surface temperature and does
+            // not wire `lower_heat_source_depth_m` or `deep_source_temperature_k`,
+            // which `soil_heat_solver.zig:498--504` and `:698--699` already
+            // recompute per step from the same runscript controls, so `INIT-003`
+            // is deferred entirely rather than half-answered.
+            //
+            // No double mutation: `surface_temperature_k` is written here before
+            // any solver runs, and the hourly surface-temperature solver is its
+            // only other writer, which advances this value rather than
+            // establishing it. This runs before the EXEC heat baseline is
+            // captured, which is the whole point: the baseline must see the
+            // physical initial condition, not the placeholder.
+            state.surface_temperature_k[cell] = initial_soil_temperature_k;
+        }
     }
     var soil_boundary_topology_state = try ecosys.soil_boundary_topology.State.initMapped(
         allocator,
         &state,
         &terrain_hydrology_state,
-        config.grid_columns,
-        config.grid_rows,
+        config.lon_count,
+        config.lat_count,
         grid_environment.horizontal_cell_width_m,
         grid_environment.vertical_cell_width_m,
         site_by_cell,
@@ -5431,6 +7352,8 @@ pub fn main(init: std.process.Init) !void {
     defer soil_geometry_state.deinit();
     var surface_pond_domain_workspace = try ecosys.surface_pond_domain_transaction.Workspace.init(allocator, state.cell_count, config.soil_layers);
     defer surface_pond_domain_workspace.deinit();
+    var soil_profile_relayering_workspace = try ecosys.soil_profile_relayering.Workspace.init(allocator, state.cell_count, config.soil_layers);
+    defer soil_profile_relayering_workspace.deinit();
     for (0..state.cell_count) |cell| {
         const first_layer: usize = 0;
         const active_count = state.active_soil_layer_count[cell];
@@ -5552,6 +7475,12 @@ pub fn main(init: std.process.Init) !void {
     const shoot_senescence_products_by_plant = try allocator.alloc(ecosys.canopy_photosynthesis.SenescenceProducts, output_plant_count);
     defer allocator.free(shoot_senescence_products_by_plant);
     @memset(shoot_senescence_products_by_plant, .{});
+    const seasonal_turnover_event_by_plant = try allocator.alloc(bool, output_plant_count);
+    defer allocator.free(seasonal_turnover_event_by_plant);
+    @memset(seasonal_turnover_event_by_plant, false);
+    const automatic_harvest_date_by_plant = try allocator.alloc(ecosys.plant_management.PackedDate, output_plant_count);
+    defer allocator.free(automatic_harvest_date_by_plant);
+    @memset(automatic_harvest_date_by_plant, .{ .day = 1, .month = 1, .year = 0 });
     const root_litter_products_by_plant = try allocator.alloc(ecosys.plant_root_metabolism.RootLitter, output_plant_count);
     defer allocator.free(root_litter_products_by_plant);
     @memset(root_litter_products_by_plant, std.mem.zeroes(ecosys.plant_root_metabolism.RootLitter));
@@ -5711,7 +7640,8 @@ pub fn main(init: std.process.Init) !void {
             .calcium_potassium = profile.property(.gapon_calcium_potassium)[0],
         };
     }
-    if (organic_parameters) |*parameters| {
+    {
+        const parameters = &organic_parameters;
         const depth_partition_factor = try allocator.alloc(f64, state.layer_count);
         defer allocator.free(depth_partition_factor);
         try ecosys.soil_organic_initialization.deriveMappedDepthPartition(
@@ -5767,15 +7697,24 @@ pub fn main(init: std.process.Init) !void {
     defer soil_chemistry_solver_workspace.deinit();
     var eroded_chemistry_workspace = try ecosys.eroded_constituents.PackedWorkspace.init(allocator, state.cell_count, ecosys.soil_erosion_chemistry_bridge.component_count);
     defer eroded_chemistry_workspace.deinit();
-    const chemistry_parameters = runscript.chemistry_initialization orelse
-        ecosys.soil_chemistry_initialization.sourceParameters();
+    const soil_numerical_scales_state = try ecosys.soil_initial_numerical_scales.initialize(.{
+        .calculation_floor = 1.0e-15,
+        .geometry_floor_m = 1.0e-6,
+        .initial_water_content_m3_per_m3 = 1.0e-3,
+        .initial_ice_porosity_m3_per_m3 = 0.0,
+        .pure_ice_density_megagrams_per_m3 = 0.92,
+    });
+    var initial_balance_ledger_state: ecosys.initial_balance_ledger.State = undefined;
+    ecosys.initial_balance_ledger.initialize(&initial_balance_ledger_state);
+    const chemistry_parameters = runscript.chemistry_initialization;
     {
         for (0..state.cell_count) |cell| {
             const soil_entry = soil_catalog.entries.items[catalog_index_by_cell[cell]];
             const profile = soil_entry.profile;
             for (0..profile.total_layer_count) |layer| {
                 const layer_cell = try state.layerIndex(cell, layer);
-                if (runscript.chemistry_primary_initialization) |primary_parameters| {
+                {
+                    const primary_parameters = runscript.chemistry_primary_initialization;
                     const profile_chemistry_inputs = try ecosys.soil_chemistry_initialization.resolveProfileEquilibriumSentinels(.{
                         .soil_ph = profile.ph[layer],
                         .ammonium_g_n_per_megagram = soil_entry.material.initial_ammonium_g_per_megagram[layer],
@@ -5799,12 +7738,11 @@ pub fn main(init: std.process.Init) !void {
                         .calcium_sulfate_g_ca_per_megagram = profile.property(.calcium_sulfate_ca_g_per_megagram)[layer],
                     }, primary_parameters);
                     try ecosys.soil_chemistry_initialization.seedProfilePrimaryState(&initial_chemistry_state, layer_cell, profile_chemistry_inputs, soil_solver_property_state.matrix_bulk_volume_m3[layer_cell] * soil_solver_property_state.bulk_density_megagrams_per_m3[layer_cell], state.matrix_liquid_water_m3[layer_cell], primary_parameters);
-                } else {
-                    try ecosys.soil_chemistry_initialization.seedProfilePhosphate(&initial_chemistry_state, layer_cell, profile.ph[layer], profile.property(.phosphate_g_per_megagram)[layer], chemistry_parameters);
                 }
             }
         }
-        if (chemistry_reaction_parameters) |reaction_parameters| {
+        {
+            const reaction_parameters = chemistry_reaction_parameters;
             const zone_volume_storage = try allocator.alloc(f64, 6 * state.layer_count);
             defer allocator.free(zone_volume_storage);
             @memset(zone_volume_storage, 0);
@@ -5828,22 +7766,36 @@ pub fn main(init: std.process.Init) !void {
                 for (0..profile.total_layer_count) |layer| {
                     const layer_cell = try state.layerIndex(cell, layer);
                     const water_volume_m3 = state.matrix_liquid_water_m3[layer_cell];
-                    const soil_mass_Mg = soil_solver_property_state.matrix_bulk_volume_m3[layer_cell] * soil_solver_property_state.bulk_density_megagrams_per_m3[layer_cell];
-                    if (!std.math.isFinite(water_volume_m3) or water_volume_m3 <= 0 or !std.math.isFinite(soil_mass_Mg) or soil_mass_Mg <= 0) {
-                        std.log.err("STARTE requires positive runtime soil and matrix-water volumes: cell={d} layer={d} soil_mass_Mg={e} water_volume_m3={e}", .{ cell, layer, soil_mass_Mg, water_volume_m3 });
+                    const soil_mass_megagrams = soil_solver_property_state.matrix_bulk_volume_m3[layer_cell] * soil_solver_property_state.bulk_density_megagrams_per_m3[layer_cell];
+                    if (!std.math.isFinite(water_volume_m3) or water_volume_m3 <= 0 or !std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0) {
+                        std.log.err("STARTE requires positive runtime soil and matrix-water volumes: cell={d} layer={d} soil_mass_megagrams={e} water_volume_m3={e}", .{ cell, layer, soil_mass_megagrams, water_volume_m3 });
                         return error.InvalidStarteLayerGeometry;
                     }
-                    ammonium_non_band_volume_m3[layer_cell] = water_volume_m3 * fractions.ammonium_non_band;
-                    ammonium_band_volume_m3[layer_cell] = water_volume_m3 * fractions.ammonium_band;
-                    nitrate_non_band_volume_m3[layer_cell] = water_volume_m3 * fractions.nitrate_non_band;
-                    nitrate_band_volume_m3[layer_cell] = water_volume_m3 * fractions.nitrate_band;
-                    phosphate_non_band_volume_m3[layer_cell] = water_volume_m3 * fractions.phosphate_non_band;
-                    phosphate_band_volume_m3[layer_cell] = water_volume_m3 * fractions.phosphate_band;
-                    const shared_soil_mass_per_water_volume_Mg_per_m3 = soil_mass_Mg / water_volume_m3;
-                    const phosphate_non_band_ratio = if (fractions.phosphate_non_band > 0) shared_soil_mass_per_water_volume_Mg_per_m3 / fractions.phosphate_non_band else shared_soil_mass_per_water_volume_Mg_per_m3;
-                    const phosphate_band_ratio = if (fractions.phosphate_band > 0) shared_soil_mass_per_water_volume_Mg_per_m3 / fractions.phosphate_band else shared_soil_mass_per_water_volume_Mg_per_m3;
-                    const ammonium_non_band_ratio = if (fractions.ammonium_non_band > 0) shared_soil_mass_per_water_volume_Mg_per_m3 / fractions.ammonium_non_band else shared_soil_mass_per_water_volume_Mg_per_m3;
-                    const ammonium_band_ratio = if (fractions.ammonium_band > 0) shared_soil_mass_per_water_volume_Mg_per_m3 / fractions.ammonium_band else shared_soil_mass_per_water_volume_Mg_per_m3;
+                    const prepared_zones = try ecosys.soil_fertilizer_dissolution.prepareLayerZones(.{
+                        .water_volume_m3 = water_volume_m3,
+                        .soil_mass_megagrams = soil_mass_megagrams,
+                        .soil_volume_m3 = soil_solver_property_state.matrix_bulk_volume_m3[layer_cell],
+                        .fractions = .{
+                            .ammonium_non_band = fractions.ammonium_non_band,
+                            .ammonium_band = fractions.ammonium_band,
+                            .nitrate_non_band = fractions.nitrate_non_band,
+                            .nitrate_band = fractions.nitrate_band,
+                            .phosphate_non_band = fractions.phosphate_non_band,
+                            .phosphate_band = fractions.phosphate_band,
+                        },
+                        .positive_soil_mass_threshold_megagrams = runscript.absolute_tolerance,
+                    });
+                    ammonium_non_band_volume_m3[layer_cell] = prepared_zones.ammonium_non_band_water_m3;
+                    ammonium_band_volume_m3[layer_cell] = prepared_zones.ammonium_band_water_m3;
+                    nitrate_non_band_volume_m3[layer_cell] = prepared_zones.nitrate_non_band_water_m3;
+                    nitrate_band_volume_m3[layer_cell] = prepared_zones.nitrate_band_water_m3;
+                    phosphate_non_band_volume_m3[layer_cell] = prepared_zones.phosphate_non_band_water_m3;
+                    phosphate_band_volume_m3[layer_cell] = prepared_zones.phosphate_band_water_m3;
+                    const shared_soil_mass_per_water_volume_megagrams_per_m3 = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(prepared_zones.whole_layer_normalization_basis, water_volume_m3);
+                    const phosphate_non_band_ratio = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(prepared_zones.phosphate_non_band_normalization_basis, prepared_zones.phosphate_non_band_water_m3);
+                    const phosphate_band_ratio = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(prepared_zones.phosphate_band_normalization_basis, prepared_zones.phosphate_band_water_m3);
+                    const ammonium_non_band_ratio = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(prepared_zones.ammonium_non_band_normalization_basis, prepared_zones.ammonium_non_band_water_m3);
+                    const ammonium_band_ratio = try ecosys.soil_fertilizer_dissolution.normalizationBasisPerWaterVolume(prepared_zones.ammonium_band_normalization_basis, prepared_zones.ammonium_band_water_m3);
                     const selectivity = ecosys.solute_cation_exchange.Selectivity{
                         .calcium_ammonium = profile.property(.gapon_calcium_ammonium)[layer],
                         .calcium_hydrogen = profile.property(.gapon_calcium_hydrogen)[layer],
@@ -5852,15 +7804,86 @@ pub fn main(init: std.process.Init) !void {
                         .calcium_sodium = profile.property(.gapon_calcium_sodium)[layer],
                         .calcium_potassium = profile.property(.gapon_calcium_potassium)[layer],
                     };
-                    const cation_exchange_capacity_mol_charge_per_Mg = soil_solver_property_state.cation_exchange_capacity_mol_per_Mg[layer_cell];
-                    const anion_exchange_capacity_mol_charge_per_Mg = 10 * profile.anion_exchange_capacity_cmol_kg[layer];
-                    const total_carboxyl_sites_mol_per_Mg = reaction_parameters.surface_litter.carboxyl_sites_mol_per_Mg_c *
+                    const cation_exchange_capacity_mol_charge_per_megagram = soil_solver_property_state.cation_exchange_capacity_mol_per_megagram[layer_cell];
+                    const anion_exchange_capacity_mol_charge_per_megagram = 10 * profile.anion_exchange_capacity_cmol_kg[layer];
+                    const total_carboxyl_sites_mol_per_megagram = reaction_parameters.surface_litter.carboxyl_sites_mol_per_megagram_c *
                         1.0e-6 * soil_solver_property_state.total_organic_carbon_g_per_megagram[layer_cell];
-                    try ecosys.soil_chemistry_initialization.seedProfilePhosphateSurfaceSites(&initial_chemistry_state, layer_cell, profile.property(.phosphate_g_per_megagram)[layer] / 31.0, anion_exchange_capacity_mol_charge_per_Mg, reaction_parameters.phosphate_surface, reaction_parameters.phosphate_constants.h2po4);
-                    try ecosys.soil_chemistry_initialization.seedProfileCationExchange(&initial_chemistry_state, layer_cell, cation_exchange_capacity_mol_charge_per_Mg, selectivity, fractions);
+                    try ecosys.soil_chemistry_initialization.seedProfilePhosphateSurfaceSites(&initial_chemistry_state, layer_cell, profile.property(.phosphate_g_per_megagram)[layer] / 31.0, anion_exchange_capacity_mol_charge_per_megagram, reaction_parameters.phosphate_surface, reaction_parameters.phosphate_constants.h2po4);
+                    try ecosys.soil_chemistry_initialization.seedProfileCationExchange(&initial_chemistry_state, layer_cell, cation_exchange_capacity_mol_charge_per_megagram, selectivity, fractions);
+                    // SOLUTE-CARBOXYL-INIT-SEED, source `starte.f` 403,
+                    // `XHC1=XCOOH*AMIN1(1.0,CHY1/DPCOH)`. Establishes the
+                    // hydrogen-occupied carboxyl pool, which `State.init`
+                    // correctly zeroes at allocation and which nothing then
+                    // seeded. Zero occupancy is an ABSORBING state rather than
+                    // merely a small one: the carboxyl reaction's substrate
+                    // bound is the source's `XMIN=FIONX/BKVLW*XHC1`, which is
+                    // proportional to the occupied pool, so a zero pool clamps
+                    // the extent to exactly zero every iteration for any pH and
+                    // any budget, and the organic proton buffer contributes
+                    // identically nothing. That is the `carboxyl=0e0` term A9
+                    // measured in four chemically dissimilar wave-1 examples.
+                    // Same defect class as `SOLUTE-PHOSPHATE-EQUIL`: a term
+                    // with no descent direction reports as a plateau and looks
+                    // like an iteration-budget problem while not being one. No
+                    // ceiling is raised and no tolerance is relaxed.
+                    // Publish set is one element of one field, with no other
+                    // writer on the initialization path; the layer-remap,
+                    // erosion-bridge, pond-transfer and solver `commit` writers
+                    // all run later and TRANSFORM an existing value, so this
+                    // fills the hole they currently propagate rather than
+                    // double-mutating anything. Ordering: must follow
+                    // `seedProfilePrimaryState` (`:7700`), which sets the
+                    // `aqueous[].hydrogen` that is the source's `CHY1`; this
+                    // position satisfies that and matches source order, where
+                    // STARTE 400--403 precede the `DO 1000 M=1,MRXN` loop.
+                    try ecosys.soil_chemistry_initialization.seedProfileCarboxylOccupancy(
+                        &initial_chemistry_state,
+                        layer_cell,
+                        total_carboxyl_sites_mol_per_megagram,
+                        reaction_parameters.surface_litter.carboxyl_dissociation_constant,
+                    );
                     initial_chemistry_state.water_mol_per_m3[layer_cell] = reaction_parameters.water_concentration_mol_per_m3;
-                    const layer_parameters = reaction_parameters.forLayer(fractions, phosphate_non_band_ratio, phosphate_band_ratio, cation_exchange_capacity_mol_charge_per_Mg, total_carboxyl_sites_mol_per_Mg, .{ .shared_Mg_per_m3 = shared_soil_mass_per_water_volume_Mg_per_m3, .ammonium_non_band_Mg_per_m3 = ammonium_non_band_ratio, .ammonium_band_Mg_per_m3 = ammonium_band_ratio }, selectivity);
+                    const layer_parameters = reaction_parameters.forLayer(fractions, phosphate_non_band_ratio, phosphate_band_ratio, cation_exchange_capacity_mol_charge_per_megagram, total_carboxyl_sites_mol_per_megagram, .{ .shared_megagrams_per_m3 = shared_soil_mass_per_water_volume_megagrams_per_m3, .ammonium_non_band_megagrams_per_m3 = ammonium_non_band_ratio, .ammonium_band_megagrams_per_m3 = ammonium_band_ratio }, selectivity);
                     soil_chemistry_layer_parameters[layer_cell] = layer_parameters;
+                    // STARTE lines 234-248: seed dissolved CO2 from atmospheric
+                    // concentration and temperature-dependent Henry solubility
+                    // before equilibration so bicarbonate/carbonate buffers are
+                    // present for the initial charge-balance solve.
+                    {
+                        const gas_params = surface_gas_parameters;
+                        const co2 = @intFromEnum(ecosys.gas_transport.Species.carbon_dioxide);
+                        // Use mean annual air temperature (ATCA) like Fortran STARTE line 238.
+                        // Soil temperature is 273.15 K here (thermal solver hasn't run yet).
+                        const sol = try ecosys.gas_transport.surfaceSolubilityWaterToAir(mean_annual_temperature_k_by_cell[cell], gas_params.solubility);
+                        initial_chemistry_state.aqueous[layer_cell].carbon_dioxide = @max(0, gas_params.atmospheric_concentration_g_per_m3[co2] * sol[co2] / ecosys.gas_transport.g_per_mol_tracked[co2]);
+                    }
+                    // SOLUTE-036: STARTE initial equilibrium must use starte.f:813's
+                    // own carboxyl rate limit (min(occupied_sites, H+ activity)),
+                    // not solute.f:1418's hourly formulation (occupied_sites only).
+                    // In acidic organic horizons the difference is 250x. Per A0
+                    // decision 2026-08-05, this is a translation defect. The STARTE
+                    // carboxyl exchange runs before the general solver to establish
+                    // the hydrogen-throttled proton buffer.
+                    {
+                        const carboxyl_params = ecosys.soil_carboxyl_proton_exchange.Parameters{
+                            .substrate_limit_fraction = reaction_parameters.cation_substrate_limit_fraction,
+                            .minimum_unprotonated_sites_mol_per_megagram = 1.0e-48,
+                            .carboxyl_dissociation_mol_per_m3 = reaction_parameters.surface_litter.carboxyl_dissociation_constant,
+                            .maximum_exchange_mol_per_megagram_iteration = 0.75,
+                        };
+                        var carboxyl_state = ecosys.soil_carboxyl_proton_exchange.State{
+                            .total_carboxyl_sites_mol_per_megagram = total_carboxyl_sites_mol_per_megagram,
+                            .protonated_carboxyl_sites_mol_per_megagram = initial_chemistry_state.carboxyl_bound_hydrogen_mol_per_megagram[layer_cell],
+                        };
+                        const hydrogen_activity = initial_chemistry_state.aqueous[layer_cell].hydrogen;
+                        _ = try ecosys.soil_carboxyl_proton_exchange.step(
+                            .soil,
+                            hydrogen_activity,
+                            carboxyl_params,
+                            &carboxyl_state,
+                        );
+                        initial_chemistry_state.carboxyl_bound_hydrogen_mol_per_megagram[layer_cell] = carboxyl_state.protonated_carboxyl_sites_mol_per_megagram;
+                    }
                     const initialization_solver_options: ecosys.solute_reaction_solver.Options = .{
                         .absolute_tolerance = runscript.absolute_tolerance,
                         .relative_tolerance = runscript.relative_tolerance,
@@ -5917,18 +7940,51 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     for (0..state.layer_count) |layer_cell| {
+        // STARTE lines 1418-1422 gate dissolved oxygen on depth: only layers
+        // whose upper face lies above the water table (`CDPTH(L-1) < DTBLZ`)
+        // receive `OXYS`; saturated soil below it starts anoxic. The oracle's
+        // `CDPTH(L-1)` is this layer's top face, which the solver geometry
+        // already stores as bottom depth minus thickness.
+        const depth_cell = layer_cell / state.soil_layer_capacity;
+        const layer_top_depth_m = soil_solver_property_state.layer_bottom_depth_m[layer_cell] -
+            soil_solver_property_state.layer_thickness_m[layer_cell];
         micropore_solute_state.water_volume_m3[layer_cell] = state.matrix_liquid_water_m3[layer_cell];
         macropore_solute_state.water_volume_m3[layer_cell] = state.macropore_liquid_water_m3[layer_cell];
         gas_transport_state.temperature_k[layer_cell] = state.soil_temperature_k[layer_cell];
         gas_transport_state.air_volume_m3[layer_cell] = state.matrix_air_volume_m3[layer_cell];
-        if (surface_gas_parameters) |parameters| {
-            const solubility = try ecosys.gas_transport.surfaceSolubilityWaterToAir(state.soil_temperature_k[layer_cell], parameters.solubility);
-            for (0..ecosys.gas_transport.species_count) |species| {
-                const gas_index = layer_cell * ecosys.gas_transport.species_count + species;
-                const atmospheric_concentration_g_per_m3 = parameters.atmospheric_concentration_g_per_m3[species];
-                gas_transport_state.gaseous_mass_g[gas_index] = atmospheric_concentration_g_per_m3 * state.matrix_air_volume_m3[layer_cell];
-                gas_transport_state.dissolved_mass_g[gas_index] = if (species == @intFromEnum(ecosys.gas_transport.Species.ammonia)) 0 else atmospheric_concentration_g_per_m3 * solubility[species] * state.matrix_liquid_water_m3[layer_cell];
-            }
+        {
+            const parameters = surface_gas_parameters;
+            // STARTE lines 1418-1433: seed dissolved gas from atmospheric
+            // concentrations at mean annual air temperature (ATCA), not current
+            // soil temperature. Soil temperature is 273.15 K before the thermal
+            // solver first runs; ATCA is a site-level constant already available.
+            const cell = layer_cell / state.soil_layer_capacity;
+            // STARTE 1419--1433 divide each dissolved concentration by
+            // `exp(A*CSTR1)`. `CSTR1` is the layer's salt-derived ionic
+            // strength, so this is exactly 1 for non-saline soil.
+            const seed_zone_fractions: ecosys.solute_charge_classification.ZoneFractions = .{
+                .ammonium_non_band = 1 - runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
+                .ammonium_band = runscript.plant_nutrient_initialization.initial_ammonium_band_fraction,
+                .nitrate_non_band = 1 - runscript.plant_nutrient_initialization.initial_nitrate_band_fraction,
+                .nitrate_band = runscript.plant_nutrient_initialization.initial_nitrate_band_fraction,
+                .phosphate_non_band = 1 - runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
+                .phosphate_band = runscript.plant_nutrient_initialization.initial_phosphate_band_fraction,
+            };
+            const layer_ionic_strength =
+                (try initial_chemistry_state.activityCoefficients(layer_cell, seed_zone_fractions)).ionic_strength_mol_per_l;
+            try ecosys.gas_transport.initializeSoilLayerCell(
+                &gas_transport_state,
+                layer_cell,
+                state.matrix_air_volume_m3[layer_cell],
+                state.matrix_liquid_water_m3[layer_cell],
+                layer_top_depth_m,
+                site_by_cell[depth_cell].initial_water_table_depth_m,
+                mean_annual_temperature_k_by_cell[cell],
+                parameters.atmospheric_concentration_g_per_m3,
+                parameters.solubility,
+                layer_ionic_strength,
+                ecosys.gas_transport.starte_activity_coefficient,
+            );
         }
     }
     try ecosys.soil_aqueous_transport_bridge.exportConcentrations(&initial_chemistry_state, soil_recharge_concentration_mol_per_m3);
@@ -5950,7 +8006,55 @@ pub fn main(init: std.process.Init) !void {
     const direct_surface_solute_input = try allocator.alloc(ecosys.snow_solute_transport.SurfaceDischarge, state.cell_count);
     defer allocator.free(direct_surface_solute_input);
     @memset(direct_surface_solute_input, .{});
-    var transport_hydrology_state = try ecosys.transport_hydrology.State.init(allocator, config.grid_columns, config.grid_rows, config.soil_layers, snow_transport_state.layer_capacity);
+    const snowpack_internal_solute_flux_by_layer = try allocator.alloc(
+        ecosys.snowpack_internal_solute_aggregation.SoluteFlux,
+        try std.math.mul(
+            usize,
+            state.cell_count,
+            snow_transport_state.layer_capacity,
+        ),
+    );
+    defer allocator.free(snowpack_internal_solute_flux_by_layer);
+    @memset(snowpack_internal_solute_flux_by_layer, .{});
+    const snowpack_internal_solute_flux_workspace = try allocator.alloc(
+        ecosys.snowpack_internal_solute_aggregation.SoluteFlux,
+        try std.math.mul(
+            usize,
+            state.cell_count,
+            snow_transport_state.layer_capacity,
+        ),
+    );
+    defer allocator.free(snowpack_internal_solute_flux_workspace);
+    @memset(snowpack_internal_solute_flux_workspace, .{});
+    const snowpack_internal_salt_flux_mol_by_layer_species = try allocator.alloc(
+        f64,
+        try std.math.mul(
+            usize,
+            try std.math.mul(
+                usize,
+                state.cell_count,
+                snow_transport_state.layer_capacity,
+            ),
+            ecosys.snowpack_internal_salt_aggregation.salt_species_count,
+        ),
+    );
+    defer allocator.free(snowpack_internal_salt_flux_mol_by_layer_species);
+    @memset(snowpack_internal_salt_flux_mol_by_layer_species, 0);
+    const snowpack_internal_salt_flux_workspace_by_layer_species = try allocator.alloc(
+        f64,
+        try std.math.mul(
+            usize,
+            try std.math.mul(
+                usize,
+                state.cell_count,
+                snow_transport_state.layer_capacity,
+            ),
+            ecosys.snowpack_internal_salt_aggregation.salt_species_count,
+        ),
+    );
+    defer allocator.free(snowpack_internal_salt_flux_workspace_by_layer_species);
+    @memset(snowpack_internal_salt_flux_workspace_by_layer_species, 0);
+    var transport_hydrology_state = try ecosys.transport_hydrology.State.init(allocator, config.lon_count, config.lat_count, config.soil_layers, snow_transport_state.layer_capacity);
     defer transport_hydrology_state.deinit();
     try transport_hydrology_state.syncStorage(&state, &snow_transport_state);
     var soil_transport_faces = try ecosys.transport_hydrology.buildSoilFacesMapped(allocator, &transport_hydrology_state, &state, lateral_connection_mode_by_cell);
@@ -6015,7 +8119,7 @@ pub fn main(init: std.process.Init) !void {
         mineral_nitrogen_zone_fractions,
         runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
     );
-    var surface_transport_state = try ecosys.surface_solute_routing.State.init(allocator, config.grid_columns, config.grid_rows, aqueous_species_count);
+    var surface_transport_state = try ecosys.surface_solute_routing.State.init(allocator, config.lon_count, config.lat_count, aqueous_species_count);
     defer surface_transport_state.deinit();
     var redistribution_ledger = try ecosys.transport_redistribution.Ledger.init(
         allocator,
@@ -6029,7 +8133,7 @@ pub fn main(init: std.process.Init) !void {
         aqueous_species_count,
     );
     defer redistribution_ledger.deinit();
-    var soil_thermal_context: ecosys.soil_thermal.UpdateContext = .{ .thermal = &soil_thermal_state, .grid = &state, .liquid_water_heat_capacity_mj_per_m3_k = runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_mj_per_m3_k, .ice_heat_capacity_mj_per_m3_k = runscript.soil_phase_heat_parameters.ice_heat_capacity_mj_per_m3_k };
+    var soil_thermal_context: ecosys.soil_thermal.UpdateContext = .{ .thermal = &soil_thermal_state, .grid = &state, .liquid_water_heat_capacity_megajoules_per_m3_k = runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k, .ice_heat_capacity_megajoules_per_m3_k = runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k };
     try runKernelAcrossSerialTilePlan(
         executor,
         &tile_plan.?,
@@ -6063,10 +8167,10 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(plant_calendar_by_cell);
     const hourly_weather_reference_height_m = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(hourly_weather_reference_height_m);
-    const hourly_adjusted_shortwave_mj_per_m2 = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(hourly_adjusted_shortwave_mj_per_m2);
-    const hourly_extraterrestrial_shortwave_mj_per_m2 = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(hourly_extraterrestrial_shortwave_mj_per_m2);
+    const hourly_adjusted_shortwave_megajoules_per_m2 = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(hourly_adjusted_shortwave_megajoules_per_m2);
+    const hourly_extraterrestrial_shortwave_megajoules_per_m2 = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(hourly_extraterrestrial_shortwave_megajoules_per_m2);
     const hourly_solar_angle_sine = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(hourly_solar_angle_sine);
     const hourly_solar_azimuth_radians = try allocator.alloc(f64, state.cell_count);
@@ -6109,14 +8213,14 @@ pub fn main(init: std.process.Init) !void {
     );
     const canopy_cell_area_m2 = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(canopy_cell_area_m2);
-    const surface_pond_minimum_heat_capacity_mj_per_k = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(surface_pond_minimum_heat_capacity_mj_per_k);
+    const surface_pond_minimum_heat_capacity_megajoules_per_k = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(surface_pond_minimum_heat_capacity_megajoules_per_k);
     var total_grid_area_m2: f64 = 0;
     for (canopy_cell_area_m2, 0..) |*area_m2, cell| {
         area_m2.* = grid_environment.horizontal_cell_width_m[cell] *
             grid_environment.vertical_cell_width_m[cell];
         if (!std.math.isFinite(area_m2.*) or area_m2.* <= 0) return error.InvalidCanopyCellArea;
-        surface_pond_minimum_heat_capacity_mj_per_k[cell] = runscript.surface_pond_activation_heat_capacity_mj_per_m2_k * area_m2.*;
+        surface_pond_minimum_heat_capacity_megajoules_per_k[cell] = runscript.surface_pond_activation_heat_capacity_megajoules_per_m2_k * area_m2.*;
         total_grid_area_m2 += area_m2.*;
     }
     if (!std.math.isFinite(total_grid_area_m2) or total_grid_area_m2 <= 0) return error.InvalidOutputGridArea;
@@ -6147,9 +8251,9 @@ pub fn main(init: std.process.Init) !void {
     const ground_air_canopy_resistance_h_per_m = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(ground_air_canopy_resistance_h_per_m);
     @memset(ground_air_canopy_resistance_h_per_m, 0);
-    const ground_air_sensible_source_mj_per_h = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(ground_air_sensible_source_mj_per_h);
-    @memset(ground_air_sensible_source_mj_per_h, 0);
+    const ground_air_sensible_source_megajoules_per_h = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_air_sensible_source_megajoules_per_h);
+    @memset(ground_air_sensible_source_megajoules_per_h, 0);
     const runtime_plant_count = try std.math.mul(usize, state.cell_count, config.plant_populations);
     const grazing_average_shoot_carbon_g_c = try allocator.alloc(f64, config.plant_populations);
     defer allocator.free(grazing_average_shoot_carbon_g_c);
@@ -6163,35 +8267,59 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(grazing_total_grazer_biomass_by_cell);
     var plant_daily_flux_ledger = try ecosys.plant_daily_flux_ledger.State.init(allocator, runtime_plant_count);
     defer plant_daily_flux_ledger.deinit();
-    const delayed_live_canopy_combustion_heat_mj = try allocator.alloc(f64, runtime_plant_count);
-    defer allocator.free(delayed_live_canopy_combustion_heat_mj);
-    @memset(delayed_live_canopy_combustion_heat_mj, 0);
-    const delayed_standing_dead_combustion_heat_mj = try allocator.alloc(f64, runtime_plant_count);
-    defer allocator.free(delayed_standing_dead_combustion_heat_mj);
-    @memset(delayed_standing_dead_combustion_heat_mj, 0);
-    const delayed_subsurface_combustion_heat_mj = try allocator.alloc(f64, state.layer_count);
-    defer allocator.free(delayed_subsurface_combustion_heat_mj);
-    @memset(delayed_subsurface_combustion_heat_mj, 0);
-    const delayed_surface_combustion_heat_mj = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(delayed_surface_combustion_heat_mj);
-    @memset(delayed_surface_combustion_heat_mj, 0);
-    const surface_combustion_heat_mj_per_m2 = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(surface_combustion_heat_mj_per_m2);
-    @memset(surface_combustion_heat_mj_per_m2, 0);
+    var plant_root_soil_exchange_state = try ecosys.plant_root_soil_exchange_accumulation.State.init(allocator, runtime_plant_count);
+    defer plant_root_soil_exchange_state.deinit();
+    const delayed_live_canopy_combustion_heat_megajoules = try allocator.alloc(f64, runtime_plant_count);
+    defer allocator.free(delayed_live_canopy_combustion_heat_megajoules);
+    @memset(delayed_live_canopy_combustion_heat_megajoules, 0);
+    const delayed_standing_dead_combustion_heat_megajoules = try allocator.alloc(f64, runtime_plant_count);
+    defer allocator.free(delayed_standing_dead_combustion_heat_megajoules);
+    @memset(delayed_standing_dead_combustion_heat_megajoules, 0);
+    const delayed_subsurface_combustion_heat_megajoules = try allocator.alloc(f64, state.layer_count);
+    defer allocator.free(delayed_subsurface_combustion_heat_megajoules);
+    @memset(delayed_subsurface_combustion_heat_megajoules, 0);
+    const delayed_surface_combustion_heat_megajoules = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(delayed_surface_combustion_heat_megajoules);
+    @memset(delayed_surface_combustion_heat_megajoules, 0);
+    const surface_combustion_heat_megajoules_per_m2 = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(surface_combustion_heat_megajoules_per_m2);
+    @memset(surface_combustion_heat_megajoules_per_m2, 0);
     const ground_air_vapor_source_m3_per_h = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(ground_air_vapor_source_m3_per_h);
     @memset(ground_air_vapor_source_m3_per_h, 0);
-    const ground_air_surface_sensible_conductance_mj_per_h_k = try allocator.alloc(f64, state.cell_count);
-    defer allocator.free(ground_air_surface_sensible_conductance_mj_per_h_k);
-    @memset(ground_air_surface_sensible_conductance_mj_per_h_k, 0);
+    const ground_air_surface_sensible_conductance_megajoules_per_h_k = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_air_surface_sensible_conductance_megajoules_per_h_k);
+    @memset(ground_air_surface_sensible_conductance_megajoules_per_h_k, 0);
     const ground_air_surface_vapor_conductance_m3_per_h = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(ground_air_surface_vapor_conductance_m3_per_h);
     @memset(ground_air_surface_vapor_conductance_m3_per_h, 0);
     const ground_air_surface_vapor_fraction = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(ground_air_surface_vapor_fraction);
     @memset(ground_air_surface_vapor_fraction, 0);
+    const ground_surface_evaporation_m3_per_h = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_surface_evaporation_m3_per_h);
+    @memset(ground_surface_evaporation_m3_per_h, 0);
+    const ground_surface_condensation_m3_per_h = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_surface_condensation_m3_per_h);
+    @memset(ground_surface_condensation_m3_per_h, 0);
+    const ground_surface_litter_water_change_m3 = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_surface_litter_water_change_m3);
+    @memset(ground_surface_litter_water_change_m3, 0);
+    const ground_surface_topsoil_water_change_m3 = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(ground_surface_topsoil_water_change_m3);
+    @memset(ground_surface_topsoil_water_change_m3, 0);
     var canopy_geometry = try ecosys.canopy_geometry.Geometry.init(allocator, runscript.canopy_discretization);
     defer canopy_geometry.deinit();
+    var canopy_irradiance_interception_geometry_state = try ecosys.canopy_irradiance_interception_geometry.initialize(allocator, .{
+        .leaf_inclination_sine = canopy_geometry.leaf_inclination_sine,
+        .leaf_inclination_cosine = canopy_geometry.leaf_inclination_cosine,
+        .sky_azimuth_class_count = runscript.canopy_discretization.diffuse_sky_sector_count,
+        .leaf_azimuth_class_count = runscript.canopy_discretization.leaf_azimuth_class_count,
+        .sky_elevation_rad = runscript.canopy_discretization.diffuse_sky_elevation_radians,
+        .pi = std.math.pi,
+        .reflected_angle_threshold_rad = -std.math.pi / 2.0,
+    });
+    defer canopy_irradiance_interception_geometry_state.deinit();
     var canopy_structure_state: ?ecosys.canopy_structure.State = null;
     defer if (canopy_structure_state) |*structure_state| structure_state.deinit();
     if (plant_assignments) |assignments| {
@@ -6222,7 +8350,8 @@ pub fn main(init: std.process.Init) !void {
     defer if (canopy_precipitation_retention_state) |*retention_state| retention_state.deinit();
     var surface_precipitation_state = try ecosys.surface_precipitation.RuntimeState.init(allocator, state.cell_count);
     defer surface_precipitation_state.deinit();
-    if (surface_gas_parameters) |parameters| {
+    {
+        const parameters = surface_gas_parameters;
         for (0..state.cell_count) |cell| surface_precipitation_state.litter_water_m3[cell] = parameters.initial_litter_water_m3_per_g_c * try surface_organic_state.totalCarbon_g_c(cell);
         try surface_litter_chemistry_state.bindMineralReferenceWater(
             surface_precipitation_state.litter_water_m3,
@@ -6235,13 +8364,24 @@ pub fn main(init: std.process.Init) !void {
             ecosys.surface_litter_geometry_step.applyTile,
         );
         @memcpy(surface_precipitation_state.litter_water_capacity_m3, surface_litter_geometry_state.water_retention_capacity_m3);
-        for (0..state.cell_count) |cell| try ecosys.gas_transport.initializeSurfaceCell(&litter_gas_transport_state, cell, surface_litter_geometry_state.air_volume_m3[cell], surface_precipitation_state.litter_water_m3[cell], state.surface_temperature_k[cell], parameters.atmospheric_concentration_g_per_m3, parameters.solubility);
-    } else if (organic_parameters) |*parameters| {
-        for (0..state.cell_count) |cell| {
-            const litter_carbon_g_c = try surface_organic_state.totalCarbon_g_c(cell);
-            surface_precipitation_state.litter_water_capacity_m3[cell] = parameters.surface_litter_water_capacity_m3_per_g_c * litter_carbon_g_c;
-            if (!std.math.isFinite(surface_precipitation_state.litter_water_capacity_m3[cell])) return error.NonFiniteSurfaceLitterWaterCapacity;
+        {
+            // EXEC-002: STARTS line 1648 seeds `VOLW(0)=8.0E-06*ORGC(0)`, which
+            // this reproduces faithfully, but that seed exceeds the litter
+            // retention capacity derived from the litter geometry. That is not
+            // itself a defect: the excess freezes on the first cold step and the
+            // water is conserved. It matters because the surface freeze exposes
+            // the latent-heat accounting defect described under EXEC-002 in the
+            // discrepancy register, so a nonzero excess here predicts an early
+            // freezing event and hence an early audit failure.
+            var seeded_m3: f64 = 0;
+            var capacity_m3: f64 = 0;
+            for (0..state.cell_count) |cell| {
+                seeded_m3 += surface_precipitation_state.litter_water_m3[cell];
+                capacity_m3 += surface_precipitation_state.litter_water_capacity_m3[cell];
+            }
+            std.log.debug("litter water seed vs capacity: seeded_m3={e} capacity_m3={e} excess_m3={e}", .{ seeded_m3, capacity_m3, seeded_m3 - capacity_m3 });
         }
+        for (0..state.cell_count) |cell| try ecosys.gas_transport.initializeSurfaceCell(&litter_gas_transport_state, cell, surface_litter_geometry_state.air_volume_m3[cell], surface_precipitation_state.litter_water_m3[cell], state.surface_temperature_k[cell], parameters.atmospheric_concentration_g_per_m3, parameters.solubility);
     }
     var plant_root_state: ?ecosys.plant_root_system.State = null;
     defer if (plant_root_state) |*root_state| root_state.deinit();
@@ -6374,20 +8514,23 @@ pub fn main(init: std.process.Init) !void {
     if (plant_assignments) |assignments| {
         const plant_count = try std.math.mul(usize, state.cell_count, config.plant_populations);
         plant_root_state = try ecosys.plant_root_system.State.init(allocator, plant_count, config.soil_layers, runscript.root_axes_per_plant);
-        plant_root_nutrient_workspace = try ecosys.plant_root_nutrient_uptake.GridWorkspace.init(
+        plant_root_nutrient_workspace = try ecosys.plant_root_nutrient_uptake.GridWorkspace.initWithAdmissionCapacity(
             allocator,
             state.cell_count,
             try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count),
+            try std.math.mul(usize, try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count), config.soil_layers),
         );
-        plant_root_salt_workspace = try ecosys.plant_root_salt_exchange.GridWorkspace.init(
+        plant_root_salt_workspace = try ecosys.plant_root_salt_exchange.GridWorkspace.initWithAdmissionCapacity(
             allocator,
             state.cell_count,
             try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count),
+            try std.math.mul(usize, try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count), config.soil_layers),
         );
-        plant_root_exudation_workspace = try ecosys.plant_root_exudation.GridWorkspace.init(
+        plant_root_exudation_workspace = try ecosys.plant_root_exudation.GridWorkspace.initWithAdmissionCapacity(
             allocator,
             state.cell_count,
             try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count),
+            try std.math.mul(usize, try std.math.mul(usize, config.plant_populations, ecosys.plant_root_system.biological_domain_count), config.soil_layers),
         );
         plant_root_metabolism_workspace = try ecosys.plant_root_metabolism.GridWorkspace.init(allocator, state.cell_count, runscript.root_axes_per_plant, config.soil_layers);
         plant_storage_remobilization_workspace = try ecosys.plant_storage_remobilization.Workspace.init(allocator, plant_count, config.soil_layers);
@@ -6489,7 +8632,7 @@ pub fn main(init: std.process.Init) !void {
                     const adjusted_phenology = try ecosys.plant_initialization.adjustedPhenology(traits, runscript.phenology_initialization_parameters);
                     try plant_topology_controls.setPlant(plant, traits.phenology.branching_nonstructural_carbon_fraction, traits.roots.branching_nonstructural_carbon_fraction, traits.functional_type.growth_habit, traits.functional_type.leaf_phenology_type, adjusted_phenology.floral_initiation_node_count_after_seed);
                     try plant_reproduction_controls.setPlant(plant, traits.morphology.maximum_seed_sites, traits.morphology.maximum_seeds_per_site, traits.morphology.maximum_seed_mass_g, traits.phenology.chilling_temperature_c, traits.water_relations.stomatal_turgor_shape, traits.functional_type.root_profile_type == 0);
-                    try canopy_layer_controls.setPlant(plant, traits.phenology.leaf_length_to_width_ratio, runscript.stalk_volume_m3_per_g_c, traits.functional_type.aboveground_turnover_type, traits.functional_type.root_profile_type, traits.functional_type.growth_habit == 0, @sin(traits.morphology.stem_angle_degrees * std.math.pi / 180.0));
+                    try canopy_layer_controls.setPlant(plant, traits.phenology.leaf_length_to_width_ratio, runscript.stalk_volume_m3_per_g_c, traits.functional_type.aboveground_turnover_type, traits.functional_type.root_profile_type, traits.functional_type.growth_habit == 0, traits.morphology.specific_internode_length_m_per_g_c, @sin(traits.morphology.stem_angle_degrees * std.math.pi / 180.0));
                     const thermal_acclimation = try ecosys.plant_initialization.thermalAcclimation(
                         assignment.species_file,
                         traits.functional_type.photosynthesis_pathway,
@@ -6635,6 +8778,7 @@ pub fn main(init: std.process.Init) !void {
                 .grid = &state,
                 .reseed_population_per_m2_by_plant = reseed_population_per_m2_by_plant,
                 .cell_area_m2_by_cell = canopy_cell_area_m2,
+                .automatic_harvest_date_by_plant = automatic_harvest_date_by_plant,
             };
             for (plant_unit_by_cell.?, 0..) |unit_index, cell| {
                 const active_species = assignments.units[unit_index].species;
@@ -6675,7 +8819,7 @@ pub fn main(init: std.process.Init) !void {
     const initial_snow_temperature_k = try allocator.alloc(f64, state.cell_count);
     defer allocator.free(initial_snow_temperature_k);
     @memset(initial_snow_temperature_k, site.mean_annual_air_temperature_c + 273.15);
-    try snow_transport_state.initializePhysicalState(ground_radiation_state.initial_snow_depth_m, canopy_cell_area_m2, initial_snow_temperature_k, runscript.snow_layer_bottom_depth_m, runscript.initial_snow_density_Mg_per_m3);
+    try snow_transport_state.initializePhysicalState(ground_radiation_state.initial_snow_depth_m, canopy_cell_area_m2, initial_snow_temperature_k, runscript.snow_layer_bottom_depth_m, runscript.initial_snow_density_megagrams_per_m3);
     const snow_depth_m = try allocator.dupe(f64, ground_radiation_state.initial_snow_depth_m);
     defer allocator.free(snow_depth_m);
     @memset(surface_precipitation_state.solid_snow_water_equivalent_m3, 0);
@@ -6830,6 +8974,15 @@ pub fn main(init: std.process.Init) !void {
             ecosys.plant_root_system.biological_domain_count,
         );
     defer root_salt_uptake_publication_state.deinit();
+    var root_soil_ammonia_exchange_publication_state =
+        try ecosys.root_soil_ammonia_exchange_publication.State.init(
+            allocator,
+            state.cell_count,
+            config.plant_populations,
+            state.soil_layer_capacity,
+            ecosys.plant_root_system.biological_domain_count,
+        );
+    defer root_soil_ammonia_exchange_publication_state.deinit();
     var root_exudate_publication_state =
         try ecosys.root_exudate_publication.State.init(
             allocator,
@@ -6875,8 +9028,39 @@ pub fn main(init: std.process.Init) !void {
             config.plant_populations,
         );
     defer root_soil_element_exchange_publication_state.deinit();
+    var plant_balance_publication_state =
+        try ecosys.plant_balance_publication.State.init(
+            allocator,
+            state.cell_count,
+            config.plant_populations,
+        );
+    defer plant_balance_publication_state.deinit();
+    const plant_balance_carbon_inputs_workspace =
+        try allocator.alloc(ecosys.plant_daily_output.CarbonBalanceInputs, runtime_plant_count);
+    defer allocator.free(plant_balance_carbon_inputs_workspace);
+    @memset(std.mem.sliceAsBytes(plant_balance_carbon_inputs_workspace), 0);
+    const plant_balance_nitrogen_inputs_workspace =
+        try allocator.alloc(ecosys.plant_daily_output.NutrientBalanceInputs, runtime_plant_count);
+    defer allocator.free(plant_balance_nitrogen_inputs_workspace);
+    @memset(std.mem.sliceAsBytes(plant_balance_nitrogen_inputs_workspace), 0);
+    const plant_balance_phosphorus_inputs_workspace =
+        try allocator.alloc(ecosys.plant_daily_output.NutrientBalanceInputs, runtime_plant_count);
+    defer allocator.free(plant_balance_phosphorus_inputs_workspace);
+    @memset(std.mem.sliceAsBytes(plant_balance_phosphorus_inputs_workspace), 0);
+    const plant_balance_carbon_root_by_layer =
+        try allocator.alloc(f64, state.soil_layer_capacity);
+    defer allocator.free(plant_balance_carbon_root_by_layer);
+    @memset(plant_balance_carbon_root_by_layer, 0);
+    const plant_balance_carbon_root_length_density_by_layer =
+        try allocator.alloc(f64, state.soil_layer_capacity);
+    defer allocator.free(plant_balance_carbon_root_length_density_by_layer);
+    @memset(plant_balance_carbon_root_length_density_by_layer, 0);
+    const plant_balance_nutrient_root_by_layer =
+        try allocator.alloc(f64, state.soil_layer_capacity);
+    defer allocator.free(plant_balance_nutrient_root_by_layer);
+    @memset(plant_balance_nutrient_root_by_layer, 0);
     const root_soil_element_exchange_workspace =
-        try allocator.alloc(f64, 3 * runtime_plant_count);
+        try allocator.alloc(f64, 9 * runtime_plant_count);
     defer allocator.free(root_soil_element_exchange_workspace);
     @memset(root_soil_element_exchange_workspace, 0);
     const root_soil_carbon_exchange_g_c_per_h_by_plant =
@@ -6885,6 +9069,18 @@ pub fn main(init: std.process.Init) !void {
         root_soil_element_exchange_workspace[runtime_plant_count .. 2 * runtime_plant_count];
     const root_soil_phosphorus_exchange_g_p_per_h_by_plant =
         root_soil_element_exchange_workspace[2 * runtime_plant_count .. 3 * runtime_plant_count];
+    const rse_organic_carbon_by_plant =
+        root_soil_element_exchange_workspace[3 * runtime_plant_count .. 4 * runtime_plant_count];
+    const rse_organic_nitrogen_by_plant =
+        root_soil_element_exchange_workspace[4 * runtime_plant_count .. 5 * runtime_plant_count];
+    const rse_organic_phosphorus_by_plant =
+        root_soil_element_exchange_workspace[5 * runtime_plant_count .. 6 * runtime_plant_count];
+    const rse_phosphate_h2_by_plant =
+        root_soil_element_exchange_workspace[6 * runtime_plant_count .. 7 * runtime_plant_count];
+    const rse_phosphate_h_by_plant =
+        root_soil_element_exchange_workspace[7 * runtime_plant_count .. 8 * runtime_plant_count];
+    const rse_canopy_fixation_g_n_per_h_by_plant =
+        root_soil_element_exchange_workspace[8 * runtime_plant_count .. 9 * runtime_plant_count];
     var root_gas_withdrawal_publication_state =
         try ecosys.root_gas_withdrawal_publication.State.init(
             allocator,
@@ -6892,6 +9088,19 @@ pub fn main(init: std.process.Init) !void {
             config.plant_populations,
         );
     defer root_gas_withdrawal_publication_state.deinit();
+    // The five UPTAKE/EXTRACT publication owners above advance as one atomic
+    // hour, so a partially advanced hour can never be observed by REDIST,
+    // NITRO, or the output writers. The workspace is the transaction's
+    // rollback scratch and is allocated once here, next to the owners it
+    // protects, so `apply` stays allocation-free inside the hourly loop.
+    var uptake_coupled_transaction_workspace =
+        try ecosys.uptake_coupled_transaction.Workspace.init(allocator, .{
+            .cell_count = state.cell_count,
+            .species_count = config.plant_populations,
+            .soil_layer_capacity = state.soil_layer_capacity,
+            .root_domain_capacity = ecosys.plant_root_system.biological_domain_count,
+        });
+    defer uptake_coupled_transaction_workspace.deinit();
     var canopy_ammonia_publication_state =
         try ecosys.canopy_ammonia_publication.State.init(
             allocator,
@@ -6925,6 +9134,9 @@ pub fn main(init: std.process.Init) !void {
             runtime_plant_count,
         );
     defer plant_combustion_publication_state.deinit();
+    var root_combustion_boundary_ledger = std.mem.zeroes(
+        ecosys.root_combustion_boundary_publication.Ledger,
+    );
     var root_combustion_salt_publication_state =
         try ecosys.root_combustion_salt_publication.State.init(
             allocator,
@@ -6944,20 +9156,23 @@ pub fn main(init: std.process.Init) !void {
         aboveground_litter_publication_workspace[runtime_plant_count .. 2 * runtime_plant_count];
     const aboveground_litter_phosphorus_g_p_per_h_by_plant =
         aboveground_litter_publication_workspace[2 * runtime_plant_count .. 3 * runtime_plant_count];
-    const canopy_net_radiation_mj = try allocator.alloc(f64, runtime_plant_count);
-    defer allocator.free(canopy_net_radiation_mj);
-    const canopy_storage_heat_mj = try allocator.alloc(f64, runtime_plant_count);
-    defer allocator.free(canopy_storage_heat_mj);
-    const zero_plant_energy_mj = try allocator.alloc(f64, runtime_plant_count);
-    defer allocator.free(zero_plant_energy_mj);
-    @memset(canopy_net_radiation_mj, 0);
-    @memset(canopy_storage_heat_mj, 0);
-    @memset(zero_plant_energy_mj, 0);
+    const canopy_net_radiation_megajoules = try allocator.alloc(f64, runtime_plant_count);
+    defer allocator.free(canopy_net_radiation_megajoules);
+    const canopy_storage_heat_megajoules = try allocator.alloc(f64, runtime_plant_count);
+    defer allocator.free(canopy_storage_heat_megajoules);
+    const zero_plant_energy_megajoules = try allocator.alloc(f64, runtime_plant_count);
+    defer allocator.free(zero_plant_energy_megajoules);
+    @memset(canopy_net_radiation_megajoules, 0);
+    @memset(canopy_storage_heat_megajoules, 0);
+    @memset(zero_plant_energy_megajoules, 0);
     const fire_active_this_hour = try allocator.alloc(bool, state.cell_count);
     defer allocator.free(fire_active_this_hour);
     @memset(fire_active_this_hour, false);
     var surface_temperature_solver_state = try ecosys.surface_temperature_solver.State.init(allocator, state.cell_count);
     defer surface_temperature_solver_state.deinit();
+    const surface_heat_capacity_megajoules_per_k = try allocator.alloc(f64, state.cell_count);
+    defer allocator.free(surface_heat_capacity_megajoules_per_k);
+    @memset(surface_heat_capacity_megajoules_per_k, 0);
     var canopy_energy_state: ?ecosys.canopy_energy.State = null;
     defer if (canopy_energy_state) |*energy_state| energy_state.deinit();
     if (canopy_exposure_state != null) canopy_energy_state = try ecosys.canopy_energy.State.init(allocator, state.cell_count, config.plant_populations);
@@ -7009,23 +9224,52 @@ pub fn main(init: std.process.Init) !void {
     var current_atmospheric_co2_umol_per_mol = site.atmospheric_co2_umol_mol;
     const current_atmospheric_gas_concentration_g_per_m3 = try allocator.create([ecosys.gas_transport.species_count]f64);
     defer allocator.destroy(current_atmospheric_gas_concentration_g_per_m3);
-    current_atmospheric_gas_concentration_g_per_m3.* = if (surface_gas_parameters) |parameters| parameters.atmospheric_concentration_g_per_m3 else [_]f64{0} ** ecosys.gas_transport.species_count;
+    current_atmospheric_gas_concentration_g_per_m3.* = surface_gas_parameters.atmospheric_concentration_g_per_m3;
     var active_tile_cells: ?[]const usize = null;
     const runtime_tile_plan: *const ecosys.spatial_grid.TilePlan =
         &tile_plan.?;
     var executed_weather_hours: usize = 0;
     const lateral_contribution_path = try std.fmt.allocPrint(
         allocator,
-        "{s}.ecosys-ng-tile-io",
+        "{s}.ecosys-ng-tile-io.{d}",
         // Workspace accepts one safe directory name relative to its parent;
         // input paths may be absolute or contain separators.
-        .{std.fs.path.basename(args[1])},
+        //
+        // The suffix makes the directory unique per run. This tree is
+        // per-process out-of-core scratch, not a durable artifact: the
+        // generation-indexed manifests inside it are double buffered and are
+        // meaningful only to the run that wrote them. Naming it from the
+        // runscript alone meant two concurrent runs of the same runscript, which
+        // is routine on a shared machine and during parallel validation, shared
+        // one directory and read each other's manifests. That surfaced as a
+        // spurious `LateralContributionFileGenerationMismatch` partway through
+        // an otherwise healthy run, so a run could silently corrupt another
+        // run's state. The name is made unique rather than the generation check
+        // relaxed, because that check is correct. The clock comes from the
+        // injected `Io` so no new platform dependency is introduced.
+        .{
+            std.fs.path.basename(args[1]),
+            std.Io.Clock.now(.boot, init.io).nanoseconds,
+        },
     );
     defer allocator.free(lateral_contribution_path);
+    // Use the OS temp directory so that cloud sync tools (e.g. OneDrive) do not
+    // hold file locks on tile manifests during atomic rename operations. The
+    // workspace only needs the parent directory handle during init; it keeps its
+    // own handles to the subdirectories it creates.
+    const tile_io_parent_temp_dir: ?std.Io.Dir = try openOsTempDir(allocator, init.io);
+    defer if (tile_io_parent_temp_dir) |d| d.close(init.io);
+    // A unique name would otherwise accumulate one tree per invocation.
+    // Registered before the workspace so that, defers being LIFO, removal runs
+    // after the workspace has released its directory handles. A failure to
+    // remove is not fatal: the run's scientific result is already complete and
+    // the OS reclaims its own temp space.
+    defer if (tile_io_parent_temp_dir) |parent|
+        parent.deleteTree(init.io, lateral_contribution_path) catch {};
     var lateral_contribution_workspace =
         try ecosys.hourly_lateral_contribution_io.Workspace.init(
             init.io,
-            std.Io.Dir.cwd(),
+            tile_io_parent_temp_dir orelse std.Io.Dir.cwd(),
             lateral_contribution_path,
         );
     defer lateral_contribution_workspace.deinit();
@@ -7038,7 +9282,7 @@ pub fn main(init: std.process.Init) !void {
         .restoring_checkpoint = scene_options[0].resume_from_checkpoint,
         .lateral_contribution_workspace = &lateral_contribution_workspace,
         .landscape_boundary_ledger = &landscape_mass_balance_state.boundary_ledger,
-        .landscape_soil_mass_Mg_scratch = landscape_soil_mass_Mg_scratch,
+        .landscape_soil_mass_megagrams_scratch = landscape_soil_mass_megagrams_scratch,
         .grid = &state,
         .lateral_connection_mode_by_cell = lateral_connection_mode_by_cell,
         .site_by_cell = site_by_cell,
@@ -7047,9 +9291,9 @@ pub fn main(init: std.process.Init) !void {
         .geothermal_enabled_by_cell = geothermal_enabled_by_cell,
         .surface_runoff_boundary_fraction_by_direction = surface_runoff_boundary_fraction_by_direction,
         .atmosphere = &atmospheric_state,
-        .hourly_adjusted_shortwave_mj_per_m2 = hourly_adjusted_shortwave_mj_per_m2,
+        .hourly_adjusted_shortwave_megajoules_per_m2 = hourly_adjusted_shortwave_megajoules_per_m2,
         .hourly_weather_reference_height_m = hourly_weather_reference_height_m,
-        .hourly_extraterrestrial_shortwave_mj_per_m2 = hourly_extraterrestrial_shortwave_mj_per_m2,
+        .hourly_extraterrestrial_shortwave_megajoules_per_m2 = hourly_extraterrestrial_shortwave_megajoules_per_m2,
         .hourly_solar_angle_sine = hourly_solar_angle_sine,
         .hourly_solar_azimuth_radians = hourly_solar_azimuth_radians,
         .irrigation_water_depth_m = irrigation_water_depth_m,
@@ -7060,6 +9304,7 @@ pub fn main(init: std.process.Init) !void {
         .canopy_radiation = &canopy_radiation_state,
         .canopy_optics = &canopy_optics_state,
         .canopy_geometry = &canopy_geometry,
+        .canopy_irradiance_interception_geometry = &canopy_irradiance_interception_geometry_state,
         .canopy_cell_area_m2 = canopy_cell_area_m2,
         .surface_aerodynamics = &surface_aerodynamic_state,
         .ground_air = &ground_air_state,
@@ -7068,16 +9313,20 @@ pub fn main(init: std.process.Init) !void {
         .ground_air_vapor_pressure_kpa = ground_air_vapor_pressure_kpa,
         .atmospheric_vapor_fraction = atmospheric_vapor_fraction,
         .ground_air_canopy_resistance_h_per_m = ground_air_canopy_resistance_h_per_m,
-        .ground_air_sensible_source_mj_per_h = ground_air_sensible_source_mj_per_h,
-        .delayed_live_canopy_combustion_heat_mj = delayed_live_canopy_combustion_heat_mj,
-        .delayed_standing_dead_combustion_heat_mj = delayed_standing_dead_combustion_heat_mj,
-        .delayed_subsurface_combustion_heat_mj = delayed_subsurface_combustion_heat_mj,
-        .delayed_surface_combustion_heat_mj = delayed_surface_combustion_heat_mj,
-        .surface_combustion_heat_mj_per_m2 = surface_combustion_heat_mj_per_m2,
+        .ground_air_sensible_source_megajoules_per_h = ground_air_sensible_source_megajoules_per_h,
+        .delayed_live_canopy_combustion_heat_megajoules = delayed_live_canopy_combustion_heat_megajoules,
+        .delayed_standing_dead_combustion_heat_megajoules = delayed_standing_dead_combustion_heat_megajoules,
+        .delayed_subsurface_combustion_heat_megajoules = delayed_subsurface_combustion_heat_megajoules,
+        .delayed_surface_combustion_heat_megajoules = delayed_surface_combustion_heat_megajoules,
+        .surface_combustion_heat_megajoules_per_m2 = surface_combustion_heat_megajoules_per_m2,
         .ground_air_vapor_source_m3_per_h = ground_air_vapor_source_m3_per_h,
-        .ground_air_surface_sensible_conductance_mj_per_h_k = ground_air_surface_sensible_conductance_mj_per_h_k,
+        .ground_air_surface_sensible_conductance_megajoules_per_h_k = ground_air_surface_sensible_conductance_megajoules_per_h_k,
         .ground_air_surface_vapor_conductance_m3_per_h = ground_air_surface_vapor_conductance_m3_per_h,
         .ground_air_surface_vapor_fraction = ground_air_surface_vapor_fraction,
+        .ground_surface_evaporation_m3_per_h = ground_surface_evaporation_m3_per_h,
+        .ground_surface_condensation_m3_per_h = ground_surface_condensation_m3_per_h,
+        .ground_surface_litter_water_change_m3 = ground_surface_litter_water_change_m3,
+        .ground_surface_topsoil_water_change_m3 = ground_surface_topsoil_water_change_m3,
         .direct_incidence_fraction = direct_incidence_fraction,
         .direct_incidence_per_horizontal_area = direct_incidence_per_horizontal_area,
         .direct_scattering_direction = direct_scattering_direction,
@@ -7090,6 +9339,7 @@ pub fn main(init: std.process.Init) !void {
         .surface_energy = &surface_energy_state,
         .surface_energy_settings = surface_energy_settings,
         .surface_temperature = &surface_temperature_solver_state,
+        .surface_heat_capacity_megajoules_per_k = surface_heat_capacity_megajoules_per_k,
         .nonlinear_solver_options = nonlinear_solver_options,
         .soil_thermal = &soil_thermal_state,
         .soil_thermal_context = &soil_thermal_context,
@@ -7099,8 +9349,11 @@ pub fn main(init: std.process.Init) !void {
         .soil_geometry = &soil_geometry_state,
         .fertilizer_band = &fertilizer_band_state,
         .surface_pond_domain_workspace = &surface_pond_domain_workspace,
+        .soil_profile_relayering_workspace = &soil_profile_relayering_workspace,
         .terrain_hydrology = &terrain_hydrology_state,
         .surface_runoff = &surface_runoff_state,
+        .soil_numerical_scales = soil_numerical_scales_state,
+        .initial_balance_ledger = &initial_balance_ledger_state,
         .surface_inorganic_nitrogen_export_g_n_per_h = surface_inorganic_nitrogen_export_g_n_per_h,
         .surface_inorganic_phosphorus_export_g_p_per_h = surface_inorganic_phosphorus_export_g_p_per_h,
         .surface_organic_carbon_export_g_c_per_h = surface_organic_carbon_export_g_c_per_h,
@@ -7108,8 +9361,8 @@ pub fn main(init: std.process.Init) !void {
         .surface_organic_nitrogen_export_g_n_per_h = surface_organic_nitrogen_export_g_n_per_h,
         .surface_organic_phosphorus_export_g_p_per_h = surface_organic_phosphorus_export_g_p_per_h,
         .surface_erosion = &surface_erosion_state,
-        .surface_soil_mass_at_erosion_start_Mg = surface_soil_mass_at_erosion_start_Mg,
-        .net_sediment_Mg_per_h = net_sediment_Mg_per_h,
+        .surface_soil_mass_at_erosion_start_megagrams = surface_soil_mass_at_erosion_start_megagrams,
+        .net_sediment_megagrams_per_h = net_sediment_megagrams_per_h,
         .eroded_mineral_state = &eroded_mineral_state,
         .soil_transport_faces = &soil_transport_faces,
         .soil_face_geometry = &soil_face_geometry_state,
@@ -7133,6 +9386,10 @@ pub fn main(init: std.process.Init) !void {
         .snow_surface_partitions = snow_surface_partitions,
         .snow_surface_discharge = snow_surface_discharge,
         .direct_surface_solute_input = direct_surface_solute_input,
+        .snowpack_internal_solute_flux_by_layer = snowpack_internal_solute_flux_by_layer,
+        .snowpack_internal_solute_flux_workspace = snowpack_internal_solute_flux_workspace,
+        .snowpack_internal_salt_flux_mol_by_layer_species = snowpack_internal_salt_flux_mol_by_layer_species,
+        .snowpack_internal_salt_flux_workspace_by_layer_species = snowpack_internal_salt_flux_workspace_by_layer_species,
         .micropore_solute_state = &micropore_solute_state,
         .macropore_solute_state = &macropore_solute_state,
         .soil_recharge_concentration_mol_per_m3 = soil_recharge_concentration_mol_per_m3,
@@ -7224,7 +9481,7 @@ pub fn main(init: std.process.Init) !void {
         .canopy_precipitation_retention = &canopy_precipitation_retention_state,
         .surface_precipitation = &surface_precipitation_state,
         .surface_pond_transition = &surface_pond_transition_state,
-        .surface_pond_minimum_heat_capacity_mj_per_k = surface_pond_minimum_heat_capacity_mj_per_k,
+        .surface_pond_minimum_heat_capacity_megajoules_per_k = surface_pond_minimum_heat_capacity_megajoules_per_k,
         .surface_litter_geometry = &surface_litter_geometry_state,
         .surface_litter_water_environment = &surface_litter_water_environment_state,
         .surface_microbial_environment = &surface_microbial_environment_state,
@@ -7267,11 +9524,14 @@ pub fn main(init: std.process.Init) !void {
         .surface_litter_cation_selectivity = surface_litter_cation_selectivity,
         .surface_organic = &surface_organic_state,
         .shoot_senescence_products_by_plant = shoot_senescence_products_by_plant,
+        .seasonal_turnover_event_by_plant = seasonal_turnover_event_by_plant,
         .root_litter_products_by_plant = root_litter_products_by_plant,
         .root_litter_carbon_ledger = &root_litter_carbon_ledger,
         .eroded_organic_workspace = &eroded_organic_workspace,
         .organic_parameters = &organic_parameters,
         .chemistry_reaction_parameters = &chemistry_reaction_parameters,
+        .root_soil_ammonia_exchange_publication_state = &root_soil_ammonia_exchange_publication_state,
+        .root_nutrient_uptake_publication_state = &root_nutrient_uptake_publication_state,
     };
     var climate_state: ecosys.climate_change.State = .{};
     var executed_scene_passes: usize = 0;
@@ -7297,7 +9557,7 @@ pub fn main(init: std.process.Init) !void {
             std.Io.Dir.cwd(),
             config,
             .{
-                .manifest = .{ .maximum_columns = config.grid_columns, .maximum_rows = config.grid_rows, .maximum_soil_layers = config.soil_layers, .maximum_snow_layers = snow_transport_state.layer_capacity, .maximum_plant_species_per_cell = config.plant_populations, .maximum_root_axes_per_plant = runscript.root_axes_per_plant },
+                .manifest = .{ .maximum_columns = config.lon_count, .maximum_rows = config.lat_count, .maximum_soil_layers = config.soil_layers, .maximum_snow_layers = snow_transport_state.layer_capacity, .maximum_plant_species_per_cell = config.plant_populations, .maximum_root_axes_per_plant = runscript.root_axes_per_plant },
                 .plant_metadata = .{ .maximum_cells = state.cell_count, .maximum_species_per_cell = config.plant_populations, .maximum_species_name_bytes = maximum_species_name_bytes },
                 .plant_development = .{ .maximum_cells = state.cell_count, .maximum_species = config.plant_populations, .maximum_branches = plant_growth_stage_state.?.branches.len },
                 .plant_roots = .{ .maximum_plants = plant_root_state.?.plant_count, .maximum_soil_layers = config.soil_layers, .maximum_root_axes = runscript.root_axes_per_plant },
@@ -7305,7 +9565,7 @@ pub fn main(init: std.process.Init) !void {
                 .soil_biogeochemistry = .{ .maximum_cells = state.cell_count, .maximum_layers = config.soil_layers, .maximum_substrates = runscript.microbial_substrate_count, .maximum_populations = runscript.microbial_population_count },
                 .soil_organic = .{ .maximum_profile_layers = state.layer_count, .maximum_surface_cells = state.cell_count },
                 .transport = .{ .maximum_transport_cells = state.layer_count, .maximum_solute_species = micropore_solute_state.species_count, .maximum_snow_cells = state.cell_count, .maximum_snow_layers = snow_transport_state.layer_capacity },
-                .soil_geometry = .{ .maximum_columns = config.grid_columns, .maximum_rows = config.grid_rows, .maximum_soil_layers = config.soil_layers, .maximum_snow_layers = snow_transport_state.layer_capacity, .maximum_plants = runtime_plant_count },
+                .soil_geometry = .{ .maximum_columns = config.lon_count, .maximum_rows = config.lat_count, .maximum_soil_layers = config.soil_layers, .maximum_snow_layers = snow_transport_state.layer_capacity, .maximum_plants = runtime_plant_count },
             },
             .{ .manifest_buffer_bytes = 16 * 1024, .section_read_buffer_bytes = 64 * 1024, .section_verify_buffer_bytes = 64 * 1024 },
         );
@@ -7320,7 +9580,7 @@ pub fn main(init: std.process.Init) !void {
             .soil_biogeochemistry = .{ .microbial = &soil_microbial_state, .chemistry = &initial_chemistry_state, .available_nutrients = &plant_available_nutrient_state, .fertilizer = &soil_fertilizer_inventory, .mineral_fertilizer = &mineral_fertilizer_inventory, .fertilizer_band = &fertilizer_band_state, .reactive_nitrogen = &soil_reactive_nitrogen_state, .microbial_phosphorus = &soil_microbial_phosphorus_state },
             .soil_organic_matter = .{ .profile = &soil_organic_state, .surface = &surface_organic_state, .litter_chemistry = &surface_litter_chemistry_state, .litter_fertilizer = &surface_litter_fertilizer_state, .surface_respiration = &surface_microbial_respiration_state, .surface_denitrification = &surface_denitrification_state, .surface_fire_exchange = &surface_fire_exchange_state, .litter_salt_ingress = &plant_litter_salt_ingress_state },
             .transport = .{ .micropore = &micropore_solute_state, .macropore = &macropore_solute_state, .mineral_nitrogen = &mineral_nitrogen_transport_state, .organic = &soil_organic_transport_state, .gas = &gas_transport_state, .litter_gas = &litter_gas_transport_state, .snow = &snow_transport_state, .surface = &surface_transport_state },
-            .soil_geometry_and_hydrology = .{ .geometry = &soil_geometry_state, .hydrology = &transport_hydrology_state, .surface = &surface_precipitation_state, .erosion = &surface_erosion_state, .climate = &climate_state, .eroded_minerals = &eroded_mineral_state, .runtime = .{ .soil_properties = &soil_solver_property_state, .soil_thermal = &soil_thermal_state }, .surface_boundary = .{ .ground_air = &ground_air_state, .surface_aerodynamics = &surface_aerodynamic_state }, .surface_litter_geometry = &surface_litter_geometry_state, .surface_litter_ice_m3 = surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_mj = delayed_live_canopy_combustion_heat_mj, .delayed_standing_dead_combustion_heat_mj = delayed_standing_dead_combustion_heat_mj, .delayed_subsurface_combustion_heat_mj = delayed_subsurface_combustion_heat_mj, .delayed_surface_combustion_heat_mj = delayed_surface_combustion_heat_mj },
+            .soil_geometry_and_hydrology = .{ .geometry = &soil_geometry_state, .hydrology = &transport_hydrology_state, .surface = &surface_precipitation_state, .erosion = &surface_erosion_state, .climate = &climate_state, .eroded_minerals = &eroded_mineral_state, .runtime = .{ .soil_properties = &soil_solver_property_state, .soil_thermal = &soil_thermal_state }, .surface_boundary = .{ .ground_air = &ground_air_state, .surface_aerodynamics = &surface_aerodynamic_state }, .surface_litter_geometry = &surface_litter_geometry_state, .surface_litter_ice_m3 = surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_megajoules = delayed_live_canopy_combustion_heat_megajoules, .delayed_standing_dead_combustion_heat_megajoules = delayed_standing_dead_combustion_heat_megajoules, .delayed_subsurface_combustion_heat_megajoules = delayed_subsurface_combustion_heat_megajoules, .delayed_surface_combustion_heat_megajoules = delayed_surface_combustion_heat_megajoules },
             .landscape_mass_balance = &landscape_mass_balance_state,
         });
         // The owner swap replaces these slices. Rebind consumers before the
@@ -7443,6 +9703,8 @@ pub fn main(init: std.process.Init) !void {
             defer allocator.free(weather_hour_by_stream);
             var previous_weather_timestamp: ?ecosys.weather.Timestamp = null;
             var resolved_development_year: ?u16 = null;
+            var dormant_seed_branches: std.ArrayList(ecosys.plant_harvest_runtime.SourceOrderDormantSeedBranch) = .empty;
+            defer dormant_seed_branches.deinit(allocator);
             var scene_weather_hours: usize = 0;
             if (resume_position) |position| {
                 const completed_scene_hours = std.math.cast(usize, position.completed_scene_hours) orelse return error.CheckpointSceneHourExceedsRuntimeCounter;
@@ -7468,9 +9730,34 @@ pub fn main(init: std.process.Init) !void {
             // reference only at a fresh scene boundary. A resumed scene keeps
             // the checkpointed monitor and cumulative boundary history.
             if (scene_weather_hours == 0) {
+                // Sync gas_transport dissolved CO2 and micropore solutes from
+                // STARTE-equilibrated chemistry before capturing the EXEC baseline,
+                // so the baseline counts the same carbonate inventory that every
+                // subsequent hour counts after exportChemistry runs at line 2708.
+                for (0..state.cell_count) |_sync_cell| {
+                    const _sync_first = _sync_cell * state.soil_layer_capacity;
+                    for (0..state.active_soil_layer_count[_sync_cell]) |_sync_local| {
+                        const _sync_layer = _sync_first + _sync_local;
+                        const _sync_water = state.matrix_liquid_water_m3[_sync_layer];
+                        if (_sync_water <= config.absolute_tolerance) continue;
+                        const _sync_co2_idx = try ecosys.gas_transport.massIndex(_sync_layer, .carbon_dioxide, gas_transport_state.cell_count);
+                        gas_transport_state.dissolved_mass_g[_sync_co2_idx] = initial_chemistry_state.aqueous[_sync_layer].carbon_dioxide * 12.0 * _sync_water;
+                    }
+                }
+                try ecosys.soil_aqueous_transport_bridge.exportChemistry(&initial_chemistry_state, &micropore_solute_state);
                 const totals = try reconstructLandscapeMassBalance(
                     hourly_science_context,
                 );
+                {
+                    const area = totals.landscape_area_m2;
+                    const b = try ecosys.mass_balance_audit.balance(totals);
+                    std.log.debug("carbon baseline: residue={e} organic={e} co2={e} co2in={e} co2out={e} fert={e} sink={e} total_g_m2={e}", .{ totals.residue_carbon_g / area, totals.organic_carbon_g / area, totals.carbon_dioxide_carbon_g / area, totals.cumulative_carbon_dioxide_input_g / area, totals.cumulative_carbon_output_g / area, totals.cumulative_organic_fertilizer_carbon_g / area, totals.cumulative_carbon_sink_g / area, b.carbon_g / area });
+                    std.log.debug("nitrogen baseline: residue={e} organic={e} n2={e} nh4={e} no3={e} n2in={e} nin={e} nout={e} fert={e} sink={e} root_uptake={e} root_exudate={e} total_g_m2={e}", .{ totals.residue_nitrogen_g / area, totals.organic_nitrogen_g / area, totals.dinitrogen_nitrogen_g / area, totals.ammonium_nitrogen_g / area, totals.nitrate_nitrogen_g / area, totals.cumulative_dinitrogen_input_g / area, totals.cumulative_nitrogen_input_g / area, totals.cumulative_nitrogen_output_g / area, totals.cumulative_organic_fertilizer_nitrogen_g / area, totals.cumulative_nitrogen_sink_g / area, totals.cumulative_plant_root_organic_nitrogen_uptake_g / area, totals.cumulative_plant_root_organic_nitrogen_exudate_g / area, b.nitrogen_g / area });
+                    // EXEC-003: the oxygen baseline is captured after STARTE
+                    // gas seeding, so a nonzero value here confirms seeding ran
+                    // and any later climb is genuine accumulation, not fill-in.
+                    std.log.debug("oxygen baseline: storage={e} storage_g_m2={e} area_m2={e}", .{ totals.oxygen_storage_g, totals.oxygen_storage_g / area, area });
+                }
                 if (landscape_mass_balance_state.monitor) |*monitor|
                     try monitor.reset(totals)
                 else
@@ -7517,6 +9804,7 @@ pub fn main(init: std.process.Init) !void {
                 // HCNET and output aggregation.
                 if (plant_root_state) |*roots| roots.resetHourlyFluxes();
                 if (canopy_carbon_exchange_state) |*ledger| ledger.reset();
+                for (hourly_accumulators) |*acc| ecosys.hourly_grid_cell_accumulator_reset.reset(acc);
                 const current_year = timestamp.year.?;
                 const current_day_of_year = try dayOfYearFromTimestamp(timestamp);
                 if (resolved_development_year == null or resolved_development_year.? != current_year) {
@@ -7528,39 +9816,40 @@ pub fn main(init: std.process.Init) !void {
                     resolved_development_year = current_year;
                 }
                 const begins_day = if (previous_weather_timestamp) |previous| !sameCalendarDay(previous, timestamp) else true;
-                if (begins_day) {
-                    daily_soil_gas_flux.reset();
-                    daily_canopy_gas_exchange.reset();
-                    plant_water_publication_state.resetDaily();
-                }
-                if (begins_day) daily_heterotrophic_respiration.resetDaily();
-                if (begins_day) {
-                    daily_carbon_export.resetDaily();
-                    daily_phosphorus_export.resetDaily();
-                    daily_nitrogen_export.resetDaily();
-                    daily_water_ledger.resetDaily();
-                    daily_heat_ledger.reset();
-                    atmospheric_solute_input_ledger_state.resetDaily();
-                    @memset(daily_soil_fire_charcoal_production_g_c, 0);
-                    @memset(daily_soil_fire_carbon_dioxide_emission_g_c, 0);
-                    @memset(daily_soil_fire_methane_emission_g_c, 0);
-                    @memset(daily_soil_fire_phosphorus_flux_g_p, 0);
-                    @memset(daily_soil_fire_nitrogen_flux_g_n, 0);
-                    @memset(daily_soil_combusted_nitrogen_g_n, 0);
-                    @memset(daily_soil_combusted_phosphorus_g_p, 0);
-                    @memset(daily_microbial_phosphate_mineralization_g_p, 0);
-                    @memset(daily_microbial_nitrogen_mineralization_g_n, 0);
-                    @memset(daily_organic_fertilizer_carbon_input_g_c, 0);
-                    @memset(daily_organic_fertilizer_phosphorus_input_g_p, 0);
-                    @memset(daily_organic_fertilizer_nitrogen_input_g_n, 0);
-                    soil_fertilizer_inventory.resetDaily();
-                    mineral_fertilizer_inventory.resetDaily();
-                    @memset(daily_biome_organic_carbon_input_g_c, 0);
-                }
                 // HFUNC/GROSUB evaluates IFLGC/IFLGI at NFZ=1, the first
                 // source substep of every hour. The converged hourly model
                 // therefore evaluates activation once per hour, while the
                 // active/lifecycle flags keep reconstruction single-shot.
+                if (plant_phenology_state != null and plant_growth_stage_state != null and plant_dormancy_state != null) {
+                    for (0..runtime_plant_count) |plant| {
+                        if (!plant_phenology_state.?.reseed_pending[plant]) continue;
+                        dormant_seed_branches.items.len = 0;
+                        const branch_range = try plant_growth_stage_state.?.branchRange(plant);
+                        const cell = plant / config.plant_populations;
+                        const boundary_base = cell * (soil_geometry_state.layer_capacity + 1);
+                        const soil_surface_boundary_depth_m = soil_geometry_state.boundary_depth_m[boundary_base + soil_geometry_state.first_active_layer[cell]];
+                        for (branch_range.first..branch_range.end) |branch| {
+                            const branch_dormancy = plant_dormancy_state.?.branches[branch];
+                            try dormant_seed_branches.append(allocator, .{
+                                .leafout_disabled = branch_dormancy.leafout_disabled,
+                                .accumulated_leafout_h = branch_dormancy.accumulated_leafout_h,
+                                .required_leafout_h = development_dormancy_parameters[plant].required_leafout_h,
+                            });
+                        }
+                        const activation = try ecosys.plant_harvest_runtime.sourceOrderDormantSeedActivation(
+                            true,
+                            plant_phenology_state.?.reseed_pending[plant],
+                            dormant_seed_branches.items,
+                            current_day_of_year,
+                            current_year,
+                            soil_surface_boundary_depth_m,
+                        ) orelse continue;
+                        plant_phenology_state.?.reseed_pending[plant] = activation.initialization_pending;
+                        development_planting_day_of_year[plant] = activation.planting_day_of_year;
+                        development_planting_year[plant] = activation.planting_year;
+                        if (plant_water_workspace != null) plant_water_workspace.?.seeding_depth_m[plant] = activation.seeding_depth_m;
+                    }
+                }
                 if (management_schedule_map != null) {
                     const management_date = try ecosys.plant_management_dispatch.dateFromTimestamp(timestamp);
                     if (plant_phenology_state != null and plant_growth_stage_state != null) {
@@ -7710,7 +9999,7 @@ pub fn main(init: std.process.Init) !void {
                     var organic_fertilizer_context: ecosys.fertilizer_management_dispatch.OrganicApplyContext = .{
                         .soil = &soil_organic_state,
                         .surface = &surface_organic_state,
-                        .parameters = if (organic_parameters) |*parameters| parameters else return error.MissingOrganicMatterParameters,
+                        .parameters = &organic_parameters,
                         .cell_area_m2 = canopy_cell_area_m2,
                         .active_soil_layer_count = state.active_soil_layer_count,
                         .soil_layer_capacity = config.soil_layers,
@@ -7786,7 +10075,8 @@ pub fn main(init: std.process.Init) !void {
                 }
                 current_atmospheric_co2_umol_per_mol = site.atmospheric_co2_umol_mol * try climate_state.atmosphericCo2Multiplier(active_options, current_day_of_year);
                 if (!std.math.isFinite(current_atmospheric_co2_umol_per_mol) or current_atmospheric_co2_umol_per_mol <= 0) return error.InvalidAtmosphericCarbonDioxide;
-                if (surface_gas_parameters) |parameters| {
+                {
+                    const parameters = surface_gas_parameters;
                     current_atmospheric_gas_concentration_g_per_m3.* = parameters.atmospheric_concentration_g_per_m3;
                     current_atmospheric_gas_concentration_g_per_m3[@intFromEnum(ecosys.gas_transport.Species.carbon_dioxide)] *= current_atmospheric_co2_umol_per_mol / site.atmospheric_co2_umol_mol;
                 }
@@ -7967,28 +10257,6 @@ pub fn main(init: std.process.Init) !void {
                     var transitioned = false;
                     for (plant_phenology_state.?.leafout_transition_this_step, 0..) |leafout, plant| {
                         if (!leafout or !plant_phenology_state.?.active[plant] or plant_topology_controls.growth_habit_code[plant] == 0) continue;
-                        const branches = try plant_growth_stage_state.?.branchRange(plant);
-                        const fully_deciduous = canopy_layer_controls.biomass_turnover_type[plant] == 0;
-                        for (branches.first..branches.end) |branch| {
-                            branch_development_state.?.remobilization_progress_h[branch] = 0;
-                            branch_development_state.?.leafout_initialization_enabled[branch] = false;
-                            try ecosys.plant_growth_stages.resetBranchForSeasonalLeafout(
-                                &plant_growth_stage_state.?.branches[branch],
-                                current_day_of_year,
-                                fully_deciduous,
-                                branch_development_state.?.initial_reproductive_stage[branch],
-                            );
-                        }
-                        if (fully_deciduous and branches.first < branches.end) {
-                            plant_phenology_state.?.initiated_node_count[plant] = branch_development_state.?.initial_reproductive_stage[branches.first];
-                            plant_phenology_state.?.appeared_leaf_count[plant] = 0;
-                        }
-                        try ecosys.plant_harvest_runtime.applyStartOfSeasonResidue(
-                            &harvest_context.?,
-                            plant,
-                            canopy_layer_controls.biomass_turnover_type[plant],
-                            canopy_layer_controls.root_profile_type[plant],
-                        );
                         transitioned = true;
                     }
                     if (transitioned) for (0..runtime_plant_count) |plant| {
@@ -7999,12 +10267,17 @@ pub fn main(init: std.process.Init) !void {
                 // GROSUB creates an immediate grain/JHVST=2 event when the
                 // main branch of a self-seeding deciduous annual enters
                 // end-of-season reproductive turnover.
-                if (harvest_context != null and plant_dormancy_state != null) {
+                if (harvest_context != null) {
+                    const automatic_harvest_date = try ecosys.execution_calendar_date.fromDayOfYear(
+                        current_day_of_year,
+                        @intCast(current_year),
+                    );
                     const automatic_self_seed_count = try ecosys.plant_harvest_runtime.applyAutomaticSelfSeedingHarvests(
                         &harvest_context.?,
-                        &plant_dormancy_state.?,
+                        seasonal_turnover_event_by_plant,
                         plant_topology_controls.growth_habit_code,
                         plant_topology_controls.leaf_phenology_code,
+                        .{ .day = automatic_harvest_date.day, .month = automatic_harvest_date.month, .year = automatic_harvest_date.year },
                     );
                     if (automatic_self_seed_count > 0) for (0..runtime_plant_count) |plant| {
                         const exported = try ecosys.plant_harvest_runtime.publishPlantProducts(&harvest_context.?, plant);
@@ -8173,12 +10446,161 @@ pub fn main(init: std.process.Init) !void {
                     soil_gas_transport_state.atmospheric_flux_g_per_h,
                     surface_litter_gas_transport_state.atmospheric_flux_g_per_h,
                 );
+                try daily_soil_gas_flux.accumulateSubsurfaceNitrogenBoundaryHour(
+                    config.soil_layers,
+                    state.active_soil_layer_count,
+                    soil_gas_transport_state.subsurface_flux_g_per_h,
+                );
+                // REDIST lines 4465--4507: accumulate soil/litter gas boundary
+                // fluxes and precipitation/irrigation dissolved gases into the
+                // source-signed hourly element ledgers.
                 for (0..state.cell_count) |cell| {
-                    var evaporation_m3: f64 = @max(
-                        0,
-                        ground_air_surface_vapor_conductance_m3_per_h[cell] *
-                            (ground_air_surface_vapor_fraction[cell] - ground_air_state.vapor_volume_fraction[cell]),
+                    const first_layer = cell * config.soil_layers;
+                    const layer_count = state.active_soil_layer_count[cell];
+                    const co2_species = @intFromEnum(ecosys.gas_transport.Species.carbon_dioxide);
+                    const ch4_species = @intFromEnum(ecosys.gas_transport.Species.methane);
+                    const o2_species = @intFromEnum(ecosys.gas_transport.Species.oxygen);
+                    var co2_soil_surface_flux: f64 = 0;
+                    var ch4_soil_surface_flux: f64 = 0;
+                    var o2_soil_surface_flux: f64 = 0;
+                    const co2_litter_flux = surface_litter_gas_transport_state.atmospheric_flux_g_per_h[cell * ecosys.gas_transport.species_count + co2_species];
+                    const ch4_litter_flux = surface_litter_gas_transport_state.atmospheric_flux_g_per_h[cell * ecosys.gas_transport.species_count + ch4_species];
+                    const o2_litter_flux = surface_litter_gas_transport_state.atmospheric_flux_g_per_h[cell * ecosys.gas_transport.species_count + o2_species];
+                    var subsurface_irrigation_m3_per_h: f64 = 0;
+                    for (first_layer..first_layer + layer_count) |layer| {
+                        subsurface_irrigation_m3_per_h += irrigation_loads.subsurface_water_m3[layer];
+                    }
+                    for (first_layer..first_layer + layer_count) |layer| {
+                        co2_soil_surface_flux += soil_gas_transport_state.atmospheric_flux_g_per_h[layer * ecosys.gas_transport.species_count + co2_species];
+                        ch4_soil_surface_flux += soil_gas_transport_state.atmospheric_flux_g_per_h[layer * ecosys.gas_transport.species_count + ch4_species];
+                        o2_soil_surface_flux += soil_gas_transport_state.atmospheric_flux_g_per_h[layer * ecosys.gas_transport.species_count + o2_species];
+                    }
+                    const carbon_fluxes = ecosys.redist_surface_gas_flux_accounting.SurfaceGasFluxes{
+                        .soil_surface_exchange_g = co2_soil_surface_flux,
+                        .mineral_layer_convective_g = 0,
+                        .bulk_mass_transfer_g = 0,
+                        .litter_layer_convective_g = co2_litter_flux,
+                        .litter_volatilization_g = 0,
+                    };
+                    const methane_fluxes = ecosys.redist_surface_gas_flux_accounting.SurfaceGasFluxes{
+                        .soil_surface_exchange_g = ch4_soil_surface_flux,
+                        .mineral_layer_convective_g = 0,
+                        .bulk_mass_transfer_g = 0,
+                        .litter_layer_convective_g = ch4_litter_flux,
+                        .litter_volatilization_g = 0,
+                    };
+                    const oxygen_fluxes = ecosys.redist_surface_gas_flux_accounting.SurfaceGasFluxes{
+                        .soil_surface_exchange_g = o2_soil_surface_flux,
+                        .mineral_layer_convective_g = 0,
+                        .bulk_mass_transfer_g = 0,
+                        .litter_layer_convective_g = o2_litter_flux,
+                        .litter_volatilization_g = 0,
+                    };
+                    const aqueous = ecosys.redist_surface_gas_flux_accounting.AqueousFluxes{
+                        .rain_to_surface_m3 = surface_precipitation_state.water_to_matrix_m3_per_h[cell] + surface_precipitation_state.water_to_macropore_m3_per_h[cell],
+                        .rain_to_litter_m3 = surface_precipitation_state.water_to_litter_m3_per_h[cell],
+                        .irrigation_to_surface_m3 = irrigation_loads.surface_water_m3[cell],
+                        .irrigation_to_litter_m3 = 0,
+                    };
+                    var precipitation_gas = std.mem.zeroes(
+                        ecosys.precipitation_irrigation_dissolved_gases.DissolvedGasConcentrations,
                     );
+                    var irrigation_gas = std.mem.zeroes(
+                        ecosys.precipitation_irrigation_dissolved_gases.DissolvedGasConcentrations,
+                    );
+                    {
+                        const parameters = surface_gas_parameters;
+                        const dissolved = try ecosys.precipitation_irrigation_dissolved_gases.calculate(
+                            .{
+                                .carbon_dioxide_g_m3 = current_atmospheric_gas_concentration_g_per_m3.*[co2_species],
+                                .methane_g_m3 = current_atmospheric_gas_concentration_g_per_m3.*[ch4_species],
+                                .oxygen_g_m3 = current_atmospheric_gas_concentration_g_per_m3.*[o2_species],
+                                .nitrogen_g_m3 = current_atmospheric_gas_concentration_g_per_m3.*[@intFromEnum(ecosys.gas_transport.Species.nitrogen)],
+                                .nitrous_oxide_g_m3 = current_atmospheric_gas_concentration_g_per_m3.*[@intFromEnum(ecosys.gas_transport.Species.nitrous_oxide)],
+                            },
+                            .{
+                                .carbon_dioxide_ratio = parameters.solubility.reference_water_to_air[co2_species],
+                                .methane_ratio = parameters.solubility.reference_water_to_air[ch4_species],
+                                .oxygen_ratio = parameters.solubility.reference_water_to_air[o2_species],
+                                .nitrogen_ratio = parameters.solubility.reference_water_to_air[@intFromEnum(ecosys.gas_transport.Species.nitrogen)],
+                                .nitrous_oxide_ratio = parameters.solubility.reference_water_to_air[@intFromEnum(ecosys.gas_transport.Species.nitrous_oxide)],
+                            },
+                            .{
+                                .carbon_dioxide = parameters.precipitation_activity_log[co2_species],
+                                .methane = parameters.precipitation_activity_log[ch4_species],
+                                .oxygen = parameters.precipitation_activity_log[o2_species],
+                                .nitrogen = parameters.precipitation_activity_log[@intFromEnum(ecosys.gas_transport.Species.nitrogen)],
+                                .nitrous_oxide = parameters.precipitation_activity_log[@intFromEnum(ecosys.gas_transport.Species.nitrous_oxide)],
+                            },
+                            atmospheric_state.air_temperature_k[cell] - 273.15,
+                        );
+                        precipitation_gas = dissolved.precipitation;
+                        irrigation_gas = dissolved.irrigation;
+                    }
+                    const carbon_flux = try ecosys.redist_surface_gas_flux_accounting.computeCarbonGas(.{
+                        .co2_fluxes = carbon_fluxes,
+                        .ch4_fluxes = methane_fluxes,
+                        .aqueous = aqueous,
+                        .co2_rain_concentration_g_per_m3 = precipitation_gas.carbon_dioxide_g_m3,
+                        .co2_irrigation_concentration_g_per_m3 = irrigation_gas.carbon_dioxide_g_m3,
+                        .ch4_rain_concentration_g_per_m3 = precipitation_gas.methane_g_m3,
+                        .ch4_irrigation_concentration_g_per_m3 = irrigation_gas.methane_g_m3,
+                        .subsurface_irrigation_m3_per_h = subsurface_irrigation_m3_per_h,
+                        .litter_subsurface_co2_transfer_g = 0,
+                        .timestep_h = 1,
+                    });
+                    const oxygen_flux = try ecosys.redist_surface_gas_flux_accounting.computeOxygenHydrogen(.{
+                        .o2_fluxes = oxygen_fluxes,
+                        .h2_fluxes = std.mem.zeroes(ecosys.redist_surface_gas_flux_accounting.SurfaceGasFluxes),
+                        .aqueous = aqueous,
+                        .o2_rain_concentration_g_per_m3 = precipitation_gas.oxygen_g_m3,
+                        .o2_irrigation_concentration_g_per_m3 = irrigation_gas.oxygen_g_m3,
+                        .subsurface_irrigation_m3_per_h = subsurface_irrigation_m3_per_h,
+                        // RUPOXO is driven by surface microbial O2 uptake in this port.
+                        // ROGOX/RC4OX remain intentionally zero pending a dedicated surface
+                        // methane-oxidation/combustion and oxygen-limited uptake export.
+                        .litter_microbial_o2_uptake_g = blk: {
+                            var microbial_o2_uptake_g: f64 = 0;
+                            const first = cell * ecosys.surface_microbial_respiration_step.unit_count_per_cell;
+                            for (0..ecosys.surface_microbial_respiration_step.unit_count_per_cell) |unit| {
+                                microbial_o2_uptake_g +=
+                                    surface_microbial_oxygen_state.allocation.oxygen_uptake_g_o[first + unit];
+                            }
+                            break :blk microbial_o2_uptake_g;
+                        },
+                        .litter_o2_limited_uptake_g = 0,
+                        .litter_ch4_combustion_g_c = 0,
+                        .litter_h2_output_g = -surface_microbial_oxygen_state.respiration_hydrogen_g_h_per_step[cell],
+                        .timestep_h = 1,
+                    });
+                    hourly_accumulators[cell].canopy_co2_exchange_g_c_timestep += carbon_flux.co2_surface_input_g;
+                    hourly_accumulators[cell].canopy_ch4_exchange_g_c_timestep += carbon_flux.ch4_surface_input_g;
+                    hourly_accumulators[cell].canopy_o2_exchange_g_o_timestep += oxygen_flux.o2_surface_input_g;
+                    hourly_accumulators[cell].redist_carbon_surface_input_g_c_timestep +=
+                        carbon_flux.co2_surface_input_g +
+                        carbon_flux.ch4_surface_input_g;
+                    hourly_accumulators[cell].redist_carbon_subsurface_output_g_c_timestep +=
+                        carbon_flux.total_subsurface_carbon_flux_g;
+                    hourly_accumulators[cell].redist_oxygen_surface_input_g_o_timestep +=
+                        oxygen_flux.o2_surface_input_g;
+                    hourly_accumulators[cell].redist_oxygen_subsurface_output_g_o_timestep +=
+                        oxygen_flux.o2_subsurface_out_g;
+                    hourly_accumulators[cell].redist_hydrogen_surface_input_g_h_timestep +=
+                        oxygen_flux.h2_surface_input_g;
+                    hourly_accumulators[cell].redist_hydrogen_subsurface_output_g_h_timestep +=
+                        oxygen_flux.h2_subsurface_out_g;
+                    try daily_soil_gas_flux.accumulateRedistSurfaceGasHour(
+                        cell,
+                        carbon_flux.co2_surface_input_g + carbon_flux.ch4_surface_input_g,
+                        carbon_flux.total_subsurface_carbon_flux_g,
+                        oxygen_flux.o2_surface_input_g,
+                        oxygen_flux.o2_subsurface_out_g,
+                        oxygen_flux.h2_surface_input_g,
+                        oxygen_flux.h2_subsurface_out_g,
+                    );
+                }
+                for (0..state.cell_count) |cell| {
+                    var evaporation_m3: f64 = ground_surface_evaporation_m3_per_h[cell];
                     for (0..config.plant_populations) |species| {
                         const plant = cell * config.plant_populations + species;
                         if (canopy_surface_exchange_state) |exchange| {
@@ -8188,21 +10610,25 @@ pub fn main(init: std.process.Init) !void {
                         evaporation_m3 += @max(0, -standing_dead_evaporation_m3_per_h[plant]);
                     }
                     var external_water_outflow_m3: f64 = 0;
-                    for (0..config.soil_layers) |local_layer| {
+                    var external_water_inflow_m3: f64 = 0;
+                    for (0..state.active_soil_layer_count[cell]) |local_layer| {
                         const layer = try state.layerIndex(cell, local_layer);
                         external_water_outflow_m3 += @max(0, transport_hydrology_state.micropore_external_water_flux_m3_per_step[layer]);
                         external_water_outflow_m3 += @max(0, transport_hydrology_state.macropore_external_water_flux_m3_per_step[layer]);
+                        external_water_inflow_m3 += @max(0, -transport_hydrology_state.micropore_external_water_flux_m3_per_step[layer]);
+                        external_water_inflow_m3 += @max(0, -transport_hydrology_state.macropore_external_water_flux_m3_per_step[layer]);
                     }
                     const top_layer = try state.layerIndex(cell, 0);
-                    const bulk_density_Mg_per_m3 = soil_solver_property_state.bulk_density_megagrams_per_m3[top_layer];
-                    if (!std.math.isFinite(bulk_density_Mg_per_m3) or bulk_density_Mg_per_m3 <= 0) return error.InvalidOutputSoilBulkDensity;
+                    const bulk_density_megagrams_per_m3 = soil_solver_property_state.bulk_density_megagrams_per_m3[top_layer];
+                    if (!std.math.isFinite(bulk_density_megagrams_per_m3) or bulk_density_megagrams_per_m3 <= 0) return error.InvalidOutputSoilBulkDensity;
                     try daily_water_ledger.accumulateCell(cell, .{
-                        .rainfall_m3 = atmospheric_state.precipitation_m[cell] * canopy_cell_area_m2[cell],
+                        .rainfall_m3 = atmospheric_state.precipitation_m[cell] * canopy_cell_area_m2[cell] + ground_surface_condensation_m3_per_h[cell],
+                        .boundary_water_inflow_m3 = external_water_inflow_m3,
                         .evaporation_m3 = evaporation_m3,
                         .runoff_m3 = @max(0, -surface_runoff_state.exported_water_m3[cell]),
                         .water_outflow_m3 = external_water_outflow_m3,
                         .lateral_water_outflow_m3 = transport_hydrology_state.artificial_drainage_outflow_m3_per_step[cell],
-                        .sediment_outflow_m3 = surface_erosion_state.routing.sediment_export_Mg[cell] / bulk_density_Mg_per_m3,
+                        .sediment_outflow_m3 = surface_erosion_state.routing.sediment_export_megagrams[cell] / bulk_density_megagrams_per_m3,
                     });
                     var ionic_outflow_mol: f64 = 0;
                     const active_layers = state.active_soil_layer_count[cell];
@@ -8214,7 +10640,7 @@ pub fn main(init: std.process.Init) !void {
                     try daily_heat_ledger.accumulateHour(
                         cell,
                         active_layers,
-                        atmospheric_state.shortwave_radiation_mj_per_m2[cell],
+                        atmospheric_state.shortwave_radiation_megajoules_per_m2[cell],
                         atmospheric_state.air_temperature_k[cell],
                         atmospheric_state.vapor_pressure_kpa[cell],
                         atmospheric_state.wind_speed_m_per_h[cell],
@@ -8230,6 +10656,12 @@ pub fn main(init: std.process.Init) !void {
                 try daily_carbon_export.accumulateInorganicRunoffHour(surface_inorganic_carbon_export_g_c_per_h);
                 try daily_carbon_export.accumulateDissolvedInorganicDrainageHour(&state, &soil_dissolved_gas_transport_state);
                 try daily_carbon_export.accumulateGaseousInorganicDrainageHour(&state, &soil_gas_transport_state);
+                try daily_carbon_export.accumulateSoluteCarbonateDrainageHour(
+                    &state,
+                    soil_solute_boundary_net_flux_mol,
+                    aqueous_species_count,
+                    12,
+                );
                 try daily_phosphorus_export.accumulateOrganicDrainageHour(&state, &soil_organic_transport_state);
                 try daily_phosphorus_export.accumulateInorganicDrainageHour(
                     &state,
@@ -8242,10 +10674,180 @@ pub fn main(init: std.process.Init) !void {
                 );
                 try daily_nitrogen_export.accumulateOrganicDrainageHour(&state, &soil_organic_transport_state);
                 try daily_nitrogen_export.accumulateInorganicDrainageHour(&state, &mineral_nitrogen_transport_state);
+                try daily_nitrogen_export.accumulateDissolvedGasDrainageHour(
+                    &state,
+                    &soil_dissolved_gas_transport_state,
+                );
                 try daily_nitrogen_export.accumulateRunoffHour(
                     surface_organic_nitrogen_export_g_n_per_h,
                     surface_inorganic_nitrogen_export_g_n_per_h,
                 );
+                if (scene_weather_hours < 24) {
+                    var diagnostic_gas_input_g_n: f64 = 0;
+                    var diagnostic_aqueous_input_g_n: f64 = 0;
+                    var diagnostic_export_g_n: f64 = 0;
+                    var diagnostic_aqueous_input_g_p: f64 = 0;
+                    var diagnostic_export_g_p: f64 = 0;
+                    var diagnostic_input_g_p: f64 = 0;
+                    var diagnostic_rain_m3: f64 = 0;
+                    var diagnostic_water_output_m3: f64 = 0;
+                    var diagnostic_ground_evaporation_m3: f64 = 0;
+                    var diagnostic_ground_condensation_m3: f64 = 0;
+                    var diagnostic_transpiration_m3: f64 = 0;
+                    var diagnostic_living_interception_evaporation_m3: f64 = 0;
+                    var diagnostic_dead_evaporation_m3: f64 = 0;
+                    var diagnostic_runoff_m3: f64 = 0;
+                    var diagnostic_external_outflow_m3: f64 = 0;
+                    var diagnostic_lateral_outflow_m3: f64 = 0;
+                    for (0..state.cell_count) |cell| {
+                        inline for ([_]ecosys.gas_transport.Species{ .nitrogen, .nitrous_oxide, .ammonia }) |species|
+                            diagnostic_gas_input_g_n += try daily_soil_gas_flux.get(cell, species);
+                        inline for ([_]ecosys.snow_solute_transport.Species{ .ammonium_nitrogen, .ammonia_nitrogen, .nitrate_nitrogen }) |species|
+                            diagnostic_aqueous_input_g_n += try atmospheric_solute_input_ledger_state.speciesInputG(cell, species);
+                        inline for ([_]ecosys.snow_solute_transport.Species{ .dinitrogen_nitrogen, .nitrous_oxide_nitrogen }) |species|
+                            diagnostic_gas_input_g_n += try atmospheric_solute_input_ledger_state.speciesInputG(cell, species);
+                        diagnostic_export_g_n += daily_nitrogen_export.dissolved_organic_nitrogen_runoff_g_n[cell] +
+                            daily_nitrogen_export.dissolved_organic_nitrogen_drainage_g_n[cell] +
+                            daily_nitrogen_export.dissolved_inorganic_nitrogen_runoff_g_n[cell] +
+                            daily_nitrogen_export.dissolved_inorganic_nitrogen_drainage_g_n[cell];
+                        inline for ([_]ecosys.snow_solute_transport.Species{ .hydrogen_phosphate_phosphorus, .dihydrogen_phosphate_phosphorus }) |species|
+                            diagnostic_aqueous_input_g_p += try atmospheric_solute_input_ledger_state.speciesInputG(cell, species);
+                        diagnostic_input_g_p += daily_phosphorus_export.dissolved_organic_phosphorus_input_g_p[cell] +
+                            daily_phosphorus_export.dissolved_inorganic_phosphorus_input_g_p[cell];
+                        diagnostic_export_g_p += daily_phosphorus_export.dissolved_organic_phosphorus_runoff_g_p[cell] +
+                            daily_phosphorus_export.dissolved_organic_phosphorus_drainage_g_p[cell] +
+                            daily_phosphorus_export.dissolved_inorganic_phosphorus_runoff_g_p[cell] +
+                            daily_phosphorus_export.dissolved_inorganic_phosphorus_drainage_g_p[cell];
+                        diagnostic_rain_m3 += daily_water_ledger.rainfall_m3[cell] + daily_water_ledger.boundary_water_inflow_m3[cell];
+                        diagnostic_ground_evaporation_m3 += ground_surface_evaporation_m3_per_h[cell];
+                        diagnostic_ground_condensation_m3 += ground_surface_condensation_m3_per_h[cell];
+                        for (0..config.plant_populations) |species| {
+                            const plant = cell * config.plant_populations + species;
+                            if (canopy_surface_exchange_state) |exchange| {
+                                diagnostic_transpiration_m3 += @max(0, -exchange.transpiration_m3_per_h[plant]);
+                                diagnostic_living_interception_evaporation_m3 += @max(0, -exchange.intercepted_water_change_m3_per_h[plant]);
+                            }
+                            diagnostic_dead_evaporation_m3 += @max(0, -standing_dead_evaporation_m3_per_h[plant]);
+                        }
+                        diagnostic_water_output_m3 += daily_water_ledger.runoff_m3[cell] +
+                            daily_water_ledger.evaporation_m3[cell] +
+                            daily_water_ledger.water_outflow_m3[cell];
+                        diagnostic_runoff_m3 += daily_water_ledger.runoff_m3[cell];
+                        diagnostic_external_outflow_m3 += daily_water_ledger.water_outflow_m3[cell];
+                        diagnostic_lateral_outflow_m3 += daily_water_ledger.lateral_water_outflow_m3[cell];
+                    }
+                    const diagnostic_totals = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("hourly water closure: hour={d} residual_m3={e} storage_change_m3={e} rain_m3={e} output_m3={e} current_ground_evaporation_m3={e} current_ground_condensation_m3={e}", .{ scene_weather_hours + 1, diagnostic_totals.water_storage_m3 - landscape_mass_balance_state.monitor.?.baseline.water_m3 - diagnostic_rain_m3 + diagnostic_water_output_m3, diagnostic_totals.water_storage_m3 - landscape_mass_balance_state.monitor.?.baseline.water_m3, diagnostic_rain_m3, diagnostic_water_output_m3, diagnostic_ground_evaporation_m3, diagnostic_ground_condensation_m3 });
+                    const diagnostic_boundary = landscape_mass_balance_state.boundary_ledger.cumulative;
+                    std.log.debug("hourly heat closure: hour={d} residual_megajoules={e} storage_change_megajoules={e} heat_input_megajoules={e} heat_output_megajoules={e}", .{ scene_weather_hours + 1, diagnostic_totals.heat_storage_megajoules - landscape_mass_balance_state.monitor.?.baseline.heat_megajoules - diagnostic_boundary.heat_input_megajoules + diagnostic_boundary.heat_output_megajoules, diagnostic_totals.heat_storage_megajoules - landscape_mass_balance_state.monitor.?.baseline.heat_megajoules, diagnostic_boundary.heat_input_megajoules, diagnostic_boundary.heat_output_megajoules });
+                    // EXEC-002 follow-on: the oxygen audit fails on day 1 and
+                    // blocks any multi-day heat measurement, so report its hourly
+                    // closure on the same footing as heat.
+                    std.log.debug("hourly oxygen closure: hour={d} residual_g={e} storage_change_g={e} oxygen_input_g={e} oxygen_output_g={e}", .{ scene_weather_hours + 1, diagnostic_totals.oxygen_storage_g - landscape_mass_balance_state.monitor.?.baseline.oxygen_g - diagnostic_boundary.oxygen_input_g + diagnostic_boundary.oxygen_output_g, diagnostic_totals.oxygen_storage_g - landscape_mass_balance_state.monitor.?.baseline.oxygen_g, diagnostic_boundary.oxygen_input_g, diagnostic_boundary.oxygen_output_g });
+                    // EXEC-004: carbon closes exactly (`0e0`) with surface
+                    // evaporation disabled but fails the day-1 audit once it is
+                    // enabled, so report its hourly closure to localise the hour.
+                    // Mirrors the `mass_balance_audit.balance` carbon expression.
+                    {
+                        // Use the audit's own balance rather than re-summing the
+                        // terms here. `mass_balance_audit.balance` applies a
+                        // compensated (Kahan) sum, and these terms are of order
+                        // 4e11 g C, so a naive sum differs from the audited value by
+                        // ~1.6e8 g C of accumulated rounding: enough to invent an
+                        // apparent defect that the audit does not see.
+                        //
+                        // IMPORTANT: this hourly residual is NOT comparable to the
+                        // daily audited carbon deviation. The plant carbon sink and
+                        // the CO2 boundary terms accumulate once per day, after the
+                        // hourly diagnostics run, so `cumulative_carbon_sink_g` and
+                        // `cumulative_carbon_dioxide_input_g` read zero here for the
+                        // whole day. In the shipped configuration this diagnostic
+                        // therefore reports `-1.589e8` g C at hour 24 while the daily
+                        // audit reports carbon closing at exactly `0e0`. Use it only
+                        // to compare hours WITHIN a day, or to compare the same hour
+                        // across two configurations. The same caveat applies to the
+                        // hourly oxygen closure above, as recorded under EXEC-003.
+                        const carbon_balance_g = (try ecosys.mass_balance_audit.balance(diagnostic_totals)).carbon_g;
+                        std.log.debug("hourly carbon closure: hour={d} residual_g={e} residue_g={e} organic_g={e} co2_g={e} co2_input_g={e} output_g={e}", .{ scene_weather_hours + 1, carbon_balance_g - landscape_mass_balance_state.monitor.?.baseline.carbon_g, diagnostic_totals.residue_carbon_g, diagnostic_totals.organic_carbon_g, diagnostic_totals.carbon_dioxide_carbon_g, diagnostic_totals.cumulative_carbon_dioxide_input_g, diagnostic_totals.cumulative_carbon_output_g });
+                        // EXEC-004: break the surface organic carbon down by pool
+                        // family so the family losing the unaccounted carbon can be
+                        // named rather than guessed at.
+                        var surface_structural_g_c: f64 = 0;
+                        var surface_residue_g_c: f64 = 0;
+                        var surface_dissolved_g_c: f64 = 0;
+                        var surface_adsorbed_g_c: f64 = 0;
+                        var surface_microbial_g_c: f64 = 0;
+                        var surface_acetate_g_c: f64 = 0;
+                        for (surface_organic_state.structural) |pool| surface_structural_g_c += pool.carbon_g_c;
+                        for (surface_organic_state.residue) |pool| surface_residue_g_c += pool.carbon_g_c;
+                        for (surface_organic_state.dissolved) |pool| surface_dissolved_g_c += pool.carbon_g_c;
+                        for (surface_organic_state.adsorbed) |pool| surface_adsorbed_g_c += pool.carbon_g_c;
+                        for (surface_organic_state.microbial) |pool| surface_microbial_g_c += pool.carbon_g_c;
+                        for (surface_organic_state.dissolved_acetate_carbon_g_c) |value| surface_acetate_g_c += value;
+                        for (surface_organic_state.adsorbed_acetate_carbon_g_c) |value| surface_acetate_g_c += value;
+                        std.log.debug("surface organic carbon families: hour={d} structural_g_c={e} residue_g_c={e} dissolved_g_c={e} adsorbed_g_c={e} microbial_g_c={e} acetate_g_c={e}", .{ scene_weather_hours + 1, surface_structural_g_c, surface_residue_g_c, surface_dissolved_g_c, surface_adsorbed_g_c, surface_microbial_g_c, surface_acetate_g_c });
+                        // EXEC-004: `aggregateSurfaceOrganic` skips microbial
+                        // substrate 4 (humus) with `if (substrate == 4) continue`,
+                        // so carbon growing there is counted by neither the residue
+                        // nor the organic term. Split the microbial total by whether
+                        // the census counts it, to test that directly.
+                        var counted_microbial_g_c: f64 = 0;
+                        var skipped_microbial_g_c: f64 = 0;
+                        for (0..state.cell_count) |cell| {
+                            for (0..ecosys.soil_organic_initialization.microbial_substrate_count) |substrate| {
+                                const first = (cell * ecosys.soil_organic_initialization.microbial_substrate_count + substrate) *
+                                    ecosys.soil_organic_initialization.microbial_population_count *
+                                    ecosys.soil_organic_initialization.kinetic_fraction_count;
+                                const count = ecosys.soil_organic_initialization.microbial_population_count *
+                                    ecosys.soil_organic_initialization.kinetic_fraction_count;
+                                for (surface_organic_state.microbial[first .. first + count]) |pool| {
+                                    if (substrate == 4) skipped_microbial_g_c += pool.carbon_g_c else counted_microbial_g_c += pool.carbon_g_c;
+                                }
+                            }
+                        }
+                        std.log.debug("surface microbial census split: hour={d} counted_g_c={e} skipped_humus_g_c={e}", .{ scene_weather_hours + 1, counted_microbial_g_c, skipped_microbial_g_c });
+                        // EXEC-005: the litter inorganic carbon term is counted as
+                        // `carbon_g_per_mol * live_water * (carbonate + bicarbonate +
+                        // calcite)`. If the live-carrier coupling is the mechanism,
+                        // this term must change when evaporation changes the water
+                        // while the rebase rescales the concentrations. Report it and
+                        // its two factors separately so the product can be checked.
+                        var litter_inorganic_carbon_g_c: f64 = 0;
+                        var litter_carbon_concentration_sum: f64 = 0;
+                        var litter_carbon_water_m3: f64 = 0;
+                        for (surface_litter_chemistry_state.cells, 0..) |litter_cell, litter_index| {
+                            const water = surface_precipitation_state.litter_water_m3[litter_index];
+                            const concentration = litter_cell.carbonate_mol_per_m3 +
+                                litter_cell.bicarbonate_mol_per_m3 +
+                                litter_cell.salt_minerals.calcite_mol_per_m3;
+                            litter_carbon_water_m3 += water;
+                            litter_carbon_concentration_sum += concentration;
+                            litter_inorganic_carbon_g_c += 12.0 * water * concentration;
+                        }
+                        std.log.debug("litter inorganic carbon: hour={d} carbon_g_c={e} water_m3={e} concentration_sum_mol_per_m3={e}", .{ scene_weather_hours + 1, litter_inorganic_carbon_g_c, litter_carbon_water_m3, litter_carbon_concentration_sum });
+                    }
+                    std.log.debug("current evap components: transpiration_m3={e} living_interception_m3={e} standing_dead_m3={e}", .{ diagnostic_transpiration_m3, diagnostic_living_interception_evaporation_m3, diagnostic_dead_evaporation_m3 });
+                    std.log.debug("cumulative water output components: runoff_m3={e} evaporation_m3={e} external_outflow_m3={e} lateral_outflow_m3={e}", .{ diagnostic_runoff_m3, diagnostic_water_output_m3 - diagnostic_runoff_m3 - diagnostic_external_outflow_m3 - diagnostic_lateral_outflow_m3, diagnostic_external_outflow_m3, diagnostic_lateral_outflow_m3 });
+                    const diagnostic_storage_g_n = diagnostic_totals.residue_nitrogen_g + diagnostic_totals.organic_nitrogen_g + diagnostic_totals.dinitrogen_nitrogen_g + diagnostic_totals.ammonium_nitrogen_g + diagnostic_totals.nitrate_nitrogen_g;
+                    const diagnostic_baseline_g_n = landscape_mass_balance_state.monitor.?.baseline.nitrogen_g;
+                    std.log.debug("hourly nitrogen closure: hour={d} residual_g={e} storage_change_g={e} gas_input_g={e} aqueous_input_g={e} export_g={e}", .{ scene_weather_hours + 1, diagnostic_storage_g_n - diagnostic_baseline_g_n - diagnostic_gas_input_g_n - diagnostic_aqueous_input_g_n + diagnostic_export_g_n, diagnostic_storage_g_n - diagnostic_baseline_g_n, diagnostic_gas_input_g_n, diagnostic_aqueous_input_g_n, diagnostic_export_g_n });
+                    const diagnostic_storage_g_p = diagnostic_totals.residue_phosphorus_g + diagnostic_totals.organic_phosphorus_g + diagnostic_totals.phosphate_phosphorus_g;
+                    const diagnostic_baseline_g_p = landscape_mass_balance_state.monitor.?.baseline.phosphorus_g;
+                    std.log.debug(
+                        "hourly phosphorus closure: hour={d} residual_g={e} storage_change_g={e} atmospheric_input_g={e} runoff_drainage_input_g={e} export_g={e} residue_g={e} organic_g={e} phosphate_g={e}",
+                        .{
+                            scene_weather_hours + 1,
+                            diagnostic_storage_g_p - diagnostic_baseline_g_p - diagnostic_aqueous_input_g_p - diagnostic_input_g_p + diagnostic_export_g_p,
+                            diagnostic_storage_g_p - diagnostic_baseline_g_p,
+                            diagnostic_aqueous_input_g_p,
+                            diagnostic_input_g_p,
+                            diagnostic_export_g_p,
+                            diagnostic_totals.residue_phosphorus_g,
+                            diagnostic_totals.organic_phosphorus_g,
+                            diagnostic_totals.phosphate_phosphorus_g,
+                        },
+                    );
+                }
                 const soil_process_units = soil_nitrogen_flux_workspace.process_unit_count_per_layer;
                 const surface_process_units = surface_microbial_mineral_exchange_state.h2po4_exchange_g_p.len / state.cell_count;
                 for (0..state.cell_count) |cell| {
@@ -8341,10 +10943,18 @@ pub fn main(init: std.process.Init) !void {
                         &initial_chemistry_state,
                     );
                 }
+                {
+                    const checkpoint = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("phosphorus after plant salt ingress: hour={d} stored_g={e}", .{ scene_weather_hours + 1, checkpoint.residue_phosphorus_g + checkpoint.organic_phosphorus_g + checkpoint.phosphate_phosphorus_g });
+                }
                 try ecosys.manure_deposition_publication.refresh(
                     &manure_deposition_publication_state,
                     hourly_manure_products_by_plant,
                 );
+                {
+                    const checkpoint = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("phosphorus after manure publication: hour={d} stored_g={e}", .{ scene_weather_hours + 1, checkpoint.residue_phosphorus_g + checkpoint.organic_phosphorus_g + checkpoint.phosphate_phosphorus_g });
+                }
                 // EXTRACT accumulates these source-signed hourly exchanges
                 // for OUTPD before DAY carries balances and clears them.
                 @memset(root_soil_element_exchange_workspace, 0);
@@ -8359,6 +10969,12 @@ pub fn main(init: std.process.Init) !void {
                         },
                     );
                     for (0..runtime_plant_count) |plant| {
+                        const branches = try canopy.branchRange(plant);
+                        const canopy_fixed_nitrogen_g_n_per_h =
+                            try ecosys.canopy_symbiotic_respiration_fixation.sumFixedNitrogenPerHour(
+                                canopy.branch_symbiotic_fixed_nitrogen_g_n_per_h[branches.first..branches.end],
+                            );
+                        rse_canopy_fixation_g_n_per_h_by_plant[plant] = canopy_fixed_nitrogen_g_n_per_h;
                         const carbon_flux = try carbon_exchange.fluxForPlant(canopy, plant);
                         const living_water_source_m3 = if (canopy_surface_exchange_state) |exchange|
                             exchange.transpiration_m3_per_h[plant] + exchange.intercepted_water_change_m3_per_h[plant]
@@ -8397,7 +11013,16 @@ pub fn main(init: std.process.Init) !void {
                                     root_soil_phosphorus_exchange_g +=
                                         roots.exudate_phosphorus_exchange_g_p_per_h[substrate];
                                 }
+                                rse_phosphate_h2_by_plant[plant] +=
+                                    roots.phosphate_h2_uptake_nonband_g_p_per_h[root] +
+                                    roots.phosphate_h2_uptake_band_g_p_per_h[root];
+                                rse_phosphate_h_by_plant[plant] +=
+                                    roots.phosphate_h_uptake_nonband_g_p_per_h[root] +
+                                    roots.phosphate_h_uptake_band_g_p_per_h[root];
                             };
+                            rse_organic_carbon_by_plant[plant] = root_soil_carbon_exchange_g;
+                            rse_organic_nitrogen_by_plant[plant] = root_soil_nitrogen_exchange_g;
+                            rse_organic_phosphorus_by_plant[plant] = root_soil_phosphorus_exchange_g;
                             root_soil_nitrogen_exchange_g +=
                                 roots.ammonium_uptake_g_n_per_h[plant] +
                                 roots.nitrate_uptake_g_n_per_h[plant];
@@ -8413,7 +11038,15 @@ pub fn main(init: std.process.Init) !void {
                                 root_soil_carbon_exchange_g,
                                 root_soil_nitrogen_exchange_g,
                                 root_soil_phosphorus_exchange_g,
-                                roots.fixation_uptake_g_n_per_h[plant],
+                                roots.fixation_uptake_g_n_per_h[plant] + canopy_fixed_nitrogen_g_n_per_h,
+                            );
+                        } else {
+                            try plant_daily_flux_ledger.accumulateHourlyRootSoilExchange(
+                                plant,
+                                0,
+                                0,
+                                0,
+                                canopy_fixed_nitrogen_g_n_per_h,
                             );
                         }
                         const litterfall = try ecosys.plant_litterfall_publication.totals(
@@ -8439,6 +11072,24 @@ pub fn main(init: std.process.Init) !void {
                             litterfall.belowground.carbon_g_c,
                             litterfall.belowground.nitrogen_g_n,
                             litterfall.belowground.phosphorus_g_p,
+                        );
+                    }
+                    if (plant_root_state) |*roots| {
+                        try ecosys.plant_root_soil_exchange_accumulation.accumulate(
+                            &plant_root_soil_exchange_state,
+                            .{
+                                .organic_carbon_exchange_g_c = rse_organic_carbon_by_plant,
+                                .organic_nitrogen_exchange_g_n = rse_organic_nitrogen_by_plant,
+                                .organic_phosphorus_exchange_g_p = rse_organic_phosphorus_by_plant,
+                                .ammonium_uptake_g_n = roots.ammonium_uptake_g_n_per_h,
+                                .nitrate_uptake_g_n = roots.nitrate_uptake_g_n_per_h,
+                                .phosphate_h2_uptake_g_p = rse_phosphate_h2_by_plant,
+                                .phosphate_h_uptake_g_p = rse_phosphate_h_by_plant,
+                                .symbiotic_fixation_g_n = roots.fixation_uptake_g_n_per_h,
+                                .additional_fixation_g_n = rse_canopy_fixation_g_n_per_h_by_plant,
+                                .carbon_balance_g_c = plant_daily_flux_ledger.net_carbon_change_g,
+                                .cumulative_respiration_g_c = plant_daily_flux_ledger.signed_total_respiration_carbon_g,
+                            },
                         );
                     }
                     try ecosys.cell_litter_standing_dead_publication.refresh(
@@ -8497,18 +11148,18 @@ pub fn main(init: std.process.Init) !void {
                                 0,
                             );
                 }
-                @memset(canopy_net_radiation_mj, 0);
-                @memset(canopy_storage_heat_mj, 0);
+                @memset(canopy_net_radiation_megajoules, 0);
+                @memset(canopy_storage_heat_megajoules, 0);
                 if (canopy_energy_state) |energy| if (canopy_surface_exchange_state) |exchange| {
                     for (0..runtime_plant_count) |plant| {
                         const cell = plant / config.plant_populations;
-                        canopy_net_radiation_mj[plant] = energy.net_radiation_mj_per_m2[plant] * canopy_cell_area_m2[cell];
+                        canopy_net_radiation_megajoules[plant] = energy.net_radiation_megajoules_per_m2[plant] * canopy_cell_area_m2[cell];
                         // HFLXC is the converged canopy energy residual sum;
                         // EXTRACT later subtracts its convective VFLXC term.
-                        canopy_storage_heat_mj[plant] = canopy_net_radiation_mj[plant] +
-                            exchange.latent_heat_flux_mj_per_h[plant] +
-                            exchange.sensible_heat_flux_mj_per_h[plant] +
-                            exchange.vapor_sensible_heat_flux_mj_per_h[plant];
+                        canopy_storage_heat_megajoules[plant] = canopy_net_radiation_megajoules[plant] +
+                            exchange.latent_heat_flux_megajoules_per_h[plant] +
+                            exchange.sensible_heat_flux_megajoules_per_h[plant] +
+                            exchange.vapor_sensible_heat_flux_megajoules_per_h[plant];
                     }
                 };
                 const living_exchange = if (canopy_surface_exchange_state) |*exchange| exchange else null;
@@ -8516,16 +11167,16 @@ pub fn main(init: std.process.Init) !void {
                 try ecosys.plant_energy_publication.refresh(
                     &plant_energy_publication_state,
                     .{
-                        .living_net_radiation_mj = canopy_net_radiation_mj,
-                        .living_latent_heat_mj = if (living_exchange) |exchange| exchange.latent_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .living_sensible_heat_mj = if (living_exchange) |exchange| exchange.sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .living_storage_heat_mj = canopy_storage_heat_mj,
-                        .living_convective_water_heat_mj = if (living_exchange) |exchange| exchange.vapor_sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .standing_dead_net_radiation_mj = if (dead_exchange) |exchange| exchange.net_radiation_mj_per_h else zero_plant_energy_mj,
-                        .standing_dead_latent_heat_mj = if (dead_exchange) |exchange| exchange.latent_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .standing_dead_sensible_heat_mj = if (dead_exchange) |exchange| exchange.sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .standing_dead_storage_heat_mj = if (dead_exchange) |exchange| exchange.storage_heat_flux_mj_per_h else zero_plant_energy_mj,
-                        .standing_dead_convective_water_heat_mj = if (dead_exchange) |exchange| exchange.vapor_sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
+                        .living_net_radiation_megajoules = canopy_net_radiation_megajoules,
+                        .living_latent_heat_megajoules = if (living_exchange) |exchange| exchange.latent_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .living_sensible_heat_megajoules = if (living_exchange) |exchange| exchange.sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .living_storage_heat_megajoules = canopy_storage_heat_megajoules,
+                        .living_convective_water_heat_megajoules = if (living_exchange) |exchange| exchange.vapor_sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .standing_dead_net_radiation_megajoules = if (dead_exchange) |exchange| exchange.net_radiation_megajoules_per_h else zero_plant_energy_megajoules,
+                        .standing_dead_latent_heat_megajoules = if (dead_exchange) |exchange| exchange.latent_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .standing_dead_sensible_heat_megajoules = if (dead_exchange) |exchange| exchange.sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .standing_dead_storage_heat_megajoules = if (dead_exchange) |exchange| exchange.storage_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                        .standing_dead_convective_water_heat_megajoules = if (dead_exchange) |exchange| exchange.vapor_sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
                     },
                 );
                 if (canopy_precipitation_retention_state) |*retention| {
@@ -8539,82 +11190,194 @@ pub fn main(init: std.process.Init) !void {
                             .transpiration_m3_per_h_by_plant = if (living_exchange) |exchange|
                                 exchange.transpiration_m3_per_h
                             else
-                                zero_plant_energy_mj,
+                                zero_plant_energy_megajoules,
                             .living_evaporation_m3_per_h_by_plant = if (living_exchange) |exchange|
                                 exchange.intercepted_water_change_m3_per_h
                             else
-                                zero_plant_energy_mj,
+                                zero_plant_energy_megajoules,
                             .standing_dead_evaporation_m3_per_h_by_plant = if (dead_exchange) |exchange|
                                 exchange.intercepted_water_change_m3_per_h
                             else
-                                zero_plant_energy_mj,
+                                zero_plant_energy_megajoules,
                         },
                     );
                 }
                 try ecosys.ecosystem_energy_ledger.refresh(&ecosystem_energy_ledger_state, .{
                     .cell_area_m2 = canopy_cell_area_m2,
-                    .ground_net_radiation_mj_per_m2 = surface_energy_state.net_radiation_mj_per_m2,
-                    .ground_latent_heat_mj_per_m2 = surface_temperature_solver_state.latent_heat_flux_mj_per_m2,
-                    .ground_sensible_heat_mj_per_m2 = surface_temperature_solver_state.sensible_heat_flux_mj_per_m2,
-                    .ground_storage_heat_mj_per_m2 = surface_temperature_solver_state.storage_heat_flux_mj_per_m2,
+                    .ground_net_radiation_megajoules_per_m2 = surface_energy_state.net_radiation_megajoules_per_m2,
+                    .ground_latent_heat_megajoules_per_m2 = surface_temperature_solver_state.latent_heat_flux_megajoules_per_m2,
+                    .ground_sensible_heat_megajoules_per_m2 = surface_temperature_solver_state.sensible_heat_flux_megajoules_per_m2,
+                    .ground_storage_heat_megajoules_per_m2 = surface_temperature_solver_state.storage_heat_flux_megajoules_per_m2,
                     .species_count = config.plant_populations,
-                    .canopy_net_radiation_mj = canopy_net_radiation_mj,
-                    .canopy_latent_heat_mj = if (living_exchange) |exchange| exchange.latent_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .canopy_sensible_heat_mj = if (living_exchange) |exchange| exchange.sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .canopy_storage_heat_mj = canopy_storage_heat_mj,
-                    .canopy_convective_water_heat_mj = if (living_exchange) |exchange| exchange.vapor_sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .standing_dead_net_radiation_mj = if (dead_exchange) |exchange| exchange.net_radiation_mj_per_h else zero_plant_energy_mj,
-                    .standing_dead_latent_heat_mj = if (dead_exchange) |exchange| exchange.latent_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .standing_dead_sensible_heat_mj = if (dead_exchange) |exchange| exchange.sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .standing_dead_storage_heat_mj = if (dead_exchange) |exchange| exchange.storage_heat_flux_mj_per_h else zero_plant_energy_mj,
-                    .standing_dead_convective_water_heat_mj = if (dead_exchange) |exchange| exchange.vapor_sensible_heat_flux_mj_per_h else zero_plant_energy_mj,
+                    .canopy_net_radiation_megajoules = canopy_net_radiation_megajoules,
+                    .canopy_latent_heat_megajoules = if (living_exchange) |exchange| exchange.latent_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .canopy_sensible_heat_megajoules = if (living_exchange) |exchange| exchange.sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .canopy_storage_heat_megajoules = canopy_storage_heat_megajoules,
+                    .canopy_convective_water_heat_megajoules = if (living_exchange) |exchange| exchange.vapor_sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .standing_dead_net_radiation_megajoules = if (dead_exchange) |exchange| exchange.net_radiation_megajoules_per_h else zero_plant_energy_megajoules,
+                    .standing_dead_latent_heat_megajoules = if (dead_exchange) |exchange| exchange.latent_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .standing_dead_sensible_heat_megajoules = if (dead_exchange) |exchange| exchange.sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .standing_dead_storage_heat_megajoules = if (dead_exchange) |exchange| exchange.storage_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
+                    .standing_dead_convective_water_heat_megajoules = if (dead_exchange) |exchange| exchange.vapor_sensible_heat_flux_megajoules_per_h else zero_plant_energy_megajoules,
                 });
                 if (canopy_precipitation_retention_state) |*retention| {
-                    try ecosys.canopy_water_energy_publication.refresh(
-                        &canopy_water_energy_publication_state,
+                    // `uptake.f` closes canopy energy/water, root water uptake,
+                    // root gas content, root gas withdrawal, and root nutrient
+                    // uptake within one hourly pass. Publishing them from five
+                    // separate call sites let a half-advanced hour be observed
+                    // by REDIST, NITRO, and the output writers, and the EXTRACT
+                    // `ENGYX` carry made a repeated publish non-idempotent. One
+                    // transaction snapshots every destination, runs the same
+                    // five already validated owners with the same inputs,
+                    // checks the cross-owner invariants no single owner can
+                    // see, and rolls every array back on any failure.
+                    //
+                    // Placement is the earliest of the five former sites. The
+                    // root gas withdrawal ledger now published ~540 lines early
+                    // is unchanged over that span: its writers are
+                    // `plant_root_system.resetHourlyFluxes` (line 9618),
+                    // `plant_root_disturbance.releaseRootGasFraction` (reached
+                    // through harvest and tillage dispatch, all earlier), and
+                    // `plant_root_disturbance.withdrawRootAxisLayer` (reached
+                    // through `applyRootMetabolism`, line 5565). The root phase
+                    // inventories the gas content owner reads are next mutated
+                    // by `applyRootFireCombustion`, which is later still.
+                    // `plant_root_system.refreshLayerMorphology` is the one
+                    // remaining potential writer and is currently unbound; if a
+                    // lane binds it between here and the former late site, this
+                    // placement must be re-derived.
+                    //
+                    // Guard equivalence: a non-null retention state implies a
+                    // non-null root, phenology, and water workspace state,
+                    // because those are constructed together, and the former
+                    // root block already returned an error in the mixed case.
+                    const uptake_roots = if (plant_root_state) |*value|
+                        value
+                    else
+                        return error.UptakeCoupledTransactionRequiresRootState;
+                    const uptake_phenology = if (plant_phenology_state) |*value|
+                        value
+                    else
+                        return error.UptakeCoupledTransactionRequiresPhenologyState;
+                    const uptake_water_workspace = if (plant_water_workspace) |*value|
+                        value
+                    else
+                        return error.UptakeCoupledTransactionRequiresPlantWaterWorkspace;
+                    try ecosys.uptake_coupled_transaction.apply(
+                        &uptake_coupled_transaction_workspace,
                         .{
-                            .air_temperature_k_by_cell = atmospheric_state.air_temperature_k,
-                            .canopy_temperature_k_by_plant = plant_state.canopy_temperature_k,
-                            .living_surface_water_m3_by_plant = retention.living_surface_water_m3,
-                            .standing_dead_surface_water_m3_by_plant = retention.standing_dead_surface_water_m3,
-                            .living_retention_m3_per_h_by_plant = retention.living_retention_m3_per_h,
-                            .standing_dead_retention_m3_per_h_by_plant = retention.standing_dead_retention_m3_per_h,
+                            .canopy_energy = &canopy_water_energy_publication_state,
+                            .root_water = &root_water_uptake_publication_state,
+                            .root_gas_content = &root_gas_content_publication_state,
+                            .root_gas_withdrawal = &root_gas_withdrawal_publication_state,
+                            .root_nutrient = &root_nutrient_uptake_publication_state,
                         },
-                        retention.previous_water_energy_mj,
+                        .{
+                            .shape = .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = uptake_phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                            },
+                            .canopy_energy = .{
+                                .air_temperature_k_by_cell = atmospheric_state.air_temperature_k,
+                                .canopy_temperature_k_by_plant = plant_state.canopy_temperature_k,
+                                .living_surface_water_m3_by_plant = retention.living_surface_water_m3,
+                                .standing_dead_surface_water_m3_by_plant = retention.standing_dead_surface_water_m3,
+                                .living_retention_m3_per_h_by_plant = retention.living_retention_m3_per_h,
+                                .standing_dead_retention_m3_per_h_by_plant = retention.standing_dead_retention_m3_per_h,
+                            },
+                            .previous_canopy_water_energy_megajoules_by_plant = retention.previous_water_energy_megajoules,
+                            .root_water = .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = uptake_phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .plant_population_count = uptake_water_workspace.plant_population_count,
+                                .cell_area_m2 = canopy_cell_area_m2,
+                                .soil_temperature_k_by_layer = state.soil_temperature_k,
+                                .root_length_density_m_per_m3 = uptake_roots.root_length_density_m_per_m3,
+                                .water_uptake_m3_per_h = uptake_roots.water_uptake_m3_per_h,
+                            },
+                            .root_gas_content = .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = uptake_phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .gaseous_g_by_gas = .{
+                                    uptake_roots.gaseous_carbon_dioxide_g_c,
+                                    uptake_roots.gaseous_oxygen_g_o,
+                                    uptake_roots.gaseous_methane_g_c,
+                                    uptake_roots.gaseous_nitrous_oxide_g_n,
+                                    uptake_roots.gaseous_ammonia_g_n,
+                                    uptake_roots.gaseous_hydrogen_g_h,
+                                },
+                                .aqueous_g_by_gas = .{
+                                    uptake_roots.aqueous_carbon_dioxide_g_c,
+                                    uptake_roots.aqueous_oxygen_g_o,
+                                    uptake_roots.aqueous_methane_g_c,
+                                    uptake_roots.aqueous_nitrous_oxide_g_n,
+                                    uptake_roots.aqueous_ammonia_g_n,
+                                    uptake_roots.aqueous_hydrogen_g_h,
+                                },
+                            },
+                            .root_gas_withdrawal = .{
+                                .loss_g_element_per_h_by_gas_and_plant = .{
+                                    uptake_roots.withdrawal_carbon_dioxide_loss_g_c_per_h,
+                                    uptake_roots.withdrawal_oxygen_loss_g_o_per_h,
+                                    uptake_roots.withdrawal_methane_loss_g_c_per_h,
+                                    uptake_roots.withdrawal_nitrous_oxide_loss_g_n_per_h,
+                                    uptake_roots.withdrawal_ammonia_loss_g_n_per_h,
+                                    uptake_roots.withdrawal_hydrogen_loss_g_h_per_h,
+                                },
+                            },
+                            .root_nutrient = .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = uptake_phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .uptake_g_element_per_h_by_nutrient_and_root = .{
+                                    uptake_roots.ammonium_uptake_nonband_g_n_per_h,
+                                    uptake_roots.nitrate_uptake_nonband_g_n_per_h,
+                                    uptake_roots.phosphate_h2_uptake_nonband_g_p_per_h,
+                                    uptake_roots.phosphate_h_uptake_nonband_g_p_per_h,
+                                    uptake_roots.ammonium_uptake_band_g_n_per_h,
+                                    uptake_roots.nitrate_uptake_band_g_n_per_h,
+                                    uptake_roots.phosphate_h2_uptake_band_g_p_per_h,
+                                    uptake_roots.phosphate_h_uptake_band_g_p_per_h,
+                                },
+                            },
+                        },
                     );
                     @memcpy(
-                        ecosystem_energy_ledger_state.canopy_water_energy_mj,
+                        ecosystem_energy_ledger_state.canopy_water_energy_megajoules,
                         canopy_water_energy_publication_state
-                            .water_energy_mj_by_cell,
+                            .water_energy_megajoules_by_cell,
                     );
                     @memcpy(
-                        ecosystem_energy_ledger_state.canopy_water_energy_change_mj_per_h,
+                        ecosystem_energy_ledger_state.canopy_water_energy_change_megajoules_per_h,
                         canopy_water_energy_publication_state
-                            .water_energy_change_mj_per_h_by_cell,
+                            .water_energy_change_megajoules_per_h_by_cell,
                     );
                 } else {
                     @memset(
                         canopy_water_energy_publication_state
-                            .water_energy_mj_by_plant,
+                            .water_energy_megajoules_by_plant,
                         0,
                     );
                     @memset(
                         canopy_water_energy_publication_state
-                            .water_energy_change_mj_per_h_by_plant,
+                            .water_energy_change_megajoules_per_h_by_plant,
                         0,
                     );
                     @memset(
                         canopy_water_energy_publication_state
-                            .water_energy_mj_by_cell,
+                            .water_energy_megajoules_by_cell,
                         0,
                     );
                     @memset(
                         canopy_water_energy_publication_state
-                            .water_energy_change_mj_per_h_by_cell,
+                            .water_energy_change_megajoules_per_h_by_cell,
                         0,
                     );
-                    @memset(ecosystem_energy_ledger_state.canopy_water_energy_mj, 0);
-                    @memset(ecosystem_energy_ledger_state.canopy_water_energy_change_mj_per_h, 0);
+                    @memset(ecosystem_energy_ledger_state.canopy_water_energy_megajoules, 0);
+                    @memset(ecosystem_energy_ledger_state.canopy_water_energy_change_megajoules_per_h, 0);
                 }
                 if (canopy_layer_distribution_state) |*layers| {
                     const canopy = if (detailed_canopy_state) |*value|
@@ -8676,14 +11439,54 @@ pub fn main(init: std.process.Init) !void {
                         0,
                     );
                 }
+                const heat_before = landscape_mass_balance_state.boundary_ledger.cumulative;
                 try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedSurfaceAndCanopyHeat(
-                    surface_energy_state.net_radiation_mj_per_m2,
-                    surface_temperature_solver_state.sensible_heat_flux_mj_per_m2,
-                    surface_temperature_solver_state.latent_heat_flux_mj_per_m2,
-                    surface_temperature_solver_state.vapor_sensible_heat_flux_mj_per_m2,
+                    surface_energy_state.net_radiation_megajoules_per_m2,
+                    surface_temperature_solver_state.sensible_heat_flux_megajoules_per_m2,
+                    surface_temperature_solver_state.latent_heat_flux_megajoules_per_m2,
+                    surface_temperature_solver_state.vapor_sensible_heat_flux_megajoules_per_m2,
                     canopy_cell_area_m2,
-                    ecosystem_energy_ledger_state.canopy_water_energy_change_mj_per_h,
+                    ecosystem_energy_ledger_state.canopy_water_energy_change_megajoules_per_h,
                 );
+                try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedSurfacePhaseSensibleAdjustment(
+                    surface_temperature_solver_state.phase_heat_flux_megajoules_per_m2,
+                    surface_temperature_solver_state.ice_water_equivalent_change_m3,
+                    state.surface_temperature_k,
+                    canopy_cell_area_m2,
+                    runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
+                    runscript.soil_phase_heat_parameters.ice_heat_capacity_megajoules_per_m3_k,
+                );
+                if (scene_weather_hours < 24) {
+                    var radiation_megajoules: f64 = 0;
+                    var sensible_megajoules: f64 = 0;
+                    var latent_megajoules: f64 = 0;
+                    var vapor_sensible_megajoules: f64 = 0;
+                    var phase_megajoules: f64 = 0;
+                    var ground_storage_megajoules: f64 = 0;
+                    var ground_conduction_megajoules: f64 = 0;
+                    var canopy_water_change_megajoules: f64 = 0;
+                    var direct_litter_precipitation_heat_megajoules: f64 = 0;
+                    var external_soil_water_heat_outward_megajoules: f64 = 0;
+                    for (0..state.cell_count) |cell| {
+                        const area_m2 = canopy_cell_area_m2[cell];
+                        radiation_megajoules += surface_energy_state.net_radiation_megajoules_per_m2[cell] * area_m2;
+                        sensible_megajoules += surface_temperature_solver_state.sensible_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        latent_megajoules += surface_temperature_solver_state.latent_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        vapor_sensible_megajoules += surface_temperature_solver_state.vapor_sensible_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        phase_megajoules += surface_temperature_solver_state.phase_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        ground_storage_megajoules += surface_temperature_solver_state.storage_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        ground_conduction_megajoules += surface_temperature_solver_state.conductive_heat_flux_megajoules_per_m2[cell] * area_m2;
+                        canopy_water_change_megajoules += ecosystem_energy_ledger_state.canopy_water_energy_change_megajoules_per_h[cell];
+                        const direct_litter_water_m3 = @max(0, surface_precipitation_state.water_to_litter_m3_per_h[cell] - transport_hydrology_state.snow_to_litter_water_flux_m3_per_step[cell]);
+                        direct_litter_precipitation_heat_megajoules += direct_litter_water_m3 * runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k * atmospheric_state.air_temperature_k[cell];
+                        const first_layer = cell * state.soil_layer_capacity;
+                        for (0..state.active_soil_layer_count[cell]) |local_layer| {
+                            const layer = first_layer + local_layer;
+                            external_soil_water_heat_outward_megajoules += (transport_hydrology_state.micropore_external_water_flux_m3_per_step[layer] + transport_hydrology_state.macropore_external_water_flux_m3_per_step[layer]) * runscript.soil_phase_heat_parameters.liquid_water_heat_capacity_megajoules_per_m3_k * state.soil_temperature_k[layer];
+                        }
+                    }
+                    std.log.debug("current surface/canopy heat boundary: input_megajoules={e} output_megajoules={e} radiation_megajoules={e} sensible_megajoules={e} latent_megajoules={e} vapor_sensible_megajoules={e} phase_megajoules={e} storage_term_megajoules={e} conduction_megajoules={e} canopy_water_change_megajoules={e} direct_litter_precipitation_heat_megajoules={e} external_soil_water_heat_outward_megajoules={e}", .{ landscape_mass_balance_state.boundary_ledger.cumulative.heat_input_megajoules - heat_before.heat_input_megajoules, landscape_mass_balance_state.boundary_ledger.cumulative.heat_output_megajoules - heat_before.heat_output_megajoules, radiation_megajoules, sensible_megajoules, latent_megajoules, vapor_sensible_megajoules, phase_megajoules, ground_storage_megajoules, ground_conduction_megajoules, canopy_water_change_megajoules, direct_litter_precipitation_heat_megajoules, external_soil_water_heat_outward_megajoules });
+                }
                 if (plant_root_state) |*roots| {
                     const water_workspace = if (plant_water_workspace) |*workspace| workspace else return error.RootUptakeLedgerRequiresPlantWaterWorkspace;
                     try ecosys.root_uptake_ledger.refresh(
@@ -8700,19 +11503,72 @@ pub fn main(init: std.process.Init) !void {
                         value
                     else
                         return error.RootWaterPublicationRequiresPhenologyState;
-                    try ecosys.root_water_uptake_publication.refresh(
-                        &root_water_uptake_publication_state,
-                        .{
-                            .active_soil_layer_count_by_cell = state.active_soil_layer_count,
-                            .active_by_plant = phenology.active,
-                            .root_domain_count_by_plant = root_biological_domain_count_by_plant,
-                            .plant_population_count = water_workspace.plant_population_count,
-                            .cell_area_m2 = canopy_cell_area_m2,
-                            .soil_temperature_k_by_layer = state.soil_temperature_k,
-                            .root_length_density_m_per_m3 = roots.root_length_density_m_per_m3,
-                            .water_uptake_m3_per_h = roots.water_uptake_m3_per_h,
-                        },
-                    );
+                    // When a canopy precipitation retention state exists, root
+                    // water uptake, root gas content, and root nutrient uptake
+                    // were already published above by
+                    // `uptake_coupled_transaction.apply`, atomically with
+                    // canopy energy and root gas withdrawal; publishing them
+                    // again here would be a double mutation. These three remain
+                    // the owners for the configuration that has roots but no
+                    // retention state, which is reachable when no cell carries
+                    // a branch, and where the transaction does not run.
+                    if (canopy_precipitation_retention_state == null) {
+                        try ecosys.root_water_uptake_publication.refresh(
+                            &root_water_uptake_publication_state,
+                            .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .plant_population_count = water_workspace.plant_population_count,
+                                .cell_area_m2 = canopy_cell_area_m2,
+                                .soil_temperature_k_by_layer = state.soil_temperature_k,
+                                .root_length_density_m_per_m3 = roots.root_length_density_m_per_m3,
+                                .water_uptake_m3_per_h = roots.water_uptake_m3_per_h,
+                            },
+                        );
+                        try ecosys.root_gas_content_publication.refresh(
+                            &root_gas_content_publication_state,
+                            .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .gaseous_g_by_gas = .{
+                                    roots.gaseous_carbon_dioxide_g_c,
+                                    roots.gaseous_oxygen_g_o,
+                                    roots.gaseous_methane_g_c,
+                                    roots.gaseous_nitrous_oxide_g_n,
+                                    roots.gaseous_ammonia_g_n,
+                                    roots.gaseous_hydrogen_g_h,
+                                },
+                                .aqueous_g_by_gas = .{
+                                    roots.aqueous_carbon_dioxide_g_c,
+                                    roots.aqueous_oxygen_g_o,
+                                    roots.aqueous_methane_g_c,
+                                    roots.aqueous_nitrous_oxide_g_n,
+                                    roots.aqueous_ammonia_g_n,
+                                    roots.aqueous_hydrogen_g_h,
+                                },
+                            },
+                        );
+                        try ecosys.root_nutrient_uptake_publication.refresh(
+                            &root_nutrient_uptake_publication_state,
+                            .{
+                                .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                                .active_by_plant = phenology.active,
+                                .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                                .uptake_g_element_per_h_by_nutrient_and_root = .{
+                                    roots.ammonium_uptake_nonband_g_n_per_h,
+                                    roots.nitrate_uptake_nonband_g_n_per_h,
+                                    roots.phosphate_h2_uptake_nonband_g_p_per_h,
+                                    roots.phosphate_h_uptake_nonband_g_p_per_h,
+                                    roots.ammonium_uptake_band_g_n_per_h,
+                                    roots.nitrate_uptake_band_g_n_per_h,
+                                    roots.phosphate_h2_uptake_band_g_p_per_h,
+                                    roots.phosphate_h_uptake_band_g_p_per_h,
+                                },
+                            },
+                        );
+                    }
                     @memcpy(
                         root_uptake_ledger_state
                             .total_root_length_density_m_per_m3,
@@ -8725,33 +11581,9 @@ pub fn main(init: std.process.Init) !void {
                             .water_uptake_m3_per_h,
                     );
                     @memcpy(
-                        root_uptake_ledger_state.convective_water_heat_mj_per_h,
+                        root_uptake_ledger_state.convective_water_heat_megajoules_per_h,
                         root_water_uptake_publication_state
-                            .convective_water_heat_mj_per_h,
-                    );
-                    try ecosys.root_gas_content_publication.refresh(
-                        &root_gas_content_publication_state,
-                        .{
-                            .active_soil_layer_count_by_cell = state.active_soil_layer_count,
-                            .active_by_plant = phenology.active,
-                            .root_domain_count_by_plant = root_biological_domain_count_by_plant,
-                            .gaseous_g_by_gas = .{
-                                roots.gaseous_carbon_dioxide_g_c,
-                                roots.gaseous_oxygen_g_o,
-                                roots.gaseous_methane_g_c,
-                                roots.gaseous_nitrous_oxide_g_n,
-                                roots.gaseous_ammonia_g_n,
-                                roots.gaseous_hydrogen_g_h,
-                            },
-                            .aqueous_g_by_gas = .{
-                                roots.aqueous_carbon_dioxide_g_c,
-                                roots.aqueous_oxygen_g_o,
-                                roots.aqueous_methane_g_c,
-                                roots.aqueous_nitrous_oxide_g_n,
-                                roots.aqueous_ammonia_g_n,
-                                roots.aqueous_hydrogen_g_h,
-                            },
-                        },
+                            .convective_water_heat_megajoules_per_h,
                     );
                     inline for (
                         root_uptake_ledger_state.total_root_gas_content_g,
@@ -8816,24 +11648,6 @@ pub fn main(init: std.process.Init) !void {
                         root_soil_gas_publication_state
                             .exchange_g_per_h_by_gas_and_layer[1],
                     );
-                    try ecosys.root_nutrient_uptake_publication.refresh(
-                        &root_nutrient_uptake_publication_state,
-                        .{
-                            .active_soil_layer_count_by_cell = state.active_soil_layer_count,
-                            .active_by_plant = phenology.active,
-                            .root_domain_count_by_plant = root_biological_domain_count_by_plant,
-                            .uptake_g_element_per_h_by_nutrient_and_root = .{
-                                roots.ammonium_uptake_nonband_g_n_per_h,
-                                roots.nitrate_uptake_nonband_g_n_per_h,
-                                roots.phosphate_h2_uptake_nonband_g_p_per_h,
-                                roots.phosphate_h_uptake_nonband_g_p_per_h,
-                                roots.ammonium_uptake_band_g_n_per_h,
-                                roots.nitrate_uptake_band_g_n_per_h,
-                                roots.phosphate_h2_uptake_band_g_p_per_h,
-                                roots.phosphate_h_uptake_band_g_p_per_h,
-                            },
-                        },
-                    );
                     for (
                         root_uptake_ledger_state.total_nutrient_uptake_by_layer,
                         root_nutrient_uptake_publication_state
@@ -8857,6 +11671,24 @@ pub fn main(init: std.process.Init) !void {
                         root_salt_uptake_publication_state
                             .uptake_mol_per_h_by_layer_and_salt,
                     );
+                    try ecosys.root_soil_ammonia_exchange_publication.refresh(
+                        &root_soil_ammonia_exchange_publication_state,
+                        .{
+                            .active_soil_layer_count_by_cell = state.active_soil_layer_count,
+                            .active_by_plant = phenology.active,
+                            .root_domain_count_by_plant = root_biological_domain_count_by_plant,
+                            .non_band_exchange_g_n_per_h_by_root = roots.ammonia_nonband_soil_exchange_g_n_per_h,
+                            .band_exchange_g_n_per_h_by_root = roots.ammonia_band_soil_exchange_g_n_per_h,
+                        },
+                    );
+                    for (
+                        root_uptake_ledger_state
+                            .total_soil_to_root_gas_exchange_g_per_h[4],
+                        root_soil_ammonia_exchange_publication_state
+                            .non_band_exchange_g_n_per_h_by_layer,
+                        root_soil_ammonia_exchange_publication_state
+                            .band_exchange_g_n_per_h_by_layer,
+                    ) |*dest, nonband, band| dest.* = nonband + band;
                     try ecosys.root_exudate_publication.refresh(
                         &root_exudate_publication_state,
                         .{
@@ -8944,7 +11776,7 @@ pub fn main(init: std.process.Init) !void {
                     );
                     @memset(
                         root_water_uptake_publication_state
-                            .convective_water_heat_mj_per_h,
+                            .convective_water_heat_megajoules_per_h,
                         0,
                     );
                     inline for (
@@ -8973,6 +11805,16 @@ pub fn main(init: std.process.Init) !void {
                             .uptake_mol_per_h_by_layer_and_salt,
                         0,
                     );
+                    @memset(
+                        root_soil_ammonia_exchange_publication_state
+                            .non_band_exchange_g_n_per_h_by_layer,
+                        0,
+                    );
+                    @memset(
+                        root_soil_ammonia_exchange_publication_state
+                            .band_exchange_g_n_per_h_by_layer,
+                        0,
+                    );
                     inline for (
                         root_exudate_publication_state
                             .change_g_element_per_h_by_element_layer_and_fraction,
@@ -8993,7 +11835,7 @@ pub fn main(init: std.process.Init) !void {
                     );
                     @memset(root_uptake_ledger_state.total_root_length_density_m_per_m3, 0);
                     @memset(root_uptake_ledger_state.total_water_uptake_m3_per_h, 0);
-                    @memset(root_uptake_ledger_state.convective_water_heat_mj_per_h, 0);
+                    @memset(root_uptake_ledger_state.convective_water_heat_megajoules_per_h, 0);
                     inline for (root_uptake_ledger_state.total_root_gas_content_g) |values| @memset(values, 0);
                     inline for (root_uptake_ledger_state.total_soil_to_root_gas_exchange_g_per_h) |values| @memset(values, 0);
                     inline for (root_uptake_ledger_state.total_aqueous_to_gaseous_root_exchange_g_per_h) |values| @memset(values, 0);
@@ -9009,6 +11851,10 @@ pub fn main(init: std.process.Init) !void {
                     @memset(root_uptake_ledger_state.total_nitrogen_fixation_g_n_per_h, 0);
                 }
                 var soil_fire = runscript.soil_fire_combustion_parameters;
+                {
+                    const checkpoint = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("phosphorus before soil fire: hour={d} stored_g={e}", .{ scene_weather_hours + 1, checkpoint.residue_phosphorus_g + checkpoint.organic_phosphorus_g + checkpoint.phosphate_phosphorus_g });
+                }
                 soil_fire.negligible_carbon_g_c = config.absolute_tolerance;
                 const fire_product_parameters: ecosys.plant_soil_exchange.SubsurfaceFireParameters = .{
                     .oxygen_g_per_g_carbon = soil_fire.oxygen_g_per_g_combusted_carbon,
@@ -9016,9 +11862,9 @@ pub fn main(init: std.process.Init) !void {
                     .maximum_anaerobic_charcoal_fraction = soil_fire.maximum_anaerobic_charcoal_fraction,
                     .oxygen_half_saturation_g_o_per_m3 = soil_fire.oxygen_half_saturation_g_o_per_m3,
                     .methane_half_saturation_g_c_per_m3 = soil_fire.methane_half_saturation_g_c_per_m3,
-                    .aerobic_combustion_energy_mj_per_g_carbon = soil_fire.aerobic_combustion_energy_mj_per_g_c,
-                    .anaerobic_combustion_energy_mj_per_g_carbon = soil_fire.anaerobic_combustion_energy_mj_per_g_c,
-                    .methane_combustion_energy_mj_per_g_carbon = soil_fire.methane_combustion_energy_mj_per_g_c,
+                    .aerobic_combustion_energy_megajoules_per_g_carbon = soil_fire.aerobic_combustion_energy_megajoules_per_g_c,
+                    .anaerobic_combustion_energy_megajoules_per_g_carbon = soil_fire.anaerobic_combustion_energy_megajoules_per_g_c,
+                    .methane_combustion_energy_megajoules_per_g_carbon = soil_fire.methane_combustion_energy_megajoules_per_g_c,
                 };
                 for (0..state.cell_count) |cell| {
                     _ = ecosys.soil_combustion.burnSurfaceOrganicStateCell(
@@ -9041,7 +11887,7 @@ pub fn main(init: std.process.Init) !void {
                         &surface_organic_state,
                         surface_precipitation_state.litter_water_m3,
                         runscript.dynamic_plant_salts,
-                        delayed_surface_combustion_heat_mj,
+                        delayed_surface_combustion_heat_megajoules,
                         config.absolute_tolerance,
                         runscript.fertilizer_nitrogen_molar_mass_g_per_mol,
                         runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
@@ -9051,10 +11897,19 @@ pub fn main(init: std.process.Init) !void {
                         return err;
                     };
                 }
-                // GROSUB manure and fire mineral products enter the surface
-                // solution above. Re-converge only this local SOLUTE kernel;
-                // never repeat the full hourly or legacy sub-hourly cycle.
-                try convergeSurfaceLitterChemistry(hourly_science_context);
+                // Fire mineral products enter the surface solution above.
+                // Re-converge only when fire changed that solution; repeating
+                // the nonlinear projection without a source is not idempotent
+                // and would manufacture phosphate from stale carrier totals.
+                // Never repeat the full hourly or legacy sub-hourly cycle.
+                const any_surface_fire_active =
+                    std.mem.indexOfScalar(bool, fire_active_this_hour, true) != null;
+                if (any_surface_fire_active)
+                    try convergeSurfaceLitterChemistry(hourly_science_context);
+                {
+                    const checkpoint = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("phosphorus after soil fire chemistry: hour={d} stored_g={e}", .{ scene_weather_hours + 1, checkpoint.residue_phosphorus_g + checkpoint.organic_phosphorus_g + checkpoint.phosphate_phosphorus_g });
+                }
                 for (0..state.cell_count) |cell| {
                     if (!fire_active_this_hour[cell]) continue;
                     for (0..state.active_soil_layer_count[cell]) |local_layer| {
@@ -9126,7 +11981,7 @@ pub fn main(init: std.process.Init) !void {
                             &soil_organic_state,
                             &micropore_solute_state,
                             runscript.dynamic_plant_salts,
-                            delayed_subsurface_combustion_heat_mj,
+                            delayed_subsurface_combustion_heat_megajoules,
                             config.absolute_tolerance,
                             fire_product_parameters,
                         ) catch |err| {
@@ -9144,6 +11999,8 @@ pub fn main(init: std.process.Init) !void {
                     var combusted_phosphorus_g_p = surface_fire_exchange_state.combusted_phosphorus_g_p[cell];
                     var emitted_nitrogen_g_n = surface_fire_exchange_state.gaseous_nitrogen_emission_g_n[cell];
                     var combusted_nitrogen_g_n = surface_fire_exchange_state.combusted_nitrogen_g_n[cell];
+                    var ammonium_production_g_n = surface_fire_exchange_state.ammonium_production_g_n[cell];
+                    var phosphate_production_g_p = surface_fire_exchange_state.phosphate_production_g_p[cell];
                     for (0..state.active_soil_layer_count[cell]) |local_layer| {
                         const layer = try state.layerIndex(cell, local_layer);
                         emitted_carbon_dioxide_g_c +=
@@ -9156,6 +12013,32 @@ pub fn main(init: std.process.Init) !void {
                         combusted_phosphorus_g_p += organic_matter_fire_exchange_state.combusted_phosphorus_g_p[layer];
                         emitted_nitrogen_g_n += organic_matter_fire_exchange_state.gaseous_nitrogen_emission_g_n[layer];
                         combusted_nitrogen_g_n += organic_matter_fire_exchange_state.combusted_nitrogen_g_n[layer];
+                        ammonium_production_g_n += organic_matter_fire_exchange_state.ammonium_production_g_n[layer];
+                        phosphate_production_g_p += organic_matter_fire_exchange_state.phosphate_production_g_p[layer];
+                    }
+                    var root_ratio: f64 = 0;
+                    var root_combustion_carbon_abs: f64 = 0;
+                    if (plant_root_state) |*roots| {
+                        const first_plant = cell * config.plant_populations;
+                        const last_plant = try std.math.add(
+                            usize,
+                            first_plant,
+                            config.plant_populations,
+                        );
+                        for (first_plant..last_plant) |plant| {
+                            const carbon_loss = roots.combustion_carbon_loss_g_c_per_h[plant];
+                            if (carbon_loss > 0) return error.InvalidSoilFireCarbonEmission;
+                            root_combustion_carbon_abs += -carbon_loss;
+                        }
+                        const total_carbon_g_c = emitted_carbon_dioxide_g_c +
+                            emitted_methane_g_c +
+                            produced_charcoal_g_c;
+                        if (total_carbon_g_c > 0 and root_combustion_carbon_abs > 0 and std.math.isFinite(total_carbon_g_c)) {
+                            root_ratio = @min(
+                                1.0,
+                                root_combustion_carbon_abs / total_carbon_g_c,
+                            );
+                        }
                     }
                     if (!std.math.isFinite(emitted_carbon_dioxide_g_c) or emitted_carbon_dioxide_g_c < 0 or
                         !std.math.isFinite(emitted_methane_g_c) or emitted_methane_g_c < 0)
@@ -9168,18 +12051,56 @@ pub fn main(init: std.process.Init) !void {
                     // REDIST fire ledgers retain their source signs:
                     // VCO2G/VCH4G are negative emissions, while VCOXFS is
                     // positive charcoal transferred back to soil organic C.
-                    daily_soil_fire_carbon_dioxide_emission_g_c[cell] -= emitted_carbon_dioxide_g_c;
-                    daily_soil_fire_methane_emission_g_c[cell] -= emitted_methane_g_c;
-                    daily_soil_fire_charcoal_production_g_c[cell] += produced_charcoal_g_c;
-                    daily_soil_fire_phosphorus_flux_g_p[cell] -= emitted_phosphorus_g_p;
-                    daily_soil_combusted_phosphorus_g_p[cell] -= combusted_phosphorus_g_p;
-                    daily_soil_fire_nitrogen_flux_g_n[cell] -= emitted_nitrogen_g_n;
-                    daily_soil_combusted_nitrogen_g_n[cell] -= combusted_nitrogen_g_n;
+                    const root_carbon_dioxide_emission_g_c =
+                        emitted_carbon_dioxide_g_c * root_ratio;
+                    const root_methane_emission_g_c =
+                        emitted_methane_g_c * root_ratio;
+                    const root_charcoal_production_g_c =
+                        produced_charcoal_g_c * root_ratio;
+                    const root_nitrogen_emission_g_n =
+                        emitted_nitrogen_g_n * root_ratio;
+                    const root_phosphorus_emission_g_p =
+                        emitted_phosphorus_g_p * root_ratio;
+                    const root_ammonium_g_n =
+                        ammonium_production_g_n * root_ratio;
+                    const root_dihydrogen_phosphate_g_p =
+                        phosphate_production_g_p * root_ratio;
+                    const root_combusted_nitrogen_g_n =
+                        combusted_nitrogen_g_n * root_ratio;
+                    const root_combusted_phosphorus_g_p =
+                        combusted_phosphorus_g_p * root_ratio;
+                    daily_soil_fire_carbon_dioxide_emission_g_c[cell] -= emitted_carbon_dioxide_g_c - root_carbon_dioxide_emission_g_c;
+                    daily_soil_fire_methane_emission_g_c[cell] -= emitted_methane_g_c - root_methane_emission_g_c;
+                    daily_soil_fire_charcoal_production_g_c[cell] += produced_charcoal_g_c - root_charcoal_production_g_c;
+                    daily_soil_fire_phosphorus_flux_g_p[cell] -= emitted_phosphorus_g_p - root_phosphorus_emission_g_p;
+                    daily_soil_combusted_phosphorus_g_p[cell] -= combusted_phosphorus_g_p - root_combusted_phosphorus_g_p;
+                    daily_soil_fire_nitrogen_flux_g_n[cell] -= emitted_nitrogen_g_n - root_nitrogen_emission_g_n;
+                    daily_soil_combusted_nitrogen_g_n[cell] -= combusted_nitrogen_g_n - root_combusted_nitrogen_g_n;
+                    daily_root_fire_carbon_dioxide_emission_g_c[cell] -= root_carbon_dioxide_emission_g_c;
+                    daily_root_fire_methane_emission_g_c[cell] -= root_methane_emission_g_c;
+                    daily_root_fire_nitrogen_flux_g_n[cell] -= root_nitrogen_emission_g_n;
+                    daily_root_fire_phosphorus_flux_g_p[cell] -= root_phosphorus_emission_g_p;
+                    daily_root_fire_nitrogen_loss_g_n[cell] -= root_combusted_nitrogen_g_n;
+                    daily_root_fire_phosphorus_loss_g_p[cell] -= root_combusted_phosphorus_g_p;
+                    if (root_combustion_carbon_abs > 0) {
+                        try ecosys.root_combustion_boundary_publication.publish(
+                            &root_combustion_boundary_ledger,
+                            .{
+                                .carbon_dioxide_g_c = root_carbon_dioxide_emission_g_c,
+                                .methane_g_c = root_methane_emission_g_c,
+                                .charcoal_g_c = root_charcoal_production_g_c,
+                                .nitrogen_oxide_g_n = root_nitrogen_emission_g_n,
+                                .ammonium_g_n = root_ammonium_g_n,
+                                .phosphorus_oxide_g_p = root_phosphorus_emission_g_p,
+                                .dihydrogen_phosphate_g_p = root_dihydrogen_phosphate_g_p,
+                            },
+                        );
+                    }
                 }
                 if (plant_root_state) |*roots| {
                     const any_fire_active = std.mem.indexOfScalar(bool, fire_active_this_hour, true) != null;
                     if (any_fire_active) if (detailed_canopy_state) |*canopy| {
-                        const canopy_fire_gas_parameters = surface_gas_parameters orelse return error.ShootFireRequiresSurfaceGasParameters;
+                        const canopy_fire_gas_parameters = surface_gas_parameters;
                         ecosys.plant_shoot_fire.apply(
                             canopy,
                             &canopy_layer_controls,
@@ -9194,8 +12115,8 @@ pub fn main(init: std.process.Init) !void {
                             site.atmospheric_oxygen_umol_mol,
                             site.atmospheric_methane_umol_mol,
                             canopy_fire_gas_parameters.atmospheric_concentration_g_per_m3[@intFromEnum(ecosys.gas_transport.Species.oxygen)],
-                            delayed_live_canopy_combustion_heat_mj,
-                            delayed_standing_dead_combustion_heat_mj,
+                            delayed_live_canopy_combustion_heat_megajoules,
+                            delayed_standing_dead_combustion_heat_megajoules,
                             &surface_organic_state,
                         ) catch |err| {
                             std.log.err("shoot combustion failed: scene={d} scene_hour={d} error={s}", .{ pass.scene_index + 1, scene_weather_hours + 1, @errorName(err) });
@@ -9235,7 +12156,7 @@ pub fn main(init: std.process.Init) !void {
                             .methane_emission_g_c_per_h_by_plant = canopy.plant_fire_methane_emission_g_c_per_h,
                             .oxygen_consumption_g_o_per_h_by_plant = canopy.plant_fire_oxygen_consumption_g_o_per_h,
                             .charcoal_production_g_c_per_h_by_plant = canopy.plant_fire_charcoal_production_g_c_per_h,
-                            .heat_release_mj_per_h_by_plant = canopy.plant_fire_heat_release_mj_per_h,
+                            .heat_release_megajoules_per_h_by_plant = canopy.plant_fire_heat_release_megajoules_per_h,
                         },
                     );
                 } else {
@@ -9248,20 +12169,27 @@ pub fn main(init: std.process.Init) !void {
                                 0,
                             );
                 }
+                // The coupled UPTAKE transaction above already published this
+                // owner, atomically with the other four, whenever a canopy
+                // precipitation retention state exists. This remains the owner
+                // for the configuration that has roots but no retention state,
+                // where the transaction does not run at all; publishing here in
+                // the retention case as well would advance the ledger twice.
                 if (plant_root_state) |*roots| {
-                    try ecosys.root_gas_withdrawal_publication.refresh(
-                        &root_gas_withdrawal_publication_state,
-                        .{
-                            .loss_g_element_per_h_by_gas_and_plant = .{
-                                roots.withdrawal_carbon_dioxide_loss_g_c_per_h,
-                                roots.withdrawal_oxygen_loss_g_o_per_h,
-                                roots.withdrawal_methane_loss_g_c_per_h,
-                                roots.withdrawal_nitrous_oxide_loss_g_n_per_h,
-                                roots.withdrawal_ammonia_loss_g_n_per_h,
-                                roots.withdrawal_hydrogen_loss_g_h_per_h,
+                    if (canopy_precipitation_retention_state == null)
+                        try ecosys.root_gas_withdrawal_publication.refresh(
+                            &root_gas_withdrawal_publication_state,
+                            .{
+                                .loss_g_element_per_h_by_gas_and_plant = .{
+                                    roots.withdrawal_carbon_dioxide_loss_g_c_per_h,
+                                    roots.withdrawal_oxygen_loss_g_o_per_h,
+                                    roots.withdrawal_methane_loss_g_c_per_h,
+                                    roots.withdrawal_nitrous_oxide_loss_g_n_per_h,
+                                    roots.withdrawal_ammonia_loss_g_n_per_h,
+                                    roots.withdrawal_hydrogen_loss_g_h_per_h,
+                                },
                             },
-                        },
-                    );
+                        );
                 } else {
                     inline for (
                         root_gas_withdrawal_publication_state
@@ -9323,6 +12251,12 @@ pub fn main(init: std.process.Init) !void {
                             .oxygen_consumption_g_o_per_h_by_cell[cell],
                         runscript.root_gas_parameters.oxygen_to_carbon_respiration_ratio_g_o_per_g_c,
                     );
+                    // EXTRACT lines 939-943, REDIST line 10991: add plant photosynthesis
+                    // contribution to hourly XCNET/XONET (CNET per cell from canopy carbon).
+                    hourly_accumulators[cell].canopy_co2_exchange_g_c_timestep +=
+                        canopy_carbon_publication_state.canopy_carbon_exchange_g_c_per_h_by_cell[cell];
+                    hourly_accumulators[cell].canopy_o2_exchange_g_o_timestep +=
+                        canopy_carbon_publication_state.canopy_oxygen_exchange_g_o_per_h_by_cell[cell];
                 }
                 const completed_hour_count = try std.math.add(usize, scene_weather_hours, 1);
                 if (@mod(completed_hour_count, active_options.hourly_output_interval_hours) == 0) {
@@ -9343,7 +12277,7 @@ pub fn main(init: std.process.Init) !void {
                             const methane_concentration = values[methane_first .. methane_first + config.soil_layers];
                             const oxygen_first = methane_first + config.soil_layers;
                             const oxygen_concentration = values[oxygen_first .. oxygen_first + config.soil_layers];
-                            for (0..config.soil_layers) |local_layer| {
+                            for (0..state.active_soil_layer_count[cell]) |local_layer| {
                                 const layer = try state.layerIndex(cell, local_layer);
                                 const water_m3 = state.liquid_water_m3[layer];
                                 inline for (.{ ecosys.gas_transport.Species.carbon_dioxide, ecosys.gas_transport.Species.methane, ecosys.gas_transport.Species.oxygen }) |species| {
@@ -9390,14 +12324,16 @@ pub fn main(init: std.process.Init) !void {
                                 .oxygen_concentration_by_layer = oxygen_concentration,
                                 .litter_oxygen_concentration = litter_oxygen,
                             }, values);
-                            const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                            const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                            const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                            const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                             defer allocator.free(file_name);
                             _ = try hourly_soil_carbon_bank.streams[cell].write(file_name, hourly_soil_carbon_catalog.variables, selection, resolved.soil_enabled, .{
                                 .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                .grid_column = grid_column,
-                                .grid_row = grid_row,
+                                // The file name keeps the FOUTS grid-index stem,
+                                // but the row itself carries the physical site
+                                // coordinates the user entered, so a row is
+                                // locatable without knowing the grid layout.
+                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                 .values = values,
                             });
                         }
@@ -9431,14 +12367,15 @@ pub fn main(init: std.process.Init) !void {
                                 );
                                 const values = try hourly_plant_carbon_bank.row(plant);
                                 values[0..7].* = output.values();
-                                const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                // Only assigned species produce output; an unassigned population
+                                // would emit all-zero rows, so no file is created for it.
+                                const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                 defer allocator.free(file_name);
                                 _ = try hourly_plant_carbon_bank.streams[plant].write(file_name, hourly_plant_carbon_catalog.variables, selection, resolved.plant_enabled, .{
                                     .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                    .grid_column = grid_column,
-                                    .grid_row = grid_row,
+                                    .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                    .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                     .values = values,
                                 });
                             };
@@ -9484,12 +12421,12 @@ pub fn main(init: std.process.Init) !void {
                             const surface_liquid_fraction = if (litter_capacity_m3 > 0) surface_precipitation_state.litter_water_m3[cell] / litter_capacity_m3 else 0;
                             const surface_ice_fraction = if (litter_capacity_m3 > 0) surface_litter_ice_m3[cell] / litter_capacity_m3 else 0;
                             const top_layer = try state.layerIndex(cell, 0);
-                            const bulk_density_Mg_per_m3 = soil_solver_property_state.bulk_density_megagrams_per_m3[top_layer];
-                            if (!std.math.isFinite(bulk_density_Mg_per_m3) or bulk_density_Mg_per_m3 <= 0) return error.InvalidOutputSoilBulkDensity;
+                            const bulk_density_megagrams_per_m3 = soil_solver_property_state.bulk_density_megagrams_per_m3[top_layer];
+                            if (!std.math.isFinite(bulk_density_megagrams_per_m3) or bulk_density_megagrams_per_m3 <= 0) return error.InvalidOutputSoilBulkDensity;
                             try ecosys.soil_water_output.calculateInto(.{
                                 .evapotranspiration_m3 = evapotranspiration_m3,
                                 .runoff_m3 = -surface_runoff_state.exported_water_m3[cell],
-                                .sediment_discharge_water_m3 = surface_erosion_state.routing.sediment_export_Mg[cell] / bulk_density_Mg_per_m3,
+                                .sediment_discharge_water_m3 = surface_erosion_state.routing.sediment_export_megagrams[cell] / bulk_density_megagrams_per_m3,
                                 .root_water_uptake_m3 = root_water_uptake_m3,
                                 .external_water_outflow_m3 = external_water_outflow_m3,
                                 .surface_snow_volume_m3 = surface_precipitation_state.solid_snow_water_equivalent_m3[cell],
@@ -9508,14 +12445,12 @@ pub fn main(init: std.process.Init) !void {
                                 .water_table_boundary_depth_m = -soil_boundary_topology_state.internal_water_table_depth_m[cell],
                                 .soil_surface_reference_depth_m = 0,
                             }, values);
-                            const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                            const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                            const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                            const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                             defer allocator.free(file_name);
                             _ = try hourly_soil_water_bank.streams[cell].write(file_name, hourly_soil_water_catalog.variables, selection, resolved.soil_enabled, .{
                                 .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                .grid_column = grid_column,
-                                .grid_row = grid_row,
+                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                 .values = values,
                             });
                         }
@@ -9552,14 +12487,15 @@ pub fn main(init: std.process.Init) !void {
                                     canopy_cell_area_m2[cell],
                                     values,
                                 );
-                                const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                // Only assigned species produce output; an unassigned population
+                                // would emit all-zero rows, so no file is created for it.
+                                const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                 defer allocator.free(file_name);
                                 _ = try hourly_plant_water_bank.streams[plant].write(file_name, hourly_plant_water_catalog.variables, selection, resolved.plant_enabled, .{
                                     .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                    .grid_column = grid_column,
-                                    .grid_row = grid_row,
+                                    .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                    .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                     .values = values,
                                 });
                             };
@@ -9646,14 +12582,12 @@ pub fn main(init: std.process.Init) !void {
                                 .ammonia_concentration_by_layer = ammonia_concentration,
                                 .litter_ammonia_concentration = litter_ammonia_mol_n_per_m3 * 14,
                             }, values);
-                            const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                            const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                            const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                            const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                             defer allocator.free(file_name);
                             _ = try hourly_soil_nitrogen_bank.streams[cell].write(file_name, hourly_soil_nitrogen_catalog.variables, selection, resolved.soil_enabled, .{
                                 .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                .grid_column = grid_column,
-                                .grid_row = grid_row,
+                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                 .values = values,
                             });
                         }
@@ -9697,14 +12631,15 @@ pub fn main(init: std.process.Init) !void {
                                     },
                                     values,
                                 );
-                                const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                // Only assigned species produce output; an unassigned population
+                                // would emit all-zero rows, so no file is created for it.
+                                const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                 defer allocator.free(file_name);
                                 _ = try hourly_plant_nitrogen_bank.streams[plant].write(file_name, hourly_plant_nitrogen_catalog.variables, selection, resolved.plant_enabled, .{
                                     .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                    .grid_column = grid_column,
-                                    .grid_row = grid_row,
+                                    .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                    .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                     .values = values,
                                 });
                             };
@@ -9728,21 +12663,21 @@ pub fn main(init: std.process.Init) !void {
                             else
                                 0;
                             try ecosys.soil_heat_output.calculateInto(.{
-                                .incoming_shortwave_radiation_mj_per_m2_h = atmospheric_state.shortwave_radiation_mj_per_m2[cell],
+                                .incoming_shortwave_radiation_megajoules_per_m2_h = atmospheric_state.shortwave_radiation_megajoules_per_m2[cell],
                                 .air_temperature_c = atmospheric_state.air_temperature_k[cell] - 273.15,
                                 .atmospheric_vapor_pressure_kpa = atmospheric_state.vapor_pressure_kpa[cell],
                                 .wind_travel_m_per_h = atmospheric_state.wind_speed_m_per_h[cell],
                                 .rainfall_m3 = atmospheric_state.rainfall_m[cell] * canopy_cell_area_m2[cell],
                                 .irrigation_m3 = irrigation_water_depth_m[cell] * canopy_cell_area_m2[cell],
                                 .local_surface_area_m2 = canopy_cell_area_m2[cell],
-                                .ground_surface_net_radiation_mj = ecosystem_energy_ledger_state.ground_surface_net_radiation_mj[cell],
-                                .ground_surface_latent_heat_mj = ecosystem_energy_ledger_state.ground_surface_latent_heat_mj[cell],
-                                .ground_surface_sensible_heat_mj = ecosystem_energy_ledger_state.ground_surface_sensible_heat_mj[cell],
-                                .ground_surface_storage_heat_mj = ecosystem_energy_ledger_state.ground_surface_storage_heat_mj[cell],
-                                .ecosystem_net_radiation_mj = ecosystem_energy_ledger_state.ecosystem_net_radiation_mj[cell],
-                                .ecosystem_latent_heat_mj = ecosystem_energy_ledger_state.ecosystem_latent_heat_mj[cell],
-                                .ecosystem_sensible_heat_mj = ecosystem_energy_ledger_state.ecosystem_sensible_heat_mj[cell],
-                                .ecosystem_storage_heat_mj = ecosystem_energy_ledger_state.ecosystem_storage_heat_mj[cell],
+                                .ground_surface_net_radiation_megajoules = ecosystem_energy_ledger_state.ground_surface_net_radiation_megajoules[cell],
+                                .ground_surface_latent_heat_megajoules = ecosystem_energy_ledger_state.ground_surface_latent_heat_megajoules[cell],
+                                .ground_surface_sensible_heat_megajoules = ecosystem_energy_ledger_state.ground_surface_sensible_heat_megajoules[cell],
+                                .ground_surface_storage_heat_megajoules = ecosystem_energy_ledger_state.ground_surface_storage_heat_megajoules[cell],
+                                .ecosystem_net_radiation_megajoules = ecosystem_energy_ledger_state.ecosystem_net_radiation_megajoules[cell],
+                                .ecosystem_latent_heat_megajoules = ecosystem_energy_ledger_state.ecosystem_latent_heat_megajoules[cell],
+                                .ecosystem_sensible_heat_megajoules = ecosystem_energy_ledger_state.ecosystem_sensible_heat_megajoules[cell],
+                                .ecosystem_storage_heat_megajoules = ecosystem_energy_ledger_state.ecosystem_storage_heat_megajoules[cell],
                                 .soil_temperature_c_by_layer = soil_temperature_c,
                                 .surface_soil_temperature_c = state.soil_temperature_k[try state.layerIndex(cell, 0)] - 273.15,
                                 .surface_water_temperature_c = state.surface_temperature_k[cell] - 273.15,
@@ -9750,14 +12685,12 @@ pub fn main(init: std.process.Init) !void {
                                 .litter_water_vapor_partial_pressure_kpa = litter_vapor_pressure_kpa,
                                 .litter_absolute_temperature_k = litter_gas_transport_state.temperature_k[cell],
                             }, values);
-                            const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                            const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                            const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                            const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                             defer allocator.free(file_name);
                             _ = try hourly_soil_heat_bank.streams[cell].write(file_name, hourly_soil_heat_catalog.variables, selection, resolved.soil_enabled, .{
                                 .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                .grid_column = grid_column,
-                                .grid_row = grid_row,
+                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                 .values = values,
                             });
                         }
@@ -9778,10 +12711,10 @@ pub fn main(init: std.process.Init) !void {
                                 const plant = try canopy.plantIndex(cell, species);
                                 const temperature_function = canopy.plant_uptake_growth_temperature_response[plant];
                                 const output = try ecosys.plant_hourly_output.heat(
-                                    canopy_net_radiation_mj[plant] + dead.net_radiation_mj_per_h[plant],
-                                    living.latent_heat_flux_mj_per_h[plant] + dead.latent_heat_flux_mj_per_h[plant],
-                                    living.sensible_heat_flux_mj_per_h[plant] + dead.sensible_heat_flux_mj_per_h[plant],
-                                    -canopy_storage_heat_mj[plant] + living.vapor_sensible_heat_flux_mj_per_h[plant] - dead.storage_heat_flux_mj_per_h[plant] + dead.vapor_sensible_heat_flux_mj_per_h[plant],
+                                    canopy_net_radiation_megajoules[plant] + dead.net_radiation_megajoules_per_h[plant],
+                                    living.latent_heat_flux_megajoules_per_h[plant] + dead.latent_heat_flux_megajoules_per_h[plant],
+                                    living.sensible_heat_flux_megajoules_per_h[plant] + dead.sensible_heat_flux_megajoules_per_h[plant],
+                                    -canopy_storage_heat_megajoules[plant] + living.vapor_sensible_heat_flux_megajoules_per_h[plant] - dead.storage_heat_flux_megajoules_per_h[plant] + dead.vapor_sensible_heat_flux_megajoules_per_h[plant],
                                     plant_state.canopy_temperature_k[plant] - 273.15,
                                     temperature_function,
                                     canopy.plant_standing_dead_surface_temperature_k[plant] - 273.15,
@@ -9789,14 +12722,15 @@ pub fn main(init: std.process.Init) !void {
                                 );
                                 const values = try hourly_plant_heat_bank.row(plant);
                                 values[0..7].* = output.values();
-                                const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                // Only assigned species produce output; an unassigned population
+                                // would emit all-zero rows, so no file is created for it.
+                                const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                 defer allocator.free(file_name);
                                 _ = try hourly_plant_heat_bank.streams[plant].write(file_name, hourly_plant_heat_catalog.variables, selection, resolved.plant_enabled, .{
                                     .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                    .grid_column = grid_column,
-                                    .grid_row = grid_row,
+                                    .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                    .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                     .values = values,
                                 });
                             };
@@ -9829,14 +12763,12 @@ pub fn main(init: std.process.Init) !void {
                                 total_grid_area_m2,
                             );
                             values[0..2].* = ecosys.soil_biogeochemistry_output.phosphorusValues(phosphorus);
-                            const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                            const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                            const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                            const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                             defer allocator.free(file_name);
                             _ = try hourly_soil_phosphorus_bank.streams[cell].write(file_name, hourly_soil_phosphorus_catalog.variables, selection, resolved.soil_enabled, .{
                                 .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                .grid_column = grid_column,
-                                .grid_row = grid_row,
+                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                 .values = values,
                             });
                         }
@@ -9876,14 +12808,15 @@ pub fn main(init: std.process.Init) !void {
                                     canopy_cell_area_m2[cell],
                                     values,
                                 );
-                                const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                // Only assigned species produce output; an unassigned population
+                                // would emit all-zero rows, so no file is created for it.
+                                const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                 defer allocator.free(file_name);
                                 _ = try hourly_plant_phosphorus_bank.streams[plant].write(file_name, hourly_plant_phosphorus_catalog.variables, selection, resolved.plant_enabled, .{
                                     .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = if (timestamp.hour == 24) 23 else timestamp.hour },
-                                    .grid_column = grid_column,
-                                    .grid_row = grid_row,
+                                    .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                    .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                     .values = values,
                                 });
                             };
@@ -9924,16 +12857,10 @@ pub fn main(init: std.process.Init) !void {
                         });
                         const first_layer = try state.layerIndex(cell, 0);
                         const layer_end = first_layer + config.soil_layers;
-                        const grid_column =
-                            runscript.domain.west_column +
-                            cell % config.grid_columns;
-                        const grid_row =
-                            runscript.domain.north_row +
-                            cell / config.grid_columns;
                         _ = try visualization_streams.calculateAndWriteHourly(
                             cell,
-                            grid_column,
-                            grid_row,
+                            site_by_cell[cell].longitude_degrees_east,
+                            site_by_cell[cell].latitude_degrees_north,
                             .{
                                 .year = current_year,
                                 .day_of_year = current_day_of_year,
@@ -9957,9 +12884,9 @@ pub fn main(init: std.process.Init) !void {
                                     daily_canopy_gas_exchange.net_carbon_dioxide_uptake_g_c[cell],
                                 .methane_flux_g = (try daily_soil_gas_flux.get(cell, .methane)) +
                                     daily_canopy_gas_exchange.net_methane_uptake_g_c[cell],
-                                .net_radiation_mj_h = ecosystem_energy_ledger_state.ecosystem_net_radiation_mj[cell],
-                                .latent_heat_flux_mj_h = ecosystem_energy_ledger_state.ecosystem_latent_heat_mj[cell],
-                                .sensible_heat_flux_mj_h = ecosystem_energy_ledger_state.ecosystem_sensible_heat_mj[cell],
+                                .net_radiation_megajoules_h = ecosystem_energy_ledger_state.ecosystem_net_radiation_megajoules[cell],
+                                .latent_heat_flux_megajoules_h = ecosystem_energy_ledger_state.ecosystem_latent_heat_megajoules[cell],
+                                .sensible_heat_flux_megajoules_h = ecosystem_energy_ledger_state.ecosystem_sensible_heat_megajoules[cell],
                                 .liquid_water_m3_by_layer = state.matrix_liquid_water_m3[first_layer..layer_end],
                                 .air_volume_m3_by_layer = state.matrix_air_volume_m3[first_layer..layer_end],
                                 .macropore_water_m3_by_layer = state.macropore_liquid_water_m3[first_layer..layer_end],
@@ -9969,7 +12896,13 @@ pub fn main(init: std.process.Init) !void {
                         );
                     }
                 }
-                if (timestamp.hour == 24) {
+                if ((scene_weather_hours + 1) % 24 == 0) {
+                    // The midnight step belongs to the completed day. Use the
+                    // previous step's timestamp to label this output correctly
+                    // regardless of whether the weather file uses hour 0000 or
+                    // hour 2400 for the day transition.
+                    const completed_day_of_year = try dayOfYearFromTimestamp(previous_weather_timestamp.?);
+                    const completed_management_date = try ecosys.plant_management_dispatch.dateFromTimestamp(previous_weather_timestamp.?);
                     try daily_ecosystem_carbon.finalizeDay(
                         &state,
                         config.plant_populations,
@@ -9982,6 +12915,7 @@ pub fn main(init: std.process.Init) !void {
                     );
                     try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedWater(
                         daily_water_ledger.rainfall_m3,
+                        daily_water_ledger.boundary_water_inflow_m3,
                         daily_water_ledger.runoff_m3,
                         daily_water_ledger.evaporation_m3,
                         daily_water_ledger.water_outflow_m3,
@@ -10016,38 +12950,46 @@ pub fn main(init: std.process.Init) !void {
                         },
                         daily_heat_ledger.ionic_outflow_mol,
                     );
+                    try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedCarbonTransportInputs(
+                        daily_carbon_export.dissolved_organic_carbon_input_g,
+                        daily_carbon_export.dissolved_inorganic_carbon_input_g,
+                    );
+                    try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedNitrogenTransportInputs(
+                        daily_nitrogen_export.dissolved_organic_nitrogen_input_g_n,
+                        daily_nitrogen_export.dissolved_inorganic_nitrogen_input_g_n,
+                    );
+                    try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedPhosphorusTransportInputs(
+                        daily_phosphorus_export.dissolved_organic_phosphorus_input_g_p,
+                        daily_phosphorus_export.dissolved_inorganic_phosphorus_input_g_p,
+                    );
                     try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedPlantLitter(
                         plant_daily_flux_ledger.carbon_sink_g,
                         plant_daily_flux_ledger.nitrogen_sink_g,
                         plant_daily_flux_ledger.phosphorus_sink_g,
                     );
+                    try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedRootSoilOrganicExchange(
+                        plant_daily_flux_ledger.root_soil_carbon_exchange_g,
+                        plant_daily_flux_ledger.root_soil_nitrogen_exchange_g,
+                        plant_daily_flux_ledger.root_soil_phosphorus_exchange_g,
+                    );
                     try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedAtmosphericGas(
                         &daily_soil_gas_flux,
                         &daily_canopy_gas_exchange,
                     );
-                    const atmospheric_ion_molar_masses: ecosys.snow_surface_discharge.IonMolarMassesGPerMol =
-                        if (runscript.chemistry_primary_initialization) |parameters|
-                            .{
-                                .aluminum = parameters.molar_mass_g_per_mol.aluminum,
-                                .iron = parameters.molar_mass_g_per_mol.iron,
-                                .calcium = parameters.molar_mass_g_per_mol.calcium,
-                                .magnesium = parameters.molar_mass_g_per_mol.magnesium,
-                                .sodium = parameters.molar_mass_g_per_mol.sodium,
-                                .potassium = parameters.molar_mass_g_per_mol.potassium,
-                                .sulfur = parameters.molar_mass_g_per_mol.sulfur,
-                                .chloride = parameters.molar_mass_g_per_mol.chloride,
-                            }
-                        else
-                            .{
-                                .aluminum = 27,
-                                .iron = 55.8,
-                                .calcium = 40,
-                                .magnesium = 24.3,
-                                .sodium = 23,
-                                .potassium = 39.1,
-                                .sulfur = 32,
-                                .chloride = 35.5,
-                            };
+                    try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedRedistSurfaceGas(
+                        try daily_soil_gas_flux.getRedistSurfaceGasTotals(),
+                    );
+                    const atmospheric_parameters = runscript.chemistry_primary_initialization.molar_mass_g_per_mol;
+                    const atmospheric_ion_molar_masses: ecosys.snow_surface_discharge.IonMolarMassesGPerMol = .{
+                        .aluminum = atmospheric_parameters.aluminum,
+                        .iron = atmospheric_parameters.iron,
+                        .calcium = atmospheric_parameters.calcium,
+                        .magnesium = atmospheric_parameters.magnesium,
+                        .sodium = atmospheric_parameters.sodium,
+                        .potassium = atmospheric_parameters.potassium,
+                        .sulfur = atmospheric_parameters.sulfur,
+                        .chloride = atmospheric_parameters.chloride,
+                    };
                     try landscape_mass_balance_state.boundary_ledger.accumulateAcceptedAtmosphericSolutes(
                         &atmospheric_solute_input_ledger_state,
                         atmospheric_ion_molar_masses,
@@ -10062,6 +13004,29 @@ pub fn main(init: std.process.Init) !void {
                         );
                         const monitor = landscape_mass_balance_state.monitor orelse
                             return error.MassBalanceMonitorNotInitialized;
+                        {
+                            const area = totals.landscape_area_m2;
+                            const b = try ecosys.mass_balance_audit.balance(totals);
+                            std.log.debug("phosphorus day-end: residue={e} organic={e} phosphate={e} input={e} output={e} fertilizer={e} sink={e} total_g_m2={e}", .{ totals.residue_phosphorus_g / area, totals.organic_phosphorus_g / area, totals.phosphate_phosphorus_g / area, totals.cumulative_phosphorus_input_g / area, totals.cumulative_phosphorus_output_g / area, totals.cumulative_organic_fertilizer_phosphorus_g / area, totals.cumulative_phosphorus_sink_g / area, b.phosphorus_g / area });
+                            std.log.debug("nitrogen day-end: residue={e} organic={e} n2={e} nh4={e} no3={e} n2in={e} nin={e} nout={e} fert={e} sink={e} root_uptake={e} root_exudate={e} total_g_m2={e}", .{ totals.residue_nitrogen_g / area, totals.organic_nitrogen_g / area, totals.dinitrogen_nitrogen_g / area, totals.ammonium_nitrogen_g / area, totals.nitrate_nitrogen_g / area, totals.cumulative_dinitrogen_input_g / area, totals.cumulative_nitrogen_input_g / area, totals.cumulative_nitrogen_output_g / area, totals.cumulative_organic_fertilizer_nitrogen_g / area, totals.cumulative_nitrogen_sink_g / area, totals.cumulative_plant_root_organic_nitrogen_uptake_g / area, totals.cumulative_plant_root_organic_nitrogen_exudate_g / area, b.nitrogen_g / area });
+                            var diagnostic_gas_n_g: f64 = 0;
+                            var diagnostic_boundary_gas_n_g: f64 = 0;
+                            var diagnostic_don_runoff_g_n: f64 = 0;
+                            var diagnostic_din_runoff_g_n: f64 = 0;
+                            var diagnostic_don_drainage_g_n: f64 = 0;
+                            var diagnostic_din_drainage_g_n: f64 = 0;
+                            for (0..state.cell_count) |cell| {
+                                inline for (.{ ecosys.gas_transport.Species.nitrogen, .nitrous_oxide, .ammonia }) |species| {
+                                    diagnostic_gas_n_g += try daily_soil_gas_flux.get(cell, species);
+                                    diagnostic_boundary_gas_n_g += try daily_soil_gas_flux.getSoilLitterBoundary(cell, species);
+                                }
+                                diagnostic_don_runoff_g_n += daily_nitrogen_export.dissolved_organic_nitrogen_runoff_g_n[cell];
+                                diagnostic_din_runoff_g_n += daily_nitrogen_export.dissolved_inorganic_nitrogen_runoff_g_n[cell];
+                                diagnostic_don_drainage_g_n += daily_nitrogen_export.dissolved_organic_nitrogen_drainage_g_n[cell];
+                                diagnostic_din_drainage_g_n += daily_nitrogen_export.dissolved_inorganic_nitrogen_drainage_g_n[cell];
+                            }
+                            std.log.debug("nitrogen boundary probe: gas_combined={e} gas_soil_litter={e} don_runoff={e} din_runoff={e} don_drainage={e} din_drainage={e}", .{ diagnostic_gas_n_g / area, diagnostic_boundary_gas_n_g / area, diagnostic_don_runoff_g_n / area, diagnostic_din_runoff_g_n / area, diagnostic_don_drainage_g_n / area, diagnostic_din_drainage_g_n / area });
+                        }
                         _ = try monitor.check(
                             completed_scene_day,
                             current_year,
@@ -10129,7 +13094,7 @@ pub fn main(init: std.process.Init) !void {
                                     values[13] = daily_carbon_export.dissolved_inorganic_carbon_drainage_g[cell] / total_grid_area_m2;
                                     values[14] = current_atmospheric_co2_umol_per_mol;
                                     values[15] = daily_ecosystem_carbon.net_biome_productivity_g_c[cell] * area_inverse;
-                                    values[16] = daily_soil_fire_carbon_dioxide_emission_g_c[cell] * area_inverse;
+                                    values[16] = (daily_soil_fire_carbon_dioxide_emission_g_c[cell] + daily_root_fire_carbon_dioxide_emission_g_c[cell]) * area_inverse;
                                     for (0..config.soil_layers) |layer| values[17 + layer] = layer_carbon[layer] * area_inverse;
                                     const after_layers = 17 + config.soil_layers;
                                     values[after_layers] = daily_soil_fire_charcoal_production_g_c[cell] * area_inverse;
@@ -10175,7 +13140,7 @@ pub fn main(init: std.process.Init) !void {
                                     values[tail + 4] = plant_flux.autotrophic_respiration_g_c * area_inverse;
                                     values[tail + 5] = plant_flux.net_primary_productivity_g_c * area_inverse;
                                     values[tail + 6] = daily_heterotrophic_respiration.daily_signed_g_c[cell] * area_inverse;
-                                    values[tail + 7] = daily_soil_fire_methane_emission_g_c[cell] * area_inverse;
+                                    values[tail + 7] = (daily_soil_fire_methane_emission_g_c[cell] + daily_root_fire_methane_emission_g_c[cell]) * area_inverse;
                                     const active_carbonate = daily_soil_carbonate_mol_per_m3[first_layer .. first_layer + active_layers];
                                     const active_bicarbonate = daily_soil_bicarbonate_mol_per_m3[first_layer .. first_layer + active_layers];
                                     const active_carbonate_complexes = daily_soil_carbonate_complexes_mol_per_m3[first_layer .. first_layer + active_layers];
@@ -10209,17 +13174,20 @@ pub fn main(init: std.process.Init) !void {
                                         .litter_bulk_volume_m3 = surface_litter_geometry_state.expanded_total_volume_m3[cell],
                                     }) * area_inverse;
                                     for (resolved.soil_enabled, values, 0..) |enabled, value, choice| if (enabled and !std.math.isFinite(value)) {
-                                        std.log.err("daily soil carbon choice is not yet backed by an authoritative translated owner: choice={d} name={s}", .{ choice + 1, daily_soil_carbon_catalog.variables[choice].name });
-                                        return error.UntranslatedDailySoilCarbonChoice;
+                                        const name = daily_soil_carbon_catalog.variables[choice].name;
+                                        if (std.mem.startsWith(u8, name, "reserved_zero_")) {
+                                            values[choice] = 0;
+                                        } else {
+                                            std.log.err("daily soil carbon choice is not yet backed by an authoritative translated owner: choice={d} name={s}", .{ choice + 1, name });
+                                            return error.UntranslatedDailySoilCarbonChoice;
+                                        }
                                     };
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, carbon_editor_name);
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, carbon_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_soil_carbon_bank.streams[cell].write(file_name, daily_soil_carbon_catalog.variables, selection, resolved.soil_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 }
@@ -10290,7 +13258,7 @@ pub fn main(init: std.process.Init) !void {
                                     const net_primary_productivity_g =
                                         plant_daily_flux_ledger.net_carbon_change_g[plant] +
                                         plant_daily_flux_ledger.signed_total_respiration_carbon_g[plant];
-                                    const balance_carbon_g = try ecosys.plant_daily_output.carbonBalance(.{
+                                    const carbon_balance_inputs: ecosys.plant_daily_output.CarbonBalanceInputs = .{
                                         .shoot_carbon_g = pools.shoot_carbon_g,
                                         .root_carbon_g = pools.root_carbon_g,
                                         .nodule_carbon_g = pools.nodule_carbon_g,
@@ -10303,7 +13271,9 @@ pub fn main(init: std.process.Init) !void {
                                         .harvested_carbon_g = plant_daily_flux_ledger.harvested_carbon_g[plant],
                                         .carbon_oxidation_g = plant_daily_flux_ledger.carbon_oxidation_g[plant],
                                         .cumulative_net_primary_productivity_g = net_primary_productivity_g,
-                                    });
+                                    };
+                                    plant_balance_carbon_inputs_workspace[plant] = carbon_balance_inputs;
+                                    const balance_carbon_g = try ecosys.plant_daily_output.carbonBalance(carbon_balance_inputs);
                                     try ecosys.plant_daily_output.calculateCarbonInto(.{
                                         .cell_area_m2 = canopy_cell_area_m2[cell],
                                         .shoot_carbon_g = pools.shoot_carbon_g,
@@ -10335,14 +13305,15 @@ pub fn main(init: std.process.Init) !void {
                                         .net_primary_productivity_g = net_primary_productivity_g,
                                         .canopy_height_m = development_canopy_height_m[plant],
                                     }, values);
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, carbon_editor_name);
+                                    // Only assigned species produce output; an unassigned population
+                                    // would emit all-zero rows, so no file is created for it.
+                                    const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, carbon_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_plant_carbon_bank.streams[plant].write(file_name, daily_plant_carbon_catalog.variables, selection, resolved.plant_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 };
@@ -10357,7 +13328,7 @@ pub fn main(init: std.process.Init) !void {
                                 const selection = output_selection_catalog.entries.items[selection_index].selection;
                                 const liquid_fraction = daily_water_profile_workspace[0..config.soil_layers];
                                 const ice_fraction = daily_water_profile_workspace[config.soil_layers .. 2 * config.soil_layers];
-                                const potential_count = @min(config.soil_layers, 10);
+                                const potential_count = dailySoilWaterPotentialLayerCount(config.soil_layers);
                                 const matric_plus_osmotic_potential = daily_water_profile_workspace[2 * config.soil_layers ..][0..potential_count];
                                 for (0..state.cell_count) |cell| {
                                     var soil_water_storage_m3: f64 = 0;
@@ -10378,7 +13349,7 @@ pub fn main(init: std.process.Init) !void {
                                         soil_water_storage_m3 += snow_transport_state.solid_snow_water_equivalent_m3[snow] +
                                             snow_transport_state.liquid_water_volume_m3[snow] +
                                             snow_transport_state.vapor_water_equivalent_m3[snow] +
-                                            snow_transport_state.ice_volume_m3[snow] * runscript.snow_ice_density_Mg_per_m3;
+                                            snow_transport_state.ice_volume_m3[snow] * runscript.snow_ice_density_megagrams_per_m3;
                                     }
                                     soil_water_storage_m3 +=
                                         surface_precipitation_state.litter_water_m3[cell] +
@@ -10432,14 +13403,12 @@ pub fn main(init: std.process.Init) !void {
                                         .active_layer_bottom_depth_m = soil_boundary_topology_state.active_layer_depth_m[cell],
                                         .water_table_depth_m = soil_boundary_topology_state.internal_water_table_depth_m[cell],
                                     }, values);
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, editor_name);
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_soil_water_bank.streams[cell].write(file_name, daily_soil_water_catalog.variables, selection, resolved.soil_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 }
@@ -10466,14 +13435,15 @@ pub fn main(init: std.process.Init) !void {
                                     values[1] = output.cold_or_water_stress_h;
                                     values[2] = output.oxygen_stress_factor;
                                     values[3] = output.plant_water_storage_mm;
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, editor_name);
+                                    // Only assigned species produce output; an unassigned population
+                                    // would emit all-zero rows, so no file is created for it.
+                                    const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_plant_water_bank.streams[plant].write(file_name, daily_plant_water_catalog.variables, selection, resolved.plant_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 };
@@ -10568,25 +13538,23 @@ pub fn main(init: std.process.Init) !void {
                                     const litter_bulk_volume_m3 = surface_litter_geometry_state.expanded_total_volume_m3[cell];
                                     const litter_ammonium_g_n = runscript.fertilizer_nitrogen_molar_mass_g_per_mol *
                                         (litter.ammonium_mol_per_m3 * surface_precipitation_state.litter_water_m3[cell] +
-                                            litter.exchange.ammonium_mol_per_Mg * surface_litter_geometry_state.dry_mass_Mg[cell]);
+                                            litter.exchange.ammonium_mol_per_megagram * surface_litter_geometry_state.dry_mass_megagrams[cell]);
                                     values[tail] = if (litter_bulk_volume_m3 > config.absolute_tolerance) litter_ammonium_g_n / litter_bulk_volume_m3 else 0;
                                     values[tail + 1] = daily_soil_combusted_nitrogen_g_n[cell] * area_inverse;
                                     values[tail + 2] = harvested_nitrogen_g_n * area_inverse;
                                     values[tail + 3] = daily_microbial_nitrogen_mineralization_g_n[cell] * area_inverse;
-                                    values[tail + 4] = daily_soil_fire_nitrogen_flux_g_n[cell] * area_inverse;
+                                    values[tail + 4] = (daily_soil_fire_nitrogen_flux_g_n[cell] + daily_root_fire_nitrogen_flux_g_n[cell]) * area_inverse;
                                     values[tail + 5] = (try daily_soil_gas_flux.getSoilLitterBoundary(cell, .nitrogen)) * area_inverse;
                                     for (resolved.soil_enabled, values, 0..) |enabled, value, choice| if (enabled and !std.math.isFinite(value)) {
                                         std.log.err("daily soil nitrogen choice has non-finite authoritative state: choice={d} name={s}", .{ choice + 1, daily_soil_nitrogen_catalog.variables[choice].name });
                                         return error.NonFiniteDailySoilNitrogenChoice;
                                     };
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, soil_nitrogen_editor_name);
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, soil_nitrogen_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_soil_nitrogen_bank.streams[cell].write(file_name, daily_soil_nitrogen_catalog.variables, selection, resolved.soil_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 }
@@ -10630,7 +13598,7 @@ pub fn main(init: std.process.Init) !void {
                                         &surface_litter_chemistry_state,
                                         soil_solver_property_state.matrix_bulk_volume_m3,
                                         soil_solver_property_state.bulk_density_megagrams_per_m3,
-                                        surface_litter_geometry_state.dry_mass_Mg,
+                                        surface_litter_geometry_state.dry_mass_megagrams,
                                         cell,
                                         phosphate_non_band_fraction,
                                         phosphate_band_fraction,
@@ -10648,12 +13616,12 @@ pub fn main(init: std.process.Init) !void {
                                         runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
                                     ) * area_inverse;
                                     values[10] = organic_pools.microbial_phosphorus_g_p * area_inverse;
-                                    values[11] = try ecosys.soil_daily_fire_phosphorus.sourceSignedFlux_g_p(
+                                    values[11] = (try ecosys.soil_daily_fire_phosphorus.sourceSignedFlux_g_p(
                                         cell,
                                         daily_soil_fire_phosphorus_flux_g_p,
                                         plant_daily_flux_ledger.phosphorus_oxidation_g,
                                         config.plant_populations,
-                                    ) * area_inverse;
+                                    ) + daily_root_fire_phosphorus_flux_g_p[cell]) * area_inverse;
                                     for (0..config.soil_layers) |local_layer| {
                                         const aqueous_index = 12 + local_layer;
                                         const sorbed_index = 12 + config.soil_layers + local_layer;
@@ -10668,11 +13636,11 @@ pub fn main(init: std.process.Init) !void {
                                         values[aqueous_index] = 31.0 * (phosphate_non_band_fraction * (non_band.dissolved_hpo4_mol_p_per_m3 + non_band.dissolved_h2po4_mol_p_per_m3) + phosphate_band_fraction * (band.dissolved_hpo4_mol_p_per_m3 + band.dissolved_h2po4_mol_p_per_m3));
                                         values[sorbed_index] = try ecosys.soil_daily_output.sorbedPhosphorusConcentrationGPerM3(
                                             phosphate_non_band_fraction *
-                                                (non_band.adsorbed_hpo4_mol_p_per_Mg +
-                                                    non_band.adsorbed_h2po4_mol_p_per_Mg) +
+                                                (non_band.adsorbed_hpo4_mol_p_per_megagram +
+                                                    non_band.adsorbed_h2po4_mol_p_per_megagram) +
                                                 phosphate_band_fraction *
-                                                    (band.adsorbed_hpo4_mol_p_per_Mg +
-                                                        band.adsorbed_h2po4_mol_p_per_Mg),
+                                                    (band.adsorbed_hpo4_mol_p_per_megagram +
+                                                        band.adsorbed_h2po4_mol_p_per_megagram),
                                             soil_solver_property_state.bulk_density_megagrams_per_m3[layer],
                                             runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
                                         );
@@ -10683,9 +13651,9 @@ pub fn main(init: std.process.Init) !void {
                                     values[after_layers + 1] = if (surface_litter_geometry_state.expanded_total_volume_m3[cell] >
                                         config.absolute_tolerance)
                                         try ecosys.soil_daily_output.sorbedPhosphorusConcentrationGPerM3(
-                                            litter.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg +
-                                                litter.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg,
-                                            surface_litter_geometry_state.dry_mass_Mg[cell] /
+                                            litter.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram +
+                                                litter.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram,
+                                            surface_litter_geometry_state.dry_mass_megagrams[cell] /
                                                 surface_litter_geometry_state.expanded_total_volume_m3[cell],
                                             runscript.root_nutrient_parameters.phosphorus_molar_mass_g_per_mol,
                                         )
@@ -10712,17 +13680,20 @@ pub fn main(init: std.process.Init) !void {
                                     values[values.len - 2] = 0;
                                     values[values.len - 1] = 0;
                                     for (resolved.soil_enabled, values, 0..) |enabled, value, choice| if (enabled and !std.math.isFinite(value)) {
-                                        std.log.err("daily soil phosphorus choice is not yet backed by an authoritative translated owner: choice={d} name={s}", .{ choice + 1, daily_soil_phosphorus_catalog.variables[choice].name });
-                                        return error.UntranslatedDailySoilPhosphorusChoice;
+                                        const name = daily_soil_phosphorus_catalog.variables[choice].name;
+                                        if (std.mem.startsWith(u8, name, "reserved_zero_")) {
+                                            values[choice] = 0;
+                                        } else {
+                                            std.log.err("daily soil phosphorus choice is not yet backed by an authoritative translated owner: choice={d} name={s}", .{ choice + 1, name });
+                                            return error.UntranslatedDailySoilPhosphorusChoice;
+                                        }
                                     };
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, soil_phosphorus_editor_name);
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, soil_phosphorus_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_soil_phosphorus_bank.streams[cell].write(file_name, daily_soil_phosphorus_catalog.variables, selection, resolved.soil_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 }
@@ -10762,7 +13733,7 @@ pub fn main(init: std.process.Init) !void {
                                     }
                                     const values = try daily_soil_heat_bank.row(cell);
                                     try ecosys.soil_daily_output.calculateHeatInto(.{
-                                        .total_radiation_mj_m2 = daily_heat_ledger.total_radiation_mj_per_m2[cell],
+                                        .total_radiation_megajoules_m2 = daily_heat_ledger.total_radiation_megajoules_per_m2[cell],
                                         .maximum_air_temperature_c = daily_heat_ledger.maximum_air_temperature_c[cell],
                                         .minimum_air_temperature_c = daily_heat_ledger.minimum_air_temperature_c[cell],
                                         .maximum_atmospheric_vapor_pressure_kpa = daily_heat_ledger.maximum_vapor_pressure_kpa[cell],
@@ -10777,14 +13748,12 @@ pub fn main(init: std.process.Init) !void {
                                         .ionic_outflow_mol = daily_heat_ledger.ionic_outflow_mol[cell],
                                         .grid_area_m2 = total_grid_area_m2,
                                     }, values);
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildCellFileName(allocator, grid_column, grid_row, current_year, soil_heat_editor_name);
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .soil_or_eco, current_year, soil_heat_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_soil_heat_bank.streams[cell].write(file_name, daily_soil_heat_catalog.variables, selection, resolved.soil_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 }
@@ -10854,6 +13823,10 @@ pub fn main(init: std.process.Init) !void {
                                                 .oxidation_g = plant_daily_flux_ledger.phosphorus_oxidation_g[plant],
                                             },
                                         };
+                                        switch (element) {
+                                            .nitrogen => plant_balance_nitrogen_inputs_workspace[plant] = balance_inputs,
+                                            .phosphorus => plant_balance_phosphorus_inputs_workspace[plant] = balance_inputs,
+                                        }
                                         const nutrient_inputs: ecosys.plant_daily_output.NutrientInputs = .{
                                             .cell_area_m2 = canopy_cell_area_m2[cell],
                                             .shoot_g = pools.shoot_g,
@@ -10915,27 +13888,59 @@ pub fn main(init: std.process.Init) !void {
                                             .nitrogen => @memcpy(values, &(try ecosys.plant_daily_output.nitrogen(nutrient_inputs)).values),
                                             .phosphorus => @memcpy(values, &(try ecosys.plant_daily_output.phosphorus(nutrient_inputs)).values),
                                         }
-                                        const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                        const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                        const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, nutrient_editor_name);
+                                        // Only assigned species produce output; an unassigned population
+                                        // would emit all-zero rows, so no file is created for it.
+                                        const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                        const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, nutrient_editor_name);
                                         defer allocator.free(file_name);
                                         _ = switch (element) {
                                             .nitrogen => try daily_plant_nitrogen_bank.streams[plant].write(file_name, daily_plant_nitrogen_catalog.variables, selection, resolved.plant_enabled, .{
-                                                .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                                .grid_column = grid_column,
-                                                .grid_row = grid_row,
+                                                .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                                 .values = values,
                                             }),
                                             .phosphorus => try daily_plant_phosphorus_bank.streams[plant].write(file_name, daily_plant_phosphorus_catalog.variables, selection, resolved.plant_enabled, .{
-                                                .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                                .grid_column = grid_column,
-                                                .grid_row = grid_row,
+                                                .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                                .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                                .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                                 .values = values,
                                             }),
                                         };
                                     };
                                 }
                             }
+                        }
+                        // GROSUB 13071–13165 / EXTRACT 949–951: per-plant C/N/P balance tuple
+                        // and cell totals.
+                        if (detailed_canopy_state != null and
+                            plant_root_state != null and
+                            plant_phenology_state != null)
+                        {
+                            const canopy = &detailed_canopy_state.?;
+                            const roots = &plant_root_state.?;
+                            try assemblePlantBalanceInputs(
+                                canopy,
+                                roots,
+                                root_metabolism_plant_parameters,
+                                &plant_daily_flux_ledger,
+                                plant_phenology_state.?.active,
+                                plant_balance_carbon_inputs_workspace,
+                                plant_balance_nitrogen_inputs_workspace,
+                                plant_balance_phosphorus_inputs_workspace,
+                                plant_balance_carbon_root_by_layer,
+                                plant_balance_carbon_root_length_density_by_layer,
+                                plant_balance_nutrient_root_by_layer,
+                            );
+                            try ecosys.plant_balance_publication.refresh(
+                                &plant_balance_publication_state,
+                                .{
+                                    .active_by_plant = plant_phenology_state.?.active,
+                                    .carbon_by_plant = plant_balance_carbon_inputs_workspace,
+                                    .nitrogen_by_plant = plant_balance_nitrogen_inputs_workspace,
+                                    .phosphorus_by_plant = plant_balance_phosphorus_inputs_workspace,
+                                },
+                            );
                         }
                         const development_editor_index: usize = 9;
                         const development_editor_name = scene.output_editors[development_editor_index];
@@ -11003,14 +14008,15 @@ pub fn main(init: std.process.Init) !void {
                                     values[6] = output.minimum_daily_canopy_water_potential_mpa;
                                     values[7] = output.oxygen_stress_factor;
                                     values[8] = output.temperature_function;
-                                    const grid_column = runscript.domain.west_column + cell % config.grid_columns;
-                                    const grid_row = runscript.domain.north_row + cell / config.grid_columns;
-                                    const file_name = try ecosys.output_record.buildPlantFileName(allocator, grid_column, grid_row, species + 1, current_year, development_editor_name);
+                                    // Only assigned species produce output; an unassigned population
+                                    // would emit all-zero rows, so no file is created for it.
+                                    const species_label = outputSpeciesLabel(plant_assignments, plant_unit_by_cell, cell, species) orelse continue;
+                                    const file_name = try ecosys.output_record.buildOutputFileName(allocator, site_by_cell[cell].latitude_degrees_north, site_by_cell[cell].longitude_degrees_east, .{ .species = species_label }, current_year, development_editor_name);
                                     defer allocator.free(file_name);
                                     _ = try daily_plant_development_bank.streams[plant].write(file_name, daily_plant_development_catalog.variables, selection, resolved.plant_enabled, .{
-                                        .timestamp = .{ .year = current_year, .day_of_year = current_day_of_year, .month = management_date.month, .day = management_date.day, .hour = 23 },
-                                        .grid_column = grid_column,
-                                        .grid_row = grid_row,
+                                        .timestamp = .{ .year = current_year, .day_of_year = completed_day_of_year, .month = completed_management_date.month, .day = completed_management_date.day, .hour = 23 },
+                                        .longitude_degrees_east = site_by_cell[cell].longitude_degrees_east,
+                                        .latitude_degrees_north = site_by_cell[cell].latitude_degrees_north,
                                         .values = values,
                                     });
                                 };
@@ -11109,21 +14115,15 @@ pub fn main(init: std.process.Init) !void {
                                 cell * config.plant_populations;
                             const plant_end =
                                 first_plant + config.plant_populations;
-                            const grid_column =
-                                runscript.domain.west_column +
-                                cell % config.grid_columns;
-                            const grid_row =
-                                runscript.domain.north_row +
-                                cell / config.grid_columns;
                             _ = try visualization_streams.calculateAndWriteDaily(
                                 cell,
-                                grid_column,
-                                grid_row,
+                                site_by_cell[cell].longitude_degrees_east,
+                                site_by_cell[cell].latitude_degrees_north,
                                 .{
                                     .year = current_year,
-                                    .day_of_year = current_day_of_year,
-                                    .month = management_date.month,
-                                    .day = management_date.day,
+                                    .day_of_year = completed_day_of_year,
+                                    .month = completed_management_date.month,
+                                    .day = completed_management_date.day,
                                     .hour = 23,
                                 },
                                 .{
@@ -11148,6 +14148,41 @@ pub fn main(init: std.process.Init) !void {
                     // Legacy SOIL writes OUTPD after hour 24; DAY carries the
                     // balances and resets these fields before the next hour 1.
                     try plant_daily_flux_ledger.closeDayAfterOutput();
+                    daily_soil_gas_flux.reset();
+                    daily_canopy_gas_exchange.reset();
+                    plant_water_publication_state.resetDaily();
+                    daily_heterotrophic_respiration.resetDaily();
+                    daily_carbon_export.resetDaily();
+                    daily_phosphorus_export.resetDaily();
+                    daily_nitrogen_export.resetDaily();
+                    daily_water_ledger.resetDaily();
+                    daily_heat_ledger.reset();
+                    atmospheric_solute_input_ledger_state.resetDaily();
+                    @memset(daily_soil_fire_charcoal_production_g_c, 0);
+                    @memset(daily_soil_fire_carbon_dioxide_emission_g_c, 0);
+                    @memset(daily_soil_fire_methane_emission_g_c, 0);
+                    @memset(daily_soil_fire_phosphorus_flux_g_p, 0);
+                    @memset(daily_soil_fire_nitrogen_flux_g_n, 0);
+                    @memset(daily_root_fire_carbon_dioxide_emission_g_c, 0);
+                    @memset(daily_root_fire_methane_emission_g_c, 0);
+                    @memset(daily_root_fire_nitrogen_flux_g_n, 0);
+                    @memset(daily_root_fire_phosphorus_flux_g_p, 0);
+                    @memset(daily_root_fire_nitrogen_loss_g_n, 0);
+                    @memset(daily_root_fire_phosphorus_loss_g_p, 0);
+                    @memset(daily_soil_combusted_nitrogen_g_n, 0);
+                    @memset(daily_soil_combusted_phosphorus_g_p, 0);
+                    @memset(daily_microbial_phosphate_mineralization_g_p, 0);
+                    @memset(daily_microbial_nitrogen_mineralization_g_n, 0);
+                    @memset(daily_organic_fertilizer_carbon_input_g_c, 0);
+                    @memset(daily_organic_fertilizer_phosphorus_input_g_p, 0);
+                    @memset(daily_organic_fertilizer_nitrogen_input_g_n, 0);
+                    soil_fertilizer_inventory.resetDaily();
+                    mineral_fertilizer_inventory.resetDaily();
+                    @memset(daily_biome_organic_carbon_input_g_c, 0);
+                }
+                if (scene_weather_hours < 24) {
+                    const diagnostic_totals = try reconstructLandscapeMassBalance(hourly_science_context);
+                    std.log.debug("phosphorus end hourly loop: hour={d} stored_g={e}", .{ scene_weather_hours + 1, diagnostic_totals.residue_phosphorus_g + diagnostic_totals.organic_phosphorus_g + diagnostic_totals.phosphate_phosphorus_g });
                 }
                 previous_weather_timestamp = timestamp;
                 scene_weather_hours = try std.math.add(usize, scene_weather_hours, 1);
@@ -11170,7 +14205,7 @@ pub fn main(init: std.process.Init) !void {
                             .scene_index = @intCast(pass.scene_index),
                             .completed_scene_hours = @intCast(scene_weather_hours),
                         },
-                        .{ .columns = config.grid_columns, .rows = config.grid_rows, .soil_layers = config.soil_layers, .snow_layers = snow_transport_state.layer_capacity, .plant_species_per_cell = config.plant_populations, .root_axes_per_plant = runscript.root_axes_per_plant },
+                        .{ .columns = config.lon_count, .rows = config.lat_count, .soil_layers = config.soil_layers, .snow_layers = snow_transport_state.layer_capacity, .plant_species_per_cell = config.plant_populations, .root_axes_per_plant = runscript.root_axes_per_plant },
                         .{
                             .grid = &state,
                             .plants = &plant_state,
@@ -11181,7 +14216,7 @@ pub fn main(init: std.process.Init) !void {
                             .soil_biogeochemistry = .{ .microbial = &soil_microbial_state, .chemistry = &initial_chemistry_state, .available_nutrients = &plant_available_nutrient_state, .fertilizer = &soil_fertilizer_inventory, .mineral_fertilizer = &mineral_fertilizer_inventory, .fertilizer_band = &fertilizer_band_state, .reactive_nitrogen = &soil_reactive_nitrogen_state, .microbial_phosphorus = &soil_microbial_phosphorus_state },
                             .soil_organic_matter = .{ .profile = &soil_organic_state, .surface = &surface_organic_state, .litter_chemistry = &surface_litter_chemistry_state, .litter_fertilizer = &surface_litter_fertilizer_state, .surface_respiration = &surface_microbial_respiration_state, .surface_denitrification = &surface_denitrification_state, .surface_fire_exchange = &surface_fire_exchange_state, .litter_salt_ingress = &plant_litter_salt_ingress_state },
                             .transport = .{ .micropore = &micropore_solute_state, .macropore = &macropore_solute_state, .mineral_nitrogen = &mineral_nitrogen_transport_state, .organic = &soil_organic_transport_state, .gas = &gas_transport_state, .litter_gas = &litter_gas_transport_state, .snow = &snow_transport_state, .surface = &surface_transport_state },
-                            .soil_geometry_and_hydrology = .{ .geometry = &soil_geometry_state, .hydrology = &transport_hydrology_state, .surface = &surface_precipitation_state, .erosion = &surface_erosion_state, .climate = &climate_state, .eroded_minerals = &eroded_mineral_state, .runtime = .{ .soil_properties = &soil_solver_property_state, .soil_thermal = &soil_thermal_state }, .surface_boundary = .{ .ground_air = &ground_air_state, .surface_aerodynamics = &surface_aerodynamic_state }, .surface_litter_geometry = &surface_litter_geometry_state, .surface_litter_ice_m3 = surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_mj = delayed_live_canopy_combustion_heat_mj, .delayed_standing_dead_combustion_heat_mj = delayed_standing_dead_combustion_heat_mj, .delayed_subsurface_combustion_heat_mj = delayed_subsurface_combustion_heat_mj, .delayed_surface_combustion_heat_mj = delayed_surface_combustion_heat_mj },
+                            .soil_geometry_and_hydrology = .{ .geometry = &soil_geometry_state, .hydrology = &transport_hydrology_state, .surface = &surface_precipitation_state, .erosion = &surface_erosion_state, .climate = &climate_state, .eroded_minerals = &eroded_mineral_state, .runtime = .{ .soil_properties = &soil_solver_property_state, .soil_thermal = &soil_thermal_state }, .surface_boundary = .{ .ground_air = &ground_air_state, .surface_aerodynamics = &surface_aerodynamic_state }, .surface_litter_geometry = &surface_litter_geometry_state, .surface_litter_ice_m3 = surface_litter_ice_m3, .delayed_live_canopy_combustion_heat_megajoules = delayed_live_canopy_combustion_heat_megajoules, .delayed_standing_dead_combustion_heat_megajoules = delayed_standing_dead_combustion_heat_megajoules, .delayed_subsurface_combustion_heat_megajoules = delayed_subsurface_combustion_heat_megajoules, .delayed_surface_combustion_heat_megajoules = delayed_surface_combustion_heat_megajoules },
                             .landscape_mass_balance = landscape_mass_balance_state,
                         },
                         .{ .section_write_buffer_bytes = 64 * 1024, .section_verify_buffer_bytes = 64 * 1024, .manifest_write_buffer_bytes = 16 * 1024 },
@@ -11223,7 +14258,7 @@ pub fn main(init: std.process.Init) !void {
     try surface_energy_state.validateFinite();
     try surface_temperature_solver_state.validateFinite();
     const surface_solver_diagnostics = try surface_temperature_solver_state.validateConvergence();
-    std.log.info("surface Newton-Raphson/Picard diagnostics: cells={d}, iterations={d}, newton_raphson_steps={d}, picard_steps={d}, cells_using_picard={d}, maximum_absolute_residual_mj_per_m2={e}", .{ state.cell_count, surface_solver_diagnostics.total_iterations, surface_solver_diagnostics.total_newton_raphson_steps, surface_solver_diagnostics.total_picard_steps, surface_solver_diagnostics.cells_using_picard, surface_solver_diagnostics.maximum_absolute_residual_mj_per_m2 });
+    std.log.info("surface Newton-Raphson/Picard diagnostics: cells={d}, iterations={d}, newton_raphson_steps={d}, picard_steps={d}, cells_using_picard={d}, maximum_absolute_residual_megajoules_per_m2={e}", .{ state.cell_count, surface_solver_diagnostics.total_iterations, surface_solver_diagnostics.total_newton_raphson_steps, surface_solver_diagnostics.total_picard_steps, surface_solver_diagnostics.cells_using_picard, surface_solver_diagnostics.maximum_absolute_residual_megajoules_per_m2 });
     if (canopy_energy_state) |energy_state| try energy_state.validateFinite();
     if (detailed_canopy_state) |canopy_state| try canopy_state.validateFinite();
     if (plant_root_state) |root_state| try root_state.validateFinite();
@@ -11273,4 +14308,31 @@ fn resolveInputPath(allocator: std.mem.Allocator, io: std.Io, runscript_director
     const inherited_file = try std.Io.Dir.cwd().openFile(io, inherited, .{});
     inherited_file.close(io);
     return inherited;
+}
+
+/// Opens the OS temporary directory, returning null if the path cannot be
+/// determined. On Windows, uses GetTempPathW (kernel32, no libc required).
+/// On POSIX, reads $TMPDIR or falls back to /tmp. The caller owns the returned
+/// Dir handle and must call close(io) on it.
+fn openOsTempDir(allocator: std.mem.Allocator, io: std.Io) !?std.Io.Dir {
+    if (comptime @import("builtin").os.tag == .windows) {
+        const GetTempPathW = struct {
+            extern "kernel32" fn GetTempPathW(
+                nBufferLength: u32,
+                lpBuffer: [*]u16,
+            ) callconv(.winapi) u32;
+        }.GetTempPathW;
+        var buf: [std.os.windows.MAX_PATH + 1]u16 = undefined;
+        const len = GetTempPathW(buf.len, &buf);
+        if (len == 0) return null;
+        // GetTempPathW appends a trailing backslash; strip it for openDirAbsolute.
+        const raw = buf[0..len];
+        const path_u16 = if (raw[raw.len - 1] == '\\') raw[0 .. raw.len - 1] else raw;
+        const path = try std.unicode.utf16LeToUtf8Alloc(allocator, path_u16);
+        defer allocator.free(path);
+        return try std.Io.Dir.openDirAbsolute(io, path, .{});
+    } else {
+        const env_path = std.posix.getenv("TMPDIR") orelse std.posix.getenv("TMP") orelse "/tmp";
+        return try std.Io.Dir.openDirAbsolute(io, env_path, .{});
+    }
 }

@@ -59,14 +59,14 @@ pub const AqueousNutrientRates = struct {
 };
 
 pub const ExchangeRates = struct {
-    ammonium_mol_n_per_Mg_step: f64,
-    hydrogen_mol_per_Mg_step: f64,
-    aluminum_mol_per_Mg_step: f64,
-    iron_mol_per_Mg_step: f64,
-    calcium_mol_per_Mg_step: f64,
-    magnesium_mol_per_Mg_step: f64,
-    sodium_mol_per_Mg_step: f64,
-    potassium_mol_per_Mg_step: f64,
+    ammonium_mol_n_per_megagram_step: f64,
+    hydrogen_mol_per_megagram_step: f64,
+    aluminum_mol_per_megagram_step: f64,
+    iron_mol_per_megagram_step: f64,
+    calcium_mol_per_megagram_step: f64,
+    magnesium_mol_per_megagram_step: f64,
+    sodium_mol_per_megagram_step: f64,
+    potassium_mol_per_megagram_step: f64,
 };
 
 pub const PhosphateMineralRates = struct {
@@ -101,7 +101,7 @@ pub const Inputs = struct {
     aqueous_cation_rates: AqueousCationRates,
     fertilizer_dissolution: FertilizerDissolution,
     litter_water_volume_m3: f64,
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
 };
 
 /// Direct source-order translation of SOLUTE.F lines 5186--5215.
@@ -112,7 +112,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !State {
     try validateInputs(inputs);
     var state = inputs.existing;
     const water_volume = inputs.litter_water_volume_m3;
-    const dry_mass = inputs.litter_dry_mass_Mg;
+    const dry_mass = inputs.litter_dry_mass_megagrams;
     const nutrient = inputs.aqueous_nutrient_rates;
     const exchange = inputs.exchange_rates;
     const mineral = inputs.phosphate_mineral_rates;
@@ -131,21 +131,21 @@ pub fn calculateSourceOrder(inputs: Inputs) !State {
 
     // SOLUTE.F 5190--5197.
     state.exchange.ammonium_mol_n_per_step +=
-        exchange.ammonium_mol_n_per_Mg_step * dry_mass;
+        exchange.ammonium_mol_n_per_megagram_step * dry_mass;
     state.exchange.hydrogen_mol_per_step +=
-        exchange.hydrogen_mol_per_Mg_step * dry_mass;
+        exchange.hydrogen_mol_per_megagram_step * dry_mass;
     state.exchange.aluminum_mol_per_step +=
-        exchange.aluminum_mol_per_Mg_step * dry_mass;
+        exchange.aluminum_mol_per_megagram_step * dry_mass;
     state.exchange.iron_mol_per_step +=
-        exchange.iron_mol_per_Mg_step * dry_mass;
+        exchange.iron_mol_per_megagram_step * dry_mass;
     state.exchange.calcium_mol_per_step +=
-        exchange.calcium_mol_per_Mg_step * dry_mass;
+        exchange.calcium_mol_per_megagram_step * dry_mass;
     state.exchange.magnesium_mol_per_step +=
-        exchange.magnesium_mol_per_Mg_step * dry_mass;
+        exchange.magnesium_mol_per_megagram_step * dry_mass;
     state.exchange.sodium_mol_per_step +=
-        exchange.sodium_mol_per_Mg_step * dry_mass;
+        exchange.sodium_mol_per_megagram_step * dry_mass;
     state.exchange.potassium_mol_per_step +=
-        exchange.potassium_mol_per_Mg_step * dry_mass;
+        exchange.potassium_mol_per_megagram_step * dry_mass;
 
     // SOLUTE.F 5198--5202.
     state.phosphate_minerals.aluminum_phosphate_mol_mineral_per_step +=
@@ -222,7 +222,7 @@ fn validateInputs(inputs: Inputs) !void {
     );
     inline for (.{
         inputs.litter_water_volume_m3,
-        inputs.litter_dry_mass_Mg,
+        inputs.litter_dry_mass_megagrams,
     }) |value| {
         if (!std.math.isFinite(value) or value < 0)
             return error.InvalidSurfaceLitterNutrientAccumulationInput;
@@ -307,7 +307,7 @@ fn testInputs() Inputs {
             .nitrate_mol_n_per_step = 0.8,
         },
         .litter_water_volume_m3 = 2,
-        .litter_dry_mass_Mg = 3,
+        .litter_dry_mass_megagrams = 3,
     };
 }
 
@@ -316,7 +316,7 @@ test "SOLUTE nutrient accumulation preserves source dimensional updates" {
     const result = try calculateSourceOrder(inputs);
     const initial = inputs.existing;
     const volume = inputs.litter_water_volume_m3;
-    const mass = inputs.litter_dry_mass_Mg;
+    const mass = inputs.litter_dry_mass_megagrams;
 
     try std.testing.expectEqual(
         initial.aqueous_nutrients.hydrogen_phosphate_mol_p_per_step +
@@ -326,7 +326,7 @@ test "SOLUTE nutrient accumulation preserves source dimensional updates" {
     );
     try std.testing.expectEqual(
         initial.exchange.aluminum_mol_per_step +
-            inputs.exchange_rates.aluminum_mol_per_Mg_step * mass,
+            inputs.exchange_rates.aluminum_mol_per_megagram_step * mass,
         result.exchange.aluminum_mol_per_step,
     );
     try std.testing.expectEqual(
@@ -384,7 +384,7 @@ test "fertilizer inventory transfer conserves nitrogen" {
 test "zero litter dimensions retain only fertilizer transfers" {
     var inputs = testInputs();
     inputs.litter_water_volume_m3 = 0;
-    inputs.litter_dry_mass_Mg = 0;
+    inputs.litter_dry_mass_megagrams = 0;
     const result = try calculateSourceOrder(inputs);
 
     try std.testing.expectEqualDeep(
@@ -407,7 +407,7 @@ test "zero litter dimensions retain only fertilizer transfers" {
 
 test "nutrient accumulation rejects invalid inventory and overflow" {
     var inputs = testInputs();
-    inputs.litter_dry_mass_Mg = -1;
+    inputs.litter_dry_mass_megagrams = -1;
     try std.testing.expectError(
         error.InvalidSurfaceLitterNutrientAccumulationInput,
         calculateSourceOrder(inputs),
@@ -421,7 +421,7 @@ test "nutrient accumulation rejects invalid inventory and overflow" {
     );
 
     inputs = testInputs();
-    inputs.exchange_rates.calcium_mol_per_Mg_step = std.math.nan(f64);
+    inputs.exchange_rates.calcium_mol_per_megagram_step = std.math.nan(f64);
     try std.testing.expectError(
         error.InvalidSurfaceLitterNutrientAccumulationInput,
         calculateSourceOrder(inputs),

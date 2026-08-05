@@ -31,7 +31,7 @@ pub const FertilizerFlux = struct {
 };
 
 pub const OppositeNeighborFlux = struct {
-    total_sediment_Mg_per_step: f64,
+    total_sediment_megagrams_per_step: f64,
     fertilizer: FertilizerFlux,
 };
 
@@ -39,7 +39,7 @@ pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
     boundary_side: BoundarySide,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     /// Null when the geometry-derived opposite-neighbor coordinate is absent.
     opposite_neighbor_first_side_flux: ?OppositeNeighborFlux,
 };
@@ -64,12 +64,12 @@ pub fn account(inputs: Inputs, state: *State) !void {
     }
     const flux = inputs.opposite_neighbor_first_side_flux orelse return;
     try validateInputs(
-        inputs.sediment_activity_threshold_Mg_per_step,
+        inputs.sediment_activity_threshold_megagrams_per_step,
         flux,
         state.*,
     );
-    if (@abs(flux.total_sediment_Mg_per_step) <=
-        inputs.sediment_activity_threshold_Mg_per_step)
+    if (@abs(flux.total_sediment_megagrams_per_step) <=
+        inputs.sediment_activity_threshold_megagrams_per_step)
     {
         return;
     }
@@ -92,7 +92,7 @@ fn erosionEnabled(mode: DisturbanceMode) bool {
 
 fn validateInputs(threshold: f64, flux: OppositeNeighborFlux, state: State) !void {
     if (!std.math.isFinite(threshold) or
-        !std.math.isFinite(flux.total_sediment_Mg_per_step))
+        !std.math.isFinite(flux.total_sediment_megagrams_per_step))
     {
         return error.NonFiniteOppositeNeighborFertilizerErosionInput;
     }
@@ -125,9 +125,9 @@ test "active opposite neighbor subtracts all eight fertilizer pools" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = -2,
+            .total_sediment_megagrams_per_step = -2,
             .fertilizer = filledFlux(3),
         },
     }, &state);
@@ -137,14 +137,14 @@ test "active opposite neighbor subtracts all eight fertilizer pools" {
 test "opposite sediment threshold is strict and independent of pool values" {
     var state = State{ .net_erosion = filledFlux(10) };
     const flux = OppositeNeighborFlux{
-        .total_sediment_Mg_per_step = 1,
+        .total_sediment_megagrams_per_step = 1,
         .fertilizer = filledFlux(100),
     };
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = flux,
     }, &state);
     try expectFlux(state.net_erosion, 10);
@@ -158,9 +158,9 @@ test "shared face fertilizer transfer conserves all pools exactly" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = 7,
+            .total_sediment_megagrams_per_step = 7,
             .fertilizer = shared,
         },
     }, &source_cell);
@@ -179,28 +179,28 @@ test "outer and geometry gates bypass unused fertilizer input" {
             .disturbance_mode = .freeze_thaw,
             .transport_axis = .east_west,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .vertical,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .east_west,
             .boundary_side = .second,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .east_west,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
     };
@@ -216,9 +216,9 @@ test "invalid and overflow failures preserve fertilizer state atomically" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = 2,
+            .total_sediment_megagrams_per_step = 2,
             .fertilizer = flux,
         },
     };
@@ -229,7 +229,7 @@ test "invalid and overflow failures preserve fertilizer state atomically" {
     try expectFlux(state.net_erosion, 5);
 
     inputs.opposite_neighbor_first_side_flux = .{
-        .total_sediment_Mg_per_step = 2,
+        .total_sediment_megagrams_per_step = 2,
         .fertilizer = filledFlux(-std.math.floatMax(f64)),
     };
     state.net_erosion = filledFlux(std.math.floatMax(f64));

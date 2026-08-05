@@ -22,12 +22,12 @@ pub const RoutingState = struct {
     allocator: std.mem.Allocator,
     columns: usize,
     rows: usize,
-    east_flux_Mg: []f64,
-    west_flux_Mg: []f64,
-    south_flux_Mg: []f64,
-    north_flux_Mg: []f64,
-    sediment_change_Mg: []f64,
-    sediment_export_Mg: []f64,
+    east_flux_megagrams: []f64,
+    west_flux_megagrams: []f64,
+    south_flux_megagrams: []f64,
+    north_flux_megagrams: []f64,
+    sediment_change_megagrams: []f64,
+    sediment_export_megagrams: []f64,
 
     pub fn init(allocator: std.mem.Allocator, columns: usize, rows: usize) !RoutingState {
         if (columns == 0 or rows == 0) return error.InvalidSedimentGridDimensions;
@@ -55,64 +55,64 @@ pub const RoutingState = struct {
 /// Ports EROSION's RERSED/XSEDER directional partition and TERSED balance.
 /// Face fluxes are computed before accumulation, making the kernel suitable
 /// for parallel tile generation followed by a deterministic reduction.
-pub fn route(state: *RoutingState, transportable_sediment_Mg: []const f64, total_downslope_runoff_m3: []const f64, directions: RunoffDirections, boundaries: BoundaryConditions, negligible_runoff_m3: f64) !void {
+pub fn route(state: *RoutingState, transportable_sediment_megagrams: []const f64, total_downslope_runoff_m3: []const f64, directions: RunoffDirections, boundaries: BoundaryConditions, negligible_runoff_m3: f64) !void {
     const count = try std.math.mul(usize, state.columns, state.rows);
-    try validateLengths(count, transportable_sediment_Mg, total_downslope_runoff_m3, directions, boundaries);
+    try validateLengths(count, transportable_sediment_megagrams, total_downslope_runoff_m3, directions, boundaries);
     if (!std.math.isFinite(negligible_runoff_m3) or negligible_runoff_m3 < 0) return error.InvalidSedimentRoutingThreshold;
-    inline for (.{ state.east_flux_Mg, state.west_flux_Mg, state.south_flux_Mg, state.north_flux_Mg, state.sediment_change_Mg, state.sediment_export_Mg }) |values| @memset(values, 0);
+    inline for (.{ state.east_flux_megagrams, state.west_flux_megagrams, state.south_flux_megagrams, state.north_flux_megagrams, state.sediment_change_megagrams, state.sediment_export_megagrams }) |values| @memset(values, 0);
 
     // Generation phase: each cell writes only its own four face slots.
     for (0..state.rows) |row| for (0..state.columns) |column| {
         const index = row * state.columns + column;
-        const total_sediment_Mg = transportable_sediment_Mg[index];
+        const total_sediment_megagrams = transportable_sediment_megagrams[index];
         const total_runoff_m3 = total_downslope_runoff_m3[index];
         const directional = [_]f64{ directions.east_m3[index], directions.west_m3[index], directions.south_m3[index], directions.north_m3[index] };
-        if (!std.math.isFinite(total_sediment_Mg) or total_sediment_Mg < 0 or !std.math.isFinite(total_runoff_m3) or total_runoff_m3 < 0) return error.InvalidSedimentRoutingInput;
+        if (!std.math.isFinite(total_sediment_megagrams) or total_sediment_megagrams < 0 or !std.math.isFinite(total_runoff_m3) or total_runoff_m3 < 0) return error.InvalidSedimentRoutingInput;
         var directional_sum_m3: f64 = 0;
         for (directional) |runoff_m3| {
             if (!std.math.isFinite(runoff_m3) or runoff_m3 < 0) return error.InvalidSedimentRoutingInput;
             directional_sum_m3 += runoff_m3;
         }
-        if (total_runoff_m3 <= negligible_runoff_m3 or total_sediment_Mg == 0) continue;
+        if (total_runoff_m3 <= negligible_runoff_m3 or total_sediment_megagrams == 0) continue;
         const rounding_tolerance = 64 * std.math.floatEps(f64) * @max(1, total_runoff_m3);
         if (directional_sum_m3 > total_runoff_m3 + rounding_tolerance) return error.DirectionalRunoffExceedsTotal;
-        state.east_flux_Mg[index] = if (column + 1 < state.columns)
-            if (cellsExchange(index, index + 1, boundaries.lateral_connection_mode_by_cell)) total_sediment_Mg * directional[0] / total_runoff_m3 else 0
-        else if (boundaries.east_open[index]) total_sediment_Mg * directional[0] / total_runoff_m3 else 0;
-        state.west_flux_Mg[index] = if (column > 0)
-            if (cellsExchange(index, index - 1, boundaries.lateral_connection_mode_by_cell)) total_sediment_Mg * directional[1] / total_runoff_m3 else 0
-        else if (boundaries.west_open[index]) total_sediment_Mg * directional[1] / total_runoff_m3 else 0;
-        state.south_flux_Mg[index] = if (row + 1 < state.rows)
-            if (cellsExchange(index, index + state.columns, boundaries.lateral_connection_mode_by_cell)) total_sediment_Mg * directional[2] / total_runoff_m3 else 0
-        else if (boundaries.south_open[index]) total_sediment_Mg * directional[2] / total_runoff_m3 else 0;
-        state.north_flux_Mg[index] = if (row > 0)
-            if (cellsExchange(index, index - state.columns, boundaries.lateral_connection_mode_by_cell)) total_sediment_Mg * directional[3] / total_runoff_m3 else 0
-        else if (boundaries.north_open[index]) total_sediment_Mg * directional[3] / total_runoff_m3 else 0;
+        state.east_flux_megagrams[index] = if (column + 1 < state.columns)
+            if (cellsExchange(index, index + 1, boundaries.lateral_connection_mode_by_cell)) total_sediment_megagrams * directional[0] / total_runoff_m3 else 0
+        else if (boundaries.east_open[index]) total_sediment_megagrams * directional[0] / total_runoff_m3 else 0;
+        state.west_flux_megagrams[index] = if (column > 0)
+            if (cellsExchange(index, index - 1, boundaries.lateral_connection_mode_by_cell)) total_sediment_megagrams * directional[1] / total_runoff_m3 else 0
+        else if (boundaries.west_open[index]) total_sediment_megagrams * directional[1] / total_runoff_m3 else 0;
+        state.south_flux_megagrams[index] = if (row + 1 < state.rows)
+            if (cellsExchange(index, index + state.columns, boundaries.lateral_connection_mode_by_cell)) total_sediment_megagrams * directional[2] / total_runoff_m3 else 0
+        else if (boundaries.south_open[index]) total_sediment_megagrams * directional[2] / total_runoff_m3 else 0;
+        state.north_flux_megagrams[index] = if (row > 0)
+            if (cellsExchange(index, index - state.columns, boundaries.lateral_connection_mode_by_cell)) total_sediment_megagrams * directional[3] / total_runoff_m3 else 0
+        else if (boundaries.north_open[index]) total_sediment_megagrams * directional[3] / total_runoff_m3 else 0;
     };
 
     // Reduction phase: deterministic source order, conservative internally.
     for (0..state.rows) |row| for (0..state.columns) |column| {
         const source = row * state.columns + column;
-        const fluxes = [_]f64{ state.east_flux_Mg[source], state.west_flux_Mg[source], state.south_flux_Mg[source], state.north_flux_Mg[source] };
-        for (fluxes) |flux_Mg| state.sediment_change_Mg[source] -= flux_Mg;
-        if (column + 1 < state.columns) state.sediment_change_Mg[source + 1] += fluxes[0] else state.sediment_export_Mg[source] += fluxes[0];
-        if (column > 0) state.sediment_change_Mg[source - 1] += fluxes[1] else state.sediment_export_Mg[source] += fluxes[1];
-        if (row + 1 < state.rows) state.sediment_change_Mg[source + state.columns] += fluxes[2] else state.sediment_export_Mg[source] += fluxes[2];
-        if (row > 0) state.sediment_change_Mg[source - state.columns] += fluxes[3] else state.sediment_export_Mg[source] += fluxes[3];
+        const fluxes = [_]f64{ state.east_flux_megagrams[source], state.west_flux_megagrams[source], state.south_flux_megagrams[source], state.north_flux_megagrams[source] };
+        for (fluxes) |flux_megagrams| state.sediment_change_megagrams[source] -= flux_megagrams;
+        if (column + 1 < state.columns) state.sediment_change_megagrams[source + 1] += fluxes[0] else state.sediment_export_megagrams[source] += fluxes[0];
+        if (column > 0) state.sediment_change_megagrams[source - 1] += fluxes[1] else state.sediment_export_megagrams[source] += fluxes[1];
+        if (row + 1 < state.rows) state.sediment_change_megagrams[source + state.columns] += fluxes[2] else state.sediment_export_megagrams[source] += fluxes[2];
+        if (row > 0) state.sediment_change_megagrams[source - state.columns] += fluxes[3] else state.sediment_export_megagrams[source] += fluxes[3];
     };
 }
 
 /// Commits EROSION's `SED = SED + TERSED + RDTSED` after all cells have been
 /// validated, preventing a failed tile from leaving a partially changed grid.
-pub fn commitSurfaceSediment(surface_sediment_Mg: []f64, local_detachment_Mg: []const f64, routing_change_Mg: []const f64) !void {
-    if (surface_sediment_Mg.len != local_detachment_Mg.len or surface_sediment_Mg.len != routing_change_Mg.len) return error.SedimentRoutingDimensionMismatch;
-    for (surface_sediment_Mg, local_detachment_Mg, routing_change_Mg) |sediment, local, routed| {
+pub fn commitSurfaceSediment(surface_sediment_megagrams: []f64, local_detachment_megagrams: []const f64, routing_change_megagrams: []const f64) !void {
+    if (surface_sediment_megagrams.len != local_detachment_megagrams.len or surface_sediment_megagrams.len != routing_change_megagrams.len) return error.SedimentRoutingDimensionMismatch;
+    for (surface_sediment_megagrams, local_detachment_megagrams, routing_change_megagrams) |sediment, local, routed| {
         if (!std.math.isFinite(sediment) or sediment < 0 or !std.math.isFinite(local) or !std.math.isFinite(routed)) return error.InvalidSurfaceSedimentCommit;
         const updated = sediment + local + routed;
         const tolerance = 64 * std.math.floatEps(f64) * @max(1, sediment);
         if (!std.math.isFinite(updated) or updated < -tolerance) return error.NegativeSurfaceSediment;
     }
-    for (surface_sediment_Mg, local_detachment_Mg, routing_change_Mg) |*sediment, local, routed| sediment.* = @max(0, sediment.* + local + routed);
+    for (surface_sediment_megagrams, local_detachment_megagrams, routing_change_megagrams) |*sediment, local, routed| sediment.* = @max(0, sediment.* + local + routed);
 }
 
 fn validateLengths(count: usize, sediment: []const f64, runoff: []const f64, directions: RunoffDirections, boundaries: BoundaryConditions) !void {
@@ -138,9 +138,9 @@ test "internal sediment routing conserves mass across runtime grid" {
     defer state.deinit();
     const closed = [_]bool{ false, false };
     try route(&state, &.{ 1, 0 }, &.{ 2, 0 }, .{ .east_m3 = &.{ 2, 0 }, .west_m3 = &.{ 0, 0 }, .south_m3 = &.{ 0, 0 }, .north_m3 = &.{ 0, 0 } }, .{ .east_open = &closed, .west_open = &closed, .south_open = &closed, .north_open = &closed }, 1e-12);
-    try std.testing.expectEqual(@as(f64, -1), state.sediment_change_Mg[0]);
-    try std.testing.expectEqual(@as(f64, 1), state.sediment_change_Mg[1]);
-    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_Mg[0] + state.sediment_change_Mg[1]);
+    try std.testing.expectEqual(@as(f64, -1), state.sediment_change_megagrams[0]);
+    try std.testing.expectEqual(@as(f64, 1), state.sediment_change_megagrams[1]);
+    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_megagrams[0] + state.sediment_change_megagrams[1]);
 }
 
 test "open external boundary records exported sediment" {
@@ -149,8 +149,8 @@ test "open external boundary records exported sediment" {
     const open = [_]bool{true};
     const closed = [_]bool{false};
     try route(&state, &.{2}, &.{4}, .{ .east_m3 = &.{1}, .west_m3 = &.{0}, .south_m3 = &.{0}, .north_m3 = &.{0} }, .{ .east_open = &open, .west_open = &closed, .south_open = &closed, .north_open = &closed }, 1e-12);
-    try std.testing.expectEqual(@as(f64, -0.5), state.sediment_change_Mg[0]);
-    try std.testing.expectEqual(@as(f64, 0.5), state.sediment_export_Mg[0]);
+    try std.testing.expectEqual(@as(f64, -0.5), state.sediment_change_megagrams[0]);
+    try std.testing.expectEqual(@as(f64, 0.5), state.sediment_export_megagrams[0]);
 }
 
 test "closed external boundary blocks sediment even when runoff is present" {
@@ -158,7 +158,7 @@ test "closed external boundary blocks sediment even when runoff is present" {
     defer state.deinit();
     const closed = [_]bool{false};
     try route(&state, &.{2}, &.{4}, .{ .east_m3 = &.{1}, .west_m3 = &.{0}, .south_m3 = &.{0}, .north_m3 = &.{0} }, .{ .east_open = &closed, .west_open = &closed, .south_open = &closed, .north_open = &closed }, 1e-12);
-    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_Mg[0]);
+    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_megagrams[0]);
 }
 
 test "NCNG standalone neighbor blocks internal sediment exchange" {
@@ -179,9 +179,9 @@ test "NCNG standalone neighbor blocks internal sediment exchange" {
         },
         1e-12,
     );
-    try std.testing.expectEqual(@as(f64, 0), state.east_flux_Mg[0]);
-    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, state.sediment_change_Mg);
-    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, state.sediment_export_Mg);
+    try std.testing.expectEqual(@as(f64, 0), state.east_flux_megagrams[0]);
+    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, state.sediment_change_megagrams);
+    try std.testing.expectEqualSlices(f64, &.{ 0, 0 }, state.sediment_export_megagrams);
 }
 
 test "NCNG requires both neighboring cells connected for sediment exchange" {
@@ -202,14 +202,14 @@ test "NCNG requires both neighboring cells connected for sediment exchange" {
         },
         1e-12,
     );
-    try std.testing.expectEqualSlices(f64, &.{ -2, 2 }, state.sediment_change_Mg);
-    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_Mg[0] + state.sediment_change_Mg[1]);
+    try std.testing.expectEqualSlices(f64, &.{ -2, 2 }, state.sediment_change_megagrams);
+    try std.testing.expectEqual(@as(f64, 0), state.sediment_change_megagrams[0] + state.sediment_change_megagrams[1]);
 }
 
 test "invalid NCNG topology fails before routing state mutation" {
     var state = try RoutingState.init(std.testing.allocator, 1, 1);
     defer state.deinit();
-    state.sediment_change_Mg[0] = 7;
+    state.sediment_change_megagrams[0] = 7;
     const closed = [_]bool{false};
     try std.testing.expectError(
         error.InvalidLateralConnectionMode,
@@ -228,7 +228,7 @@ test "invalid NCNG topology fails before routing state mutation" {
             1e-12,
         ),
     );
-    try std.testing.expectEqual(@as(f64, 7), state.sediment_change_Mg[0]);
+    try std.testing.expectEqual(@as(f64, 7), state.sediment_change_megagrams[0]);
 }
 
 test "surface sediment commit is transactional and conservative" {

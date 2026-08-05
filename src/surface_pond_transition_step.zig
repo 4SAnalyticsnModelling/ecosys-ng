@@ -43,15 +43,15 @@ pub const ApplyContext = struct {
     surface_litter_volume_m3: []const f64,
     surface_litter_water_capacity_m3: []const f64,
     horizontal_area_m2: []const f64,
-    minimum_heat_capacity_mj_per_k: []const f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    minimum_heat_capacity_megajoules_per_k: []const f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 /// Independent cells are safe for the normal tiled CPU executor and a future
 /// GPU selection kernel.
 pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
     const count = context.result.cell_count;
-    inline for (.{ context.surface_liquid_water_m3, context.surface_ice_m3, context.surface_ponding_capacity_m3, context.surface_litter_volume_m3, context.surface_litter_water_capacity_m3, context.horizontal_area_m2, context.minimum_heat_capacity_mj_per_k }) |values| if (values.len != count) return error.SurfacePondTransitionStepDimensionMismatch;
+    inline for (.{ context.surface_liquid_water_m3, context.surface_ice_m3, context.surface_ponding_capacity_m3, context.surface_litter_volume_m3, context.surface_litter_water_capacity_m3, context.horizontal_area_m2, context.minimum_heat_capacity_megajoules_per_k }) |values| if (values.len != count) return error.SurfacePondTransitionStepDimensionMismatch;
     if (range.first > range.end or range.end > count) return error.SurfacePondTransitionStepDimensionMismatch;
     for (range.first..range.end) |cell| {
         const selected = try transition.selectSeparatedSurfacePondTransfer(.{
@@ -62,8 +62,8 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
             .surface_litter_volume_m3 = context.surface_litter_volume_m3[cell],
             .surface_litter_water_capacity_m3 = context.surface_litter_water_capacity_m3[cell],
             .horizontal_area_m2 = context.horizontal_area_m2[cell],
-            .minimum_heat_capacity_mj_per_k = context.minimum_heat_capacity_mj_per_k[cell],
-            .liquid_water_heat_capacity_mj_per_m3_k = context.liquid_water_heat_capacity_mj_per_m3_k,
+            .minimum_heat_capacity_megajoules_per_k = context.minimum_heat_capacity_megajoules_per_k[cell],
+            .liquid_water_heat_capacity_megajoules_per_m3_k = context.liquid_water_heat_capacity_megajoules_per_m3_k,
         });
         if (selected) |value| {
             context.result.active[cell] = true;
@@ -94,8 +94,8 @@ test "runtime surface transition selection is cell independent and clears stale 
         .surface_litter_volume_m3 = &.{ 0.1, 0.1, 0.1 },
         .surface_litter_water_capacity_m3 = &.{ 0.1, 0.1, 0.1 },
         .horizontal_area_m2 = &.{ 10, 10, 10 },
-        .minimum_heat_capacity_mj_per_k = &.{ 0, 0, 0 },
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .minimum_heat_capacity_megajoules_per_k = &.{ 0, 0, 0 },
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     };
     try applyTile(&context, .{ .first = 0, .end = 2 });
     try std.testing.expect(!state.active[0]);

@@ -326,15 +326,15 @@ pub fn diagnoseNonBandHpo4(
         state.aqueous[cell_index],
         state.non_band_phosphate[cell_index],
         coefficients,
-        parameters.non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3,
+        parameters.non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3,
         parameters.phosphate_constants,
         parameters.phosphate_surface,
         parameters.phosphate_minerals,
         parameters.phosphate_kinetics,
     );
     const aqueous = fluxes.aqueous;
-    const surface = fluxes.surface.hpo4_with_hydroxyl_site_mol_p_per_Mg *
-        fluxes.soil_mass_per_water_volume_Mg_per_m3;
+    const surface = fluxes.surface.hpo4_with_hydroxyl_site_mol_p_per_megagram *
+        fluxes.soil_mass_per_water_volume_megagrams_per_m3;
     const pairing = aqueous.iron_hpo4_pairing_mol_p_per_m3 +
         aqueous.calcium_hpo4_pairing_mol_p_per_m3 +
         aqueous.magnesium_hpo4_pairing_mol_p_per_m3;
@@ -357,7 +357,7 @@ pub fn diagnoseCell(
     const transformations = try state.evaluateCell(cell_index, parameters);
     const assembled = try chemistry.State.assembledAqueousChanges(
         transformations,
-        state.cation_exchange_mol_per_Mg[cell_index],
+        state.cation_exchange_mol_per_megagram[cell_index],
     );
     const phosphate_hydrogen =
         transformations.non_band_phosphate.dissolved_hydrogen_mol_per_m3 *
@@ -374,10 +374,10 @@ pub fn diagnoseCell(
         .aqueous_hydroxide_mol_per_m3 = transformations.aqueous.hydroxide,
         .phosphate_hydrogen_mol_per_m3 = phosphate_hydrogen,
         .phosphate_hydroxide_mol_per_m3 = phosphate_hydroxide,
-        .cation_exchange_hydrogen_mol_per_m3 = -transformations.cation_adsorption_mol_per_Mg.hydrogen *
-            parameters.cation_exchange_water_ratios.shared_Mg_per_m3,
-        .carboxyl_hydrogen_mol_per_m3 = -transformations.carboxyl_hydrogen_change_mol_per_Mg *
-            parameters.cation_exchange_water_ratios.shared_Mg_per_m3,
+        .cation_exchange_hydrogen_mol_per_m3 = -transformations.cation_adsorption_mol_per_megagram.hydrogen *
+            parameters.cation_exchange_water_ratios.shared_megagrams_per_m3,
+        .carboxyl_hydrogen_mol_per_m3 = -transformations.carboxyl_hydrogen_change_mol_per_megagram *
+            parameters.cation_exchange_water_ratios.shared_megagrams_per_m3,
         .geochemistry_hydrogen_mol_per_m3 = transformations.geochemistry.dissolved_hydrogen_mol_per_m3,
         .geochemistry_hydroxide_mol_per_m3 = transformations.geochemistry.dissolved_hydroxide_mol_per_m3,
         .assembled_hydrogen_mol_per_m3 = assembled.hydrogen,
@@ -430,13 +430,7 @@ pub const Workspace = struct {
     reaction_span_extent_scales: []f64,
     reaction_span_rates: []f64,
     reaction_span_branch_states: []i8,
-    reaction_span_mcp_jacobian: []f64,
-    reaction_span_mcp_rhs: []f64,
-    reaction_span_mcp_solution: []f64,
-    reaction_span_mcp_delta: []f64,
-    reaction_span_mcp_residual: []f64,
-    reaction_span_mcp_lower_bounds: []f64,
-    reaction_span_mcp_upper_bounds: []f64,
+    reaction_span_active_count: usize,
     reaction_span_last_rank: usize,
     scratch: chemistry.State,
 
@@ -612,31 +606,6 @@ pub const Workspace = struct {
             reaction_span.reaction_count,
         );
         errdefer allocator.free(reaction_span_branch_states);
-        const mcp_row_count = count + reaction_span.reaction_count;
-        const mcp_column_count = 2 * reaction_span.reaction_count;
-        const reaction_span_mcp_jacobian = try allocator.alloc(
-            f64,
-            mcp_row_count * mcp_column_count,
-        );
-        errdefer allocator.free(reaction_span_mcp_jacobian);
-        const reaction_span_mcp_rhs =
-            try allocator.alloc(f64, mcp_row_count);
-        errdefer allocator.free(reaction_span_mcp_rhs);
-        const reaction_span_mcp_solution =
-            try allocator.alloc(f64, mcp_column_count);
-        errdefer allocator.free(reaction_span_mcp_solution);
-        const reaction_span_mcp_delta =
-            try allocator.alloc(f64, mcp_column_count);
-        errdefer allocator.free(reaction_span_mcp_delta);
-        const reaction_span_mcp_residual =
-            try allocator.alloc(f64, mcp_row_count);
-        errdefer allocator.free(reaction_span_mcp_residual);
-        const reaction_span_mcp_lower_bounds =
-            try allocator.alloc(f64, mcp_column_count);
-        errdefer allocator.free(reaction_span_mcp_lower_bounds);
-        const reaction_span_mcp_upper_bounds =
-            try allocator.alloc(f64, mcp_column_count);
-        errdefer allocator.free(reaction_span_mcp_upper_bounds);
         const scratch = try chemistry.State.init(allocator, 1);
         return .{
             .allocator = allocator,
@@ -683,13 +652,7 @@ pub const Workspace = struct {
             .reaction_span_extent_scales = reaction_span_extent_scales,
             .reaction_span_rates = reaction_span_rates,
             .reaction_span_branch_states = reaction_span_branch_states,
-            .reaction_span_mcp_jacobian = reaction_span_mcp_jacobian,
-            .reaction_span_mcp_rhs = reaction_span_mcp_rhs,
-            .reaction_span_mcp_solution = reaction_span_mcp_solution,
-            .reaction_span_mcp_delta = reaction_span_mcp_delta,
-            .reaction_span_mcp_residual = reaction_span_mcp_residual,
-            .reaction_span_mcp_lower_bounds = reaction_span_mcp_lower_bounds,
-            .reaction_span_mcp_upper_bounds = reaction_span_mcp_upper_bounds,
+            .reaction_span_active_count = 0,
             .reaction_span_last_rank = 0,
             .scratch = scratch,
         };
@@ -697,13 +660,6 @@ pub const Workspace = struct {
 
     pub fn deinit(self: *Workspace) void {
         self.scratch.deinit();
-        self.allocator.free(self.reaction_span_mcp_upper_bounds);
-        self.allocator.free(self.reaction_span_mcp_lower_bounds);
-        self.allocator.free(self.reaction_span_mcp_residual);
-        self.allocator.free(self.reaction_span_mcp_delta);
-        self.allocator.free(self.reaction_span_mcp_solution);
-        self.allocator.free(self.reaction_span_mcp_rhs);
-        self.allocator.free(self.reaction_span_mcp_jacobian);
         self.allocator.free(self.reaction_span_branch_states);
         self.allocator.free(self.reaction_span_rates);
         self.allocator.free(self.reaction_span_extent_scales);
@@ -963,7 +919,6 @@ fn solveEquilibriumWithWorkspace(
         _ = try transformedVectorAdmissible(scratch, current, transformations, parameters, 1, residual);
         for (residual, current) |*change, value| change.* -= value;
         const current_norm = try scaledNorm(current, residual, options);
-        logLargestResidual(current, residual, options);
         const limiting_index =
             largestScaledResidualIndex(current, residual, options);
         var trace_entry: ?*IterationDiagnostic = null;
@@ -1332,14 +1287,18 @@ fn solveEquilibriumWithWorkspace(
         }
         _ = try transformedVectorAdmissible(scratch, current, transformations, parameters, options.picard_relaxation, candidate_state);
         if (maximumDifference(current, candidate_state) <= std.math.floatEps(f64) * @max(1.0, maximumMagnitude(current))) {
-            if (try tryTransactionalEquilibriumLookahead(
+            if (try tryRetainedComplementarityCandidate(
                 workspace,
                 scratch,
                 current,
-                parameters,
-                options,
+                residual,
+                transformations,
+                candidate_state,
                 probe_state,
                 probe_residual,
+                parameters,
+                options,
+                current_norm,
             )) {
                 selectTraceCandidate(
                     trace_entry,
@@ -1354,6 +1313,36 @@ fn solveEquilibriumWithWorkspace(
                 newton_steps += 1;
                 continue;
             }
+            if (try tryTransactionalEquilibriumLookahead(
+                workspace,
+                scratch,
+                current,
+                parameters,
+                options,
+                options.max_iterations - iteration - 1,
+                probe_state,
+                probe_residual,
+            )) |lookahead_iterations| {
+                const accepted_norm = try scaledNorm(
+                    probe_state,
+                    probe_residual,
+                    options,
+                );
+                selectTraceCandidate(
+                    trace_entry,
+                    .full_network_newton,
+                    accepted_norm,
+                );
+                try state.unpackCell(cell_index, probe_state);
+                return .{
+                    .iterations = iteration + 1 +
+                        lookahead_iterations,
+                    .newton_raphson_steps = newton_steps + 1,
+                    .picard_steps = picard_steps,
+                    .maximum_scaled_residual = accepted_norm,
+                    .converged = true,
+                };
+            }
             selectTraceCandidate(
                 trace_entry,
                 .stagnated,
@@ -1363,6 +1352,12 @@ fn solveEquilibriumWithWorkspace(
                 scratch,
                 current,
                 parameters,
+            );
+            logTerminalStagnationComponent(
+                current,
+                residual,
+                options,
+                limiting_index,
             );
             return error.SoluteReactionSolverStagnated;
         }
@@ -1385,14 +1380,18 @@ fn solveEquilibriumWithWorkspace(
             picard_steps += 1;
             continue;
         }
-        if (try tryTransactionalEquilibriumLookahead(
+        if (try tryRetainedComplementarityCandidate(
             workspace,
             scratch,
             current,
-            parameters,
-            options,
+            residual,
+            transformations,
+            candidate_state,
             probe_state,
             probe_residual,
+            parameters,
+            options,
+            current_norm,
         )) {
             selectTraceCandidate(
                 trace_entry,
@@ -1407,11 +1406,47 @@ fn solveEquilibriumWithWorkspace(
             newton_steps += 1;
             continue;
         }
+        if (try tryTransactionalEquilibriumLookahead(
+            workspace,
+            scratch,
+            current,
+            parameters,
+            options,
+            options.max_iterations - iteration - 1,
+            probe_state,
+            probe_residual,
+        )) |lookahead_iterations| {
+            const accepted_norm = try scaledNorm(
+                probe_state,
+                probe_residual,
+                options,
+            );
+            selectTraceCandidate(
+                trace_entry,
+                .full_network_newton,
+                accepted_norm,
+            );
+            try state.unpackCell(cell_index, probe_state);
+            return .{
+                .iterations = iteration + 1 +
+                    lookahead_iterations,
+                .newton_raphson_steps = newton_steps + 1,
+                .picard_steps = picard_steps,
+                .maximum_scaled_residual = accepted_norm,
+                .converged = true,
+            };
+        }
         selectTraceCandidate(trace_entry, .stagnated, current_norm);
         logTerminalReactionDecomposition(
             scratch,
             current,
             parameters,
+        );
+        logTerminalStagnationComponent(
+            current,
+            residual,
+            options,
+            limiting_index,
         );
         return error.SoluteReactionSolverStagnated;
     }
@@ -1460,7 +1495,7 @@ fn logTerminalReactionDecomposition(
     parameters: chemistry.ReactionParameters,
 ) void {
     scratch.unpackCell(0, current) catch |err| {
-        std.log.warn(
+        std.log.debug(
             "SOLUTE terminal decomposition unavailable: stage=unpack error={s}",
             .{@errorName(err)},
         );
@@ -1468,13 +1503,13 @@ fn logTerminalReactionDecomposition(
     };
     const terminal_decomposition =
         diagnoseCell(scratch, 0, parameters) catch |err| {
-            std.log.warn(
+            std.log.debug(
                 "SOLUTE terminal decomposition unavailable: stage=reaction_network error={s}",
                 .{@errorName(err)},
             );
             return;
         };
-    std.log.warn(
+    std.log.debug(
         "SOLUTE terminal hydrogen decomposition: aqueous={e} phosphate={e} exchange={e} carboxyl={e} geochemistry={e} assembled={e}",
         .{
             terminal_decomposition.aqueous_hydrogen_mol_per_m3,
@@ -1493,7 +1528,7 @@ fn logTerminalReactionDecomposition(
             );
             return;
         };
-    std.log.warn(
+    std.log.debug(
         "SOLUTE terminal non-band HPO4 decomposition: PO4_protonation={e} HPO4_protonation={e} metal_pairing={e} surface_adsorption={e} assembled={e}",
         .{
             hpo4.po4_protonation_mol_p_per_m3,
@@ -1674,6 +1709,7 @@ fn tryFullNetworkReactionCandidate(
     }
     if (diagnostic) |entry|
         entry.full_network_active_columns = active_count;
+    workspace.reaction_span_active_count = active_count;
     if (active_count == 0) {
         if (diagnostic) |entry|
             entry.full_network_status = .no_active_reactions;
@@ -1768,25 +1804,6 @@ fn tryFullNetworkReactionCandidate(
         return false;
     }
     if (!solveBoundedReactionSpan(workspace, current.len, active_count)) {
-        if (try tryFullNetworkComplementarityCandidate(
-            workspace,
-            scratch,
-            current,
-            global_residual,
-            current_transformations,
-            candidate_state,
-            accepted_state,
-            residual_work,
-            parameters,
-            options,
-            current_norm,
-            coefficients.monovalent_activity_coefficient,
-            active_count,
-        )) {
-            if (diagnostic) |entry|
-                entry.full_network_status = .accepted;
-            return true;
-        }
         if (diagnostic) |entry| {
             entry.full_network_status = .bounded_solve_failed;
             entry.full_network_rank = workspace.reaction_span_last_rank;
@@ -1817,25 +1834,6 @@ fn tryFullNetworkReactionCandidate(
         has_nonzero_extent = true;
     }
     if (!has_nonzero_extent) {
-        if (try tryFullNetworkComplementarityCandidate(
-            workspace,
-            scratch,
-            current,
-            global_residual,
-            current_transformations,
-            candidate_state,
-            accepted_state,
-            residual_work,
-            parameters,
-            options,
-            current_norm,
-            coefficients.monovalent_activity_coefficient,
-            active_count,
-        )) {
-            if (diagnostic) |entry|
-                entry.full_network_status = .accepted;
-            return true;
-        }
         if (diagnostic) |entry|
             entry.full_network_status = .zero_extent;
         return false;
@@ -1871,25 +1869,6 @@ fn tryFullNetworkReactionCandidate(
         current_norm - predicted_norm <
             1.0e-6 * @max(1.0, current_norm))
     {
-        if (try tryFullNetworkComplementarityCandidate(
-            workspace,
-            scratch,
-            current,
-            global_residual,
-            current_transformations,
-            candidate_state,
-            accepted_state,
-            residual_work,
-            parameters,
-            options,
-            current_norm,
-            coefficients.monovalent_activity_coefficient,
-            active_count,
-        )) {
-            if (diagnostic) |entry|
-                entry.full_network_status = .accepted;
-            return true;
-        }
         if (diagnostic) |entry|
             entry.full_network_status = .predicted_merit_rejected;
         return false;
@@ -1905,25 +1884,6 @@ fn tryFullNetworkReactionCandidate(
         current_norm,
     );
     if (!accepted) {
-        if (try tryFullNetworkComplementarityCandidate(
-            workspace,
-            scratch,
-            current,
-            global_residual,
-            current_transformations,
-            candidate_state,
-            accepted_state,
-            residual_work,
-            parameters,
-            options,
-            current_norm,
-            coefficients.monovalent_activity_coefficient,
-            active_count,
-        )) {
-            if (diagnostic) |entry|
-                entry.full_network_status = .accepted;
-            return true;
-        }
         if (trace) |solver_trace| {
             if (!solver_trace.full_network_comparison_valid) {
                 captureFullNetworkDirectionalComparison(
@@ -1962,6 +1922,44 @@ fn tryFullNetworkReactionCandidate(
     if (diagnostic) |entry|
         entry.full_network_status = .accepted;
     return true;
+}
+
+/// Fallback after every retained candidate has failed. Negative, zero, and
+/// positive extent faces are solved together; zero uses a Clarke derivative.
+/// The caller still accepts only a finite, admissible strict merit decrease.
+fn tryRetainedComplementarityCandidate(
+    workspace: *Workspace,
+    scratch: *chemistry.State,
+    current: []const f64,
+    global_residual: []const f64,
+    current_transformations: chemistry.CellTransformations,
+    candidate_state: []f64,
+    accepted_state: []f64,
+    residual_work: []f64,
+    parameters: chemistry.ReactionParameters,
+    options: Options,
+    current_norm: f64,
+) !bool {
+    const column_count = workspace.reaction_span_active_count;
+    if (column_count == 0) return false;
+    try scratch.unpackCell(0, current);
+    const coefficients =
+        try scratch.activityCoefficients(0, parameters.fractions);
+    return tryFullNetworkComplementarityCandidate(
+        workspace,
+        scratch,
+        current,
+        global_residual,
+        current_transformations,
+        candidate_state,
+        accepted_state,
+        residual_work,
+        parameters,
+        options,
+        current_norm,
+        coefficients.monovalent_activity_coefficient,
+        column_count,
+    );
 }
 
 fn tryFullNetworkComplementarityCandidate(
@@ -2028,8 +2026,7 @@ fn tryFullNetworkComplementarityCandidate(
         .parameters = parameters,
         .options = options,
         .current_norm = current_norm,
-        .monovalent_activity_coefficient =
-            monovalent_activity_coefficient,
+        .monovalent_activity_coefficient = monovalent_activity_coefficient,
         .column_count = column_count,
     };
     for (0..column_count) |column| {
@@ -2065,9 +2062,7 @@ fn tryFullNetworkComplementarityCandidate(
             if (selected_negative) -1 else 1;
     }
     var branch_iteration: usize = 0;
-    while (branch_iteration < 16 * column_count) :
-        (branch_iteration += 1)
-    {
+    while (branch_iteration < 16 * column_count) : (branch_iteration += 1) {
         for (0..column_count) |column| {
             const branch =
                 workspace.reaction_span_branch_states[column];
@@ -2087,27 +2082,19 @@ fn tryFullNetworkComplementarityCandidate(
             };
             for (0..row_count) |row| {
                 const index = row * column_count + column;
-                selected_jacobian[index] = switch (branch) {
-                    -1 => negative_jacobian[index],
-                    0 => 0.5 *
-                        (negative_jacobian[index] +
-                            positive_jacobian[index]),
-                    1 => positive_jacobian[index],
-                    else => unreachable,
-                };
+                selected_jacobian[index] =
+                    complementarityColumnDerivative(
+                        branch,
+                        negative_jacobian[index],
+                        positive_jacobian[index],
+                    );
             }
         }
         if (!solveProjectedReactionSpanLeastSquares(
             workspace,
             row_count,
             column_count,
-        )) {
-            std.log.warn(
-                "SOLUTE MCP projected solve failed: branch_iteration={d}",
-                .{branch_iteration},
-            );
-            return false;
-        }
+        )) return false;
 
         for (0..row_count) |row| {
             var linear_residual =
@@ -2179,24 +2166,24 @@ fn tryFullNetworkComplementarityCandidate(
                 @sqrt(std.math.floatEps(f64)) * gradient_scale;
             const negative_violation =
                 if (negative_available and
-                    negative_gradient > tolerance)
-                negative_gradient / gradient_scale
-            else
-                0;
+                negative_gradient > tolerance)
+                    negative_gradient / gradient_scale
+                else
+                    0;
             const positive_violation =
                 if (positive_available and
-                    positive_gradient < -tolerance)
-                -positive_gradient / gradient_scale
-            else
-                0;
+                positive_gradient < -tolerance)
+                    -positive_gradient / gradient_scale
+                else
+                    0;
             const next_branch: i8 =
                 if (negative_violation == 0 and
-                    positive_violation == 0)
-                0
-            else if (negative_violation > positive_violation)
-                -1
-            else
-                1;
+                positive_violation == 0)
+                    0
+                else if (negative_violation > positive_violation)
+                    -1
+                else
+                    1;
             if (next_branch !=
                 workspace.reaction_span_branch_states[column])
             {
@@ -2205,17 +2192,7 @@ fn tryFullNetworkComplementarityCandidate(
                 changed = true;
             }
         }
-        if (changed) {
-            var zero_count: usize = 0;
-            for (workspace.reaction_span_branch_states[0..column_count]) |branch| {
-                if (branch == 0) zero_count += 1;
-            }
-            std.log.warn(
-                "SOLUTE MCP branch update: iteration={d} zero_branches={d}",
-                .{ branch_iteration, zero_count },
-            );
-            continue;
-        }
+        if (changed) continue;
 
         var candidate_transformations =
             reaction_span.zeroTransformations(parameters);
@@ -2237,10 +2214,7 @@ fn tryFullNetworkComplementarityCandidate(
             );
             has_nonzero_extent = true;
         }
-        if (!has_nonzero_extent) {
-            std.log.warn("SOLUTE MCP has zero candidate", .{});
-            return false;
-        }
+        if (!has_nonzero_extent) return false;
         const inventory_fraction = transformedVectorAdmissible(
             scratch,
             current,
@@ -2248,10 +2222,7 @@ fn tryFullNetworkComplementarityCandidate(
             parameters,
             1,
             candidate_state,
-        ) catch {
-            std.log.warn("SOLUTE MCP inventory projection failed", .{});
-            return false;
-        };
+        ) catch return false;
         var step_fraction = inventory_fraction;
         var predicted_norm = std.math.inf(f64);
         var backtrack: u8 = 0;
@@ -2273,68 +2244,6 @@ fn tryFullNetworkComplementarityCandidate(
             step_fraction *= 0.5;
         }
         if (backtrack == 40) {
-            std.log.warn(
-                "SOLUTE MCP predicted merit rejected: current={e} predicted={e}",
-                .{ current_norm, predicted_norm },
-            );
-            if (try tryComplementarityActiveMeritFaceCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                selected_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
-            if (try tryFischerBurmeisterReactionSpanCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
-            if (try tryComplementarityIrlsCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                selected_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
-            if (try tryComplementarityMeritGradientCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                selected_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
-            if (try tryComplementarityPairCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                selected_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
-            if (try tryComplementarityCoordinateCandidate(
-                workspace,
-                inputs,
-                negative_jacobian,
-                positive_jacobian,
-                candidate_state,
-                accepted_state,
-                residual_work,
-            )) return true;
             return false;
         }
         _ = transformedVectorAdmissible(
@@ -2390,692 +2299,44 @@ fn tryFullNetworkComplementarityCandidate(
                 candidate_state,
                 residual_work,
             )) {
-                std.log.warn(
-                    "SOLUTE MCP refined coupled directional derivative",
-                    .{},
-                );
                 continue;
             }
-            std.log.warn(
-                "SOLUTE MCP exact merit rejected: current={e} predicted={e}",
-                .{ current_norm, predicted_norm },
-            );
             return false;
         }
         const accepted_norm =
             try scaledNorm(accepted_state, residual_work, options);
-        std.log.warn(
-            "SOLUTE MCP exact candidate: current={e} predicted={e} accepted={e}",
-            .{ current_norm, predicted_norm, accepted_norm },
-        );
         return accepted_norm < current_norm;
     }
-    if (try tryComplementarityMeritGradientCandidate(
-        workspace,
-        inputs,
-        negative_jacobian,
-        positive_jacobian,
-        selected_jacobian,
-        candidate_state,
-        accepted_state,
-        residual_work,
-    )) {
-        return true;
-    }
-    if (try tryComplementarityActiveMeritFaceCandidate(
-        workspace,
-        inputs,
-        negative_jacobian,
-        positive_jacobian,
-        selected_jacobian,
-        candidate_state,
-        accepted_state,
-        residual_work,
-    )) {
-        return true;
-    }
-    if (try tryComplementarityCoordinateCandidate(
-        workspace,
-        inputs,
-        negative_jacobian,
-        positive_jacobian,
-        candidate_state,
-        accepted_state,
-        residual_work,
-    )) {
-        return true;
-    }
-    std.log.warn("SOLUTE MCP branch iteration ceiling", .{});
     return false;
 }
 
-fn tryFischerBurmeisterReactionSpanCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    const chemical_rows = inputs.current.len;
-    const row_count = chemical_rows + inputs.column_count;
-    const column_count = 2 * inputs.column_count;
-    const matrix =
-        workspace.reaction_span_mcp_jacobian[
-            0 .. row_count * column_count
-        ];
-    const rhs = workspace.reaction_span_mcp_rhs[0..row_count];
-    const rays =
-        workspace.reaction_span_mcp_solution[0..column_count];
-    const lower =
-        workspace.reaction_span_mcp_lower_bounds[0..column_count];
-    const upper =
-        workspace.reaction_span_mcp_upper_bounds[0..column_count];
-    @memset(rays, 0);
-
-    var nonlinear_iteration: u8 = 0;
-    while (nonlinear_iteration < 32) : (nonlinear_iteration += 1) {
-        @memset(matrix, 0);
-        for (
-            inputs.global_residual,
-            inputs.current,
-            0..,
-        ) |residual, state_value, row| {
-            const scale = residualScale(state_value, inputs.options);
-            const normalized = residual / scale;
-            const weight = reactionSpanRowWeight(
-                normalized,
-                inputs.current_norm,
-            );
-            var linearized = normalized * weight;
-            for (0..inputs.column_count) |column| {
-                const positive = rays[2 * column];
-                const negative = rays[2 * column + 1];
-                const positive_derivative =
-                    positive_jacobian[
-                        row * inputs.column_count + column
-                    ];
-                const negative_derivative =
-                    negative_jacobian[
-                        row * inputs.column_count + column
-                    ];
-                linearized +=
-                    positive_derivative * positive -
-                    negative_derivative * negative;
-                matrix[row * column_count + 2 * column] =
-                    positive_derivative;
-                matrix[row * column_count + 2 * column + 1] =
-                    -negative_derivative;
-            }
-            rhs[row] = -linearized;
-        }
-        const complementarity_weight = inputs.current_norm;
-        for (0..inputs.column_count) |column| {
-            const row = chemical_rows + column;
-            const positive = rays[2 * column];
-            const negative = rays[2 * column + 1];
-            const radius = @sqrt(
-                positive * positive + negative * negative,
-            );
-            const phi = radius - positive - negative;
-            rhs[row] = -complementarity_weight * phi;
-            const zero_derivative =
-                1.0 / @sqrt(@as(f64, 2)) - 1;
-            matrix[row * column_count + 2 * column] =
-                complementarity_weight *
-                (if (radius > 0)
-                    positive / radius - 1
-                else
-                    zero_derivative);
-            matrix[row * column_count + 2 * column + 1] =
-                complementarity_weight *
-                (if (radius > 0)
-                    negative / radius - 1
-                else
-                    zero_derivative);
-        }
-        for (rays, 0..) |value, column| {
-            const reaction_column = column / 2;
-            const ray_upper = if (column % 2 == 0)
-                @max(0, workspace.reaction_span_original_upper_bounds[
-                    reaction_column
-                ])
-            else
-                @max(0, -workspace.reaction_span_original_lower_bounds[
-                    reaction_column
-                ]);
-            lower[column] = -value;
-            upper[column] = ray_upper - value;
-        }
-        if (!solveProjectedBoxLeastSquares(
-            matrix,
-            rhs,
-            lower,
-            upper,
-            workspace.reaction_span_mcp_delta[0..column_count],
-            workspace.reaction_span_mcp_residual[0..row_count],
-            row_count,
-            column_count,
-        )) return false;
-        var maximum_change: f64 = 0;
-        for (
-            workspace.reaction_span_mcp_delta[0..column_count],
-            0..,
-        ) |change, column| {
-            rays[column] += change;
-            const reaction_column = column / 2;
-            const ray_upper = if (column % 2 == 0)
-                @max(0, workspace.reaction_span_original_upper_bounds[
-                    reaction_column
-                ])
-            else
-                @max(0, -workspace.reaction_span_original_lower_bounds[
-                    reaction_column
-                ]);
-            rays[column] = std.math.clamp(
-                rays[column],
-                0,
-                ray_upper,
-            );
-            maximum_change = @max(maximum_change, @abs(change));
-        }
-        if (maximum_change <=
-            64 * std.math.floatEps(f64))
-        {
-            break;
-        }
-    }
-    @memset(
-        workspace.reaction_span_solution[0..inputs.column_count],
-        0,
-    );
-    var transformations =
-        reaction_span.zeroTransformations(inputs.parameters);
-    var has_extent = false;
-    for (0..inputs.column_count) |column| {
-        const extent = rays[2 * column] - rays[2 * column + 1];
-        workspace.reaction_span_solution[column] = extent;
-        const source = if (extent < 0)
-            negative_jacobian
-        else
-            positive_jacobian;
-        for (0..inputs.current.len) |row| {
-            workspace.reaction_span_jacobian[
-                row * inputs.column_count + column
-            ] = source[row * inputs.column_count + column];
-        }
-        if (extent == 0) continue;
-        try reaction_span.addReactionExtent(
-            &transformations,
-            workspace.reaction_span_active_reactions[column],
-            extent * workspace.reaction_span_extent_scales[column],
-            inputs.current_transformations,
-            inputs.parameters,
-        );
-        has_extent = true;
-    }
-    if (!has_extent) return false;
-    const inventory_fraction = transformedVectorAdmissible(
-        inputs.scratch,
-        inputs.current,
-        transformations,
-        inputs.parameters,
-        1,
-        candidate_state,
-    ) catch return false;
-    const predicted_norm = reactionSpanPredictedNorm(
-        workspace,
-        inputs.current,
-        inputs.global_residual,
-        inputs.options,
-        inputs.current_norm,
-        inputs.column_count,
-        inventory_fraction,
-    );
-    if (!std.math.isFinite(predicted_norm) or
-        predicted_norm >= inputs.current_norm)
-    {
-        return false;
-    }
-    return try tryAcceptReactionExtentLineSearch(
-        inputs.scratch,
-        inputs.current,
-        transformations,
-        inventory_fraction,
-        candidate_state,
-        accepted_state,
-        residual_work,
-        inputs.parameters,
-        inputs.options,
-        inputs.current_norm,
-    );
+fn complementarityColumnDerivative(
+    branch: i8,
+    negative_derivative: f64,
+    positive_derivative: f64,
+) f64 {
+    return switch (branch) {
+        -1 => negative_derivative,
+        0 => 0.5 *
+            (negative_derivative + positive_derivative),
+        1 => positive_derivative,
+        else => unreachable,
+    };
 }
 
-fn solveProjectedBoxLeastSquares(
-    matrix: []const f64,
-    rhs: []const f64,
-    lower: []const f64,
-    upper: []const f64,
-    solution: []f64,
-    residual: []f64,
-    row_count: usize,
-    column_count: usize,
-) bool {
-    if (matrix.len != row_count * column_count or
-        rhs.len != row_count or lower.len != column_count or
-        upper.len != column_count or solution.len != column_count or
-        residual.len < row_count)
-    {
-        return false;
-    }
-    @memset(solution, 0);
-    for (rhs, 0..) |value, row| residual[row] = -value;
-    var sweep: usize = 0;
-    while (sweep < 512) : (sweep += 1) {
-        var maximum_change: f64 = 0;
-        for (0..column_count) |column| {
-            var norm_squared: f64 = 0;
-            var gradient: f64 = 0;
-            for (residual[0..row_count], 0..) |value, row| {
-                const coefficient =
-                    matrix[row * column_count + column];
-                norm_squared += coefficient * coefficient;
-                gradient += coefficient * value;
-            }
-            if (!std.math.isFinite(norm_squared) or
-                !std.math.isFinite(gradient))
-            {
-                return false;
-            }
-            if (norm_squared == 0) continue;
-            const previous = solution[column];
-            const next = std.math.clamp(
-                previous - gradient / norm_squared,
-                lower[column],
-                upper[column],
-            );
-            const change = next - previous;
-            if (change == 0) continue;
-            solution[column] = next;
-            for (residual[0..row_count], 0..) |*value, row| {
-                value.* +=
-                    matrix[row * column_count + column] * change;
-            }
-            maximum_change = @max(maximum_change, @abs(change));
-        }
-        if (maximum_change <=
-            64 * std.math.floatEps(f64))
-        {
-            return true;
-        }
-    }
-    return true;
-}
-
-fn tryComplementarityPairCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    selected_jacobian: []f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    @memset(
-        workspace.reaction_span_solution[0..inputs.column_count],
-        0,
+test "zero-extent complementarity uses a generalized derivative" {
+    try std.testing.expectEqual(
+        @as(f64, -7),
+        complementarityColumnDerivative(-1, -7, 11),
     );
-    for (0..inputs.column_count) |first_column| {
-        for (first_column + 1..inputs.column_count) |second_column| {
-            for ([_]i8{ -1, 1 }) |first_direction| {
-                const first_bound = if (first_direction < 0)
-                    workspace.reaction_span_original_lower_bounds[first_column]
-                else
-                    workspace.reaction_span_original_upper_bounds[first_column];
-                if ((first_direction < 0 and first_bound >= 0) or
-                    (first_direction > 0 and first_bound <= 0))
-                {
-                    continue;
-                }
-                const first_source = if (first_direction < 0)
-                    negative_jacobian
-                else
-                    positive_jacobian;
-                for ([_]i8{ -1, 1 }) |second_direction| {
-                    const second_bound = if (second_direction < 0)
-                        workspace.reaction_span_original_lower_bounds[second_column]
-                    else
-                        workspace.reaction_span_original_upper_bounds[second_column];
-                    if ((second_direction < 0 and second_bound >= 0) or
-                        (second_direction > 0 and second_bound <= 0))
-                    {
-                        continue;
-                    }
-                    const second_source = if (second_direction < 0)
-                        negative_jacobian
-                    else
-                        positive_jacobian;
-                    var gram_11: f64 = 0;
-                    var gram_12: f64 = 0;
-                    var gram_22: f64 = 0;
-                    var rhs_1: f64 = 0;
-                    var rhs_2: f64 = 0;
-                    for (0..inputs.current.len) |row| {
-                        const first = first_source[
-                            row * inputs.column_count + first_column
-                        ];
-                        const second = second_source[
-                            row * inputs.column_count + second_column
-                        ];
-                        gram_11 += first * first;
-                        gram_12 += first * second;
-                        gram_22 += second * second;
-                        rhs_1 += first *
-                            workspace.reaction_span_rhs[row];
-                        rhs_2 += second *
-                            workspace.reaction_span_rhs[row];
-                    }
-                    const determinant =
-                        gram_11 * gram_22 - gram_12 * gram_12;
-                    if (!std.math.isFinite(determinant) or
-                        @abs(determinant) <=
-                            std.math.floatEps(f64) *
-                            @max(1.0, gram_11 * gram_22))
-                    {
-                        continue;
-                    }
-                    var first_extent =
-                        (rhs_1 * gram_22 -
-                            rhs_2 * gram_12) / determinant;
-                    var second_extent =
-                        (gram_11 * rhs_2 -
-                            gram_12 * rhs_1) / determinant;
-                    if ((first_extent < 0) !=
-                        (first_direction < 0) or
-                        (second_extent < 0) !=
-                            (second_direction < 0))
-                    {
-                        continue;
-                    }
-                    first_extent = std.math.clamp(
-                        first_extent,
-                        if (first_direction < 0) first_bound else 0,
-                        if (first_direction < 0) 0 else first_bound,
-                    );
-                    second_extent = std.math.clamp(
-                        second_extent,
-                        if (second_direction < 0) second_bound else 0,
-                        if (second_direction < 0) 0 else second_bound,
-                    );
-                    if (first_extent == 0 or second_extent == 0)
-                        continue;
-                    workspace.reaction_span_solution[first_column] =
-                        first_extent;
-                    workspace.reaction_span_solution[second_column] =
-                        second_extent;
-                    for (0..inputs.current.len) |row| {
-                        selected_jacobian[
-                            row * inputs.column_count + first_column
-                        ] = first_source[
-                            row * inputs.column_count + first_column
-                        ];
-                        selected_jacobian[
-                            row * inputs.column_count + second_column
-                        ] = second_source[
-                            row * inputs.column_count + second_column
-                        ];
-                    }
-                    const predicted_norm = reactionSpanPredictedNorm(
-                        workspace,
-                        inputs.current,
-                        inputs.global_residual,
-                        inputs.options,
-                        inputs.current_norm,
-                        inputs.column_count,
-                        1,
-                    );
-                    if (std.math.isFinite(predicted_norm) and
-                        predicted_norm < inputs.current_norm)
-                    {
-                        var transformations =
-                            reaction_span.zeroTransformations(
-                                inputs.parameters,
-                            );
-                        try reaction_span.addReactionExtent(
-                            &transformations,
-                            workspace.reaction_span_active_reactions[first_column],
-                            first_extent *
-                                workspace.reaction_span_extent_scales[first_column],
-                            inputs.current_transformations,
-                            inputs.parameters,
-                        );
-                        try reaction_span.addReactionExtent(
-                            &transformations,
-                            workspace.reaction_span_active_reactions[second_column],
-                            second_extent *
-                                workspace.reaction_span_extent_scales[second_column],
-                            inputs.current_transformations,
-                            inputs.parameters,
-                        );
-                        if (try tryAcceptReactionExtentLineSearch(
-                            inputs.scratch,
-                            inputs.current,
-                            transformations,
-                            1,
-                            candidate_state,
-                            accepted_state,
-                            residual_work,
-                            inputs.parameters,
-                            inputs.options,
-                            inputs.current_norm,
-                        )) {
-                            return true;
-                        }
-                    }
-                    workspace.reaction_span_solution[first_column] = 0;
-                    workspace.reaction_span_solution[second_column] = 0;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-fn tryComplementarityIrlsCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    selected_jacobian: []f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    defer {
-        for (
-            inputs.global_residual,
-            inputs.current,
-            0..,
-        ) |residual, state_value, row| {
-            const scale = residualScale(state_value, inputs.options);
-            const normalized = residual / scale;
-            workspace.reaction_span_rhs[row] =
-                -normalized *
-                reactionSpanRowWeight(
-                    normalized,
-                    inputs.current_norm,
-                );
-        }
-    }
-    for (0..inputs.column_count) |column| {
-        const branch =
-            workspace.reaction_span_branch_states[column];
-        workspace.reaction_span_lower_bounds[column] =
-            switch (branch) {
-                -1 => workspace.reaction_span_original_lower_bounds[column],
-                0, 1 => 0,
-                else => unreachable,
-            };
-        workspace.reaction_span_upper_bounds[column] =
-            switch (branch) {
-                -1, 0 => 0,
-                1 => workspace.reaction_span_original_upper_bounds[column],
-                else => unreachable,
-            };
-    }
-    for ([_]f64{ 1, 3, 7 }) |weight_exponent| {
-        @memset(
-            workspace.reaction_span_solution[0..inputs.column_count],
-            0,
-        );
-        var irls_iteration: u8 = 0;
-        while (irls_iteration < 12) : (irls_iteration += 1) {
-            for (
-                inputs.global_residual,
-                inputs.current,
-                0..,
-            ) |residual, state_value, row| {
-                const scale =
-                    residualScale(state_value, inputs.options);
-                const normalized = residual / scale;
-                const original_weight =
-                    reactionSpanRowWeight(
-                        normalized,
-                        inputs.current_norm,
-                    );
-                var linear_residual = normalized;
-                for (
-                    workspace.reaction_span_solution[0..inputs.column_count],
-                    0..,
-                ) |extent, column| {
-                    const branch =
-                        workspace.reaction_span_branch_states[column];
-                    const source = if (branch < 0)
-                        negative_jacobian
-                    else
-                        positive_jacobian;
-                    linear_residual +=
-                        source[
-                            row * inputs.column_count + column
-                        ] / original_weight * extent;
-                }
-                const ratio = @max(
-                    1.0e-6,
-                    @abs(linear_residual) / inputs.current_norm,
-                );
-                const irls_weight =
-                    std.math.pow(f64, ratio, weight_exponent);
-                workspace.reaction_span_rhs[row] =
-                    -normalized * irls_weight;
-                for (0..inputs.column_count) |column| {
-                    const branch =
-                        workspace.reaction_span_branch_states[column];
-                    const source = if (branch < 0)
-                        negative_jacobian
-                    else
-                        positive_jacobian;
-                    selected_jacobian[
-                        row * inputs.column_count + column
-                    ] = source[
-                        row * inputs.column_count + column
-                    ] / original_weight * irls_weight;
-                }
-            }
-            if (!solveProjectedReactionSpanLeastSquares(
-                workspace,
-                inputs.current.len,
-                inputs.column_count,
-            )) break;
-        }
-        for (
-            inputs.global_residual,
-            inputs.current,
-            0..,
-        ) |residual, state_value, row| {
-            const normalized =
-                residual / residualScale(state_value, inputs.options);
-            const original_weight =
-                reactionSpanRowWeight(
-                    normalized,
-                    inputs.current_norm,
-                );
-            workspace.reaction_span_rhs[row] =
-                -normalized * original_weight;
-            for (0..inputs.column_count) |column| {
-                const branch =
-                    workspace.reaction_span_branch_states[column];
-                const source = if (branch < 0)
-                    negative_jacobian
-                else
-                    positive_jacobian;
-                selected_jacobian[
-                    row * inputs.column_count + column
-                ] = source[
-                    row * inputs.column_count + column
-                ];
-            }
-        }
-        var transformations =
-            reaction_span.zeroTransformations(inputs.parameters);
-        var has_extent = false;
-        for (
-            workspace.reaction_span_solution[0..inputs.column_count],
-            0..,
-        ) |extent, column| {
-            if (extent == 0) continue;
-            try reaction_span.addReactionExtent(
-                &transformations,
-                workspace.reaction_span_active_reactions[column],
-                extent * workspace.reaction_span_extent_scales[column],
-                inputs.current_transformations,
-                inputs.parameters,
-            );
-            has_extent = true;
-        }
-        if (!has_extent) continue;
-        const inventory_fraction = transformedVectorAdmissible(
-            inputs.scratch,
-            inputs.current,
-            transformations,
-            inputs.parameters,
-            1,
-            candidate_state,
-        ) catch continue;
-        var fraction = inventory_fraction;
-        var attempt: u8 = 0;
-        while (attempt < 48) : (attempt += 1) {
-            const predicted_norm = reactionSpanPredictedNorm(
-                workspace,
-                inputs.current,
-                inputs.global_residual,
-                inputs.options,
-                inputs.current_norm,
-                inputs.column_count,
-                fraction,
-            );
-            if (std.math.isFinite(predicted_norm) and
-                predicted_norm < inputs.current_norm and
-                try tryAcceptReactionExtentLineSearch(
-                    inputs.scratch,
-                    inputs.current,
-                    transformations,
-                    fraction,
-                    candidate_state,
-                    accepted_state,
-                    residual_work,
-                    inputs.parameters,
-                    inputs.options,
-                    inputs.current_norm,
-                ))
-            {
-                return true;
-            }
-            fraction *= 0.5;
-        }
-    }
-    return false;
+    try std.testing.expectEqual(
+        @as(f64, 2),
+        complementarityColumnDerivative(0, -7, 11),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 11),
+        complementarityColumnDerivative(1, -7, 11),
+    );
 }
 
 fn tryAcceptReactionExtentLineSearch(
@@ -3141,377 +2402,6 @@ fn tryAcceptExactReactionExtentCandidate(
     if (candidate_norm >= current_norm) return false;
     @memcpy(accepted_state, candidate_state);
     return true;
-}
-
-fn tryComplementarityActiveMeritFaceCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    selected_jacobian: []f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    defer {
-        for (
-            inputs.global_residual,
-            inputs.current,
-            0..,
-        ) |residual, state_value, row| {
-            const scale = residualScale(state_value, inputs.options);
-            const normalized_residual = residual / scale;
-            workspace.reaction_span_rhs[row] =
-                -normalized_residual *
-                reactionSpanRowWeight(
-                    normalized_residual,
-                    inputs.current_norm,
-                );
-        }
-    }
-    for (
-        inputs.global_residual,
-        inputs.current,
-        0..,
-    ) |residual, state_value, row| {
-        const normalized_residual =
-            residual / residualScale(state_value, inputs.options);
-        const active =
-            @abs(normalized_residual) >= 0.8 * inputs.current_norm;
-        if (!active) workspace.reaction_span_rhs[row] = 0;
-        for (0..inputs.column_count) |column| {
-            const branch =
-                workspace.reaction_span_branch_states[column];
-            const source = if (branch < 0)
-                negative_jacobian
-            else
-                positive_jacobian;
-            selected_jacobian[
-                row * inputs.column_count + column
-            ] = if (active)
-                source[row * inputs.column_count + column]
-            else
-                0;
-        }
-    }
-    for (0..inputs.column_count) |column| {
-        const branch =
-            workspace.reaction_span_branch_states[column];
-        workspace.reaction_span_lower_bounds[column] =
-            switch (branch) {
-                -1 => workspace.reaction_span_original_lower_bounds[column],
-                0, 1 => 0,
-                else => unreachable,
-            };
-        workspace.reaction_span_upper_bounds[column] =
-            switch (branch) {
-                -1, 0 => 0,
-                1 => workspace.reaction_span_original_upper_bounds[column],
-                else => unreachable,
-            };
-    }
-    if (!solveProjectedReactionSpanLeastSquares(
-        workspace,
-        inputs.current.len,
-        inputs.column_count,
-    )) return false;
-    var transformations =
-        reaction_span.zeroTransformations(inputs.parameters);
-    var has_extent = false;
-    for (
-        workspace.reaction_span_solution[0..inputs.column_count],
-        0..,
-    ) |extent, column| {
-        if (extent == 0) continue;
-        try reaction_span.addReactionExtent(
-            &transformations,
-            workspace.reaction_span_active_reactions[column],
-            extent * workspace.reaction_span_extent_scales[column],
-            inputs.current_transformations,
-            inputs.parameters,
-        );
-        has_extent = true;
-    }
-    if (!has_extent) return false;
-    const inventory_fraction = transformedVectorAdmissible(
-        inputs.scratch,
-        inputs.current,
-        transformations,
-        inputs.parameters,
-        1,
-        candidate_state,
-    ) catch return false;
-    var fraction = inventory_fraction;
-    var attempt: u8 = 0;
-    while (attempt < 48) : (attempt += 1) {
-        const predicted_norm = reactionSpanPredictedNorm(
-            workspace,
-            inputs.current,
-            inputs.global_residual,
-            inputs.options,
-            inputs.current_norm,
-            inputs.column_count,
-            fraction,
-        );
-        if (std.math.isFinite(predicted_norm) and
-            predicted_norm < inputs.current_norm)
-        {
-            _ = transformedVectorAdmissible(
-                inputs.scratch,
-                inputs.current,
-                transformations,
-                inputs.parameters,
-                fraction,
-                candidate_state,
-            ) catch return false;
-            if (try tryAcceptAndersonCandidate(
-                inputs.scratch,
-                inputs.current,
-                candidate_state,
-                accepted_state,
-                residual_work,
-                inputs.parameters,
-                inputs.options,
-                inputs.current_norm,
-            )) return true;
-        }
-        fraction *= 0.5;
-    }
-    return false;
-}
-
-fn tryComplementarityCoordinateCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    _ = negative_jacobian;
-    _ = positive_jacobian;
-    var best_norm = inputs.current_norm;
-    var found = false;
-    for (0..inputs.column_count) |column| {
-        for ([_]i8{ -1, 1 }) |direction| {
-            const bound = if (direction < 0)
-                workspace.reaction_span_original_lower_bounds[column]
-            else
-                workspace.reaction_span_original_upper_bounds[column];
-            if ((direction < 0 and bound >= 0) or
-                (direction > 0 and bound <= 0))
-            {
-                continue;
-            }
-            var extent = bound;
-            var sample: u8 = 0;
-            while (sample < 44) : (sample += 1) {
-                if (!reactionSpanExtentIsSignificant(
-                    workspace,
-                    column,
-                    extent,
-                )) break;
-                workspace.reaction_span_solution[column] = extent;
-                const predicted_norm = reactionSpanPredictedNorm(
-                    workspace,
-                    inputs.current,
-                    inputs.global_residual,
-                    inputs.options,
-                    inputs.current_norm,
-                    inputs.column_count,
-                    1,
-                );
-                workspace.reaction_span_solution[column] = 0;
-                if (!std.math.isFinite(predicted_norm) or
-                    predicted_norm >= inputs.current_norm)
-                {
-                    extent *= 0.5;
-                    continue;
-                }
-                var transformations =
-                    reaction_span.zeroTransformations(inputs.parameters);
-                try reaction_span.addReactionExtent(
-                    &transformations,
-                    workspace.reaction_span_active_reactions[column],
-                    extent *
-                        workspace.reaction_span_extent_scales[column],
-                    inputs.current_transformations,
-                    inputs.parameters,
-                );
-                _ = transformedVectorAdmissible(
-                    inputs.scratch,
-                    inputs.current,
-                    transformations,
-                    inputs.parameters,
-                    1,
-                    candidate_state,
-                ) catch {
-                    extent *= 0.5;
-                    continue;
-                };
-                try evaluateGlobalResidualAt(
-                    inputs.scratch,
-                    candidate_state,
-                    inputs.parameters,
-                    residual_work,
-                );
-                const candidate_norm = try scaledNorm(
-                    candidate_state,
-                    residual_work,
-                    inputs.options,
-                );
-                if (candidate_norm < best_norm) {
-                    best_norm = candidate_norm;
-                    found = true;
-                    @memcpy(
-                        workspace.reaction_span_best_state,
-                        candidate_state,
-                    );
-                    @memcpy(
-                        workspace.reaction_span_best_residual,
-                        residual_work,
-                    );
-                }
-                extent *= 0.5;
-            }
-        }
-    }
-    if (!found) return false;
-    @memcpy(accepted_state, workspace.reaction_span_best_state);
-    @memcpy(residual_work, workspace.reaction_span_best_residual);
-    return true;
-}
-
-fn tryComplementarityMeritGradientCandidate(
-    workspace: *Workspace,
-    inputs: ComplementaritySearchInputs,
-    negative_jacobian: []const f64,
-    positive_jacobian: []const f64,
-    selected_jacobian: []f64,
-    candidate_state: []f64,
-    accepted_state: []f64,
-    residual_work: []f64,
-) !bool {
-    const limiting_row = largestScaledResidualIndex(
-        inputs.current,
-        inputs.global_residual,
-        inputs.options,
-    );
-    const residual_sign: f64 =
-        if (inputs.global_residual[limiting_row] < 0) -1 else 1;
-    var maximum_score: f64 = 0;
-    for (0..inputs.column_count) |column| {
-        const index =
-            limiting_row * inputs.column_count + column;
-        const negative_score =
-            if (workspace.reaction_span_original_lower_bounds[column] < 0)
-                residual_sign * negative_jacobian[index]
-            else
-                0;
-        const positive_score =
-            if (workspace.reaction_span_original_upper_bounds[column] > 0)
-                -residual_sign * positive_jacobian[index]
-            else
-                0;
-        const signed_score: f64 =
-            if (negative_score > positive_score and
-                negative_score > 0)
-                -negative_score
-            else if (positive_score > 0)
-                positive_score
-            else
-                0;
-        workspace.reaction_span_solution[column] = signed_score;
-        maximum_score = @max(maximum_score, @abs(signed_score));
-    }
-    if (!std.math.isFinite(maximum_score) or maximum_score == 0)
-        return false;
-    for (
-        workspace.reaction_span_solution[0..inputs.column_count],
-        0..,
-    ) |*extent, column| {
-        if (extent.* < 0) {
-            extent.* = -0.25 *
-                (-workspace.reaction_span_original_lower_bounds[column]) *
-                @abs(extent.*) / maximum_score;
-        } else if (extent.* > 0) {
-            extent.* = 0.25 *
-                workspace.reaction_span_original_upper_bounds[column] *
-                extent.* / maximum_score;
-        }
-        const source = if (extent.* < 0)
-            negative_jacobian
-        else
-            positive_jacobian;
-        for (0..inputs.current.len) |row| {
-            selected_jacobian[
-                row * inputs.column_count + column
-            ] = source[row * inputs.column_count + column];
-        }
-    }
-    var transformations =
-        reaction_span.zeroTransformations(inputs.parameters);
-    for (
-        workspace.reaction_span_solution[0..inputs.column_count],
-        0..,
-    ) |extent, column| {
-        if (extent == 0) continue;
-        try reaction_span.addReactionExtent(
-            &transformations,
-            workspace.reaction_span_active_reactions[column],
-            extent * workspace.reaction_span_extent_scales[column],
-            inputs.current_transformations,
-            inputs.parameters,
-        );
-    }
-    const inventory_fraction = transformedVectorAdmissible(
-        inputs.scratch,
-        inputs.current,
-        transformations,
-        inputs.parameters,
-        1,
-        candidate_state,
-    ) catch return false;
-    var step_fraction = inventory_fraction;
-    var backtrack: u8 = 0;
-    while (backtrack < 48) : (backtrack += 1) {
-        const predicted_norm = reactionSpanPredictedNorm(
-            workspace,
-            inputs.current,
-            inputs.global_residual,
-            inputs.options,
-            inputs.current_norm,
-            inputs.column_count,
-            step_fraction,
-        );
-        if (std.math.isFinite(predicted_norm) and
-            predicted_norm < inputs.current_norm)
-        {
-            _ = transformedVectorAdmissible(
-                inputs.scratch,
-                inputs.current,
-                transformations,
-                inputs.parameters,
-                step_fraction,
-                candidate_state,
-            ) catch return false;
-            if (try tryAcceptAndersonCandidate(
-                inputs.scratch,
-                inputs.current,
-                candidate_state,
-                accepted_state,
-                residual_work,
-                inputs.parameters,
-                inputs.options,
-                inputs.current_norm,
-            )) {
-                return true;
-            }
-        }
-        step_fraction *= 0.5;
-    }
-    return false;
 }
 
 fn refineComplementarityDirectionalJacobian(
@@ -4489,7 +3379,7 @@ fn reactionSpanExtentBounds(
             .negative_native_extent = current[carboxyl_index],
             .positive_native_extent = @max(
                 0,
-                parameters.total_carboxyl_sites_mol_per_Mg -
+                parameters.total_carboxyl_sites_mol_per_megagram -
                     current[carboxyl_index],
             ),
         };
@@ -4964,19 +3854,6 @@ fn solveBoundedPhosphateExtents(
     return false;
 }
 
-fn solveBoundedReactionSpan(
-    workspace: *Workspace,
-    row_count: usize,
-    column_count: usize,
-) bool {
-    return solveBoundedReactionSpanConfigured(
-        workspace,
-        row_count,
-        column_count,
-        false,
-    );
-}
-
 fn solveProjectedReactionSpanLeastSquares(
     workspace: *Workspace,
     row_count: usize,
@@ -5056,11 +3933,10 @@ fn solveProjectedReactionSpanLeastSquares(
     return true;
 }
 
-fn solveBoundedReactionSpanConfigured(
+fn solveBoundedReactionSpan(
     workspace: *Workspace,
     row_count: usize,
     column_count: usize,
-    fixed_zero_branches: bool,
 ) bool {
     if (column_count == 0 or
         column_count > reaction_span.reaction_count)
@@ -5080,13 +3956,7 @@ fn solveBoundedReactionSpanConfigured(
     const upper_bounds =
         workspace.reaction_span_upper_bounds[0..column_count];
     @memset(solution, 0);
-    for (active_bounds, 0..) |*status, column| {
-        status.* = if (fixed_zero_branches and
-            workspace.reaction_span_branch_states[column] == 0)
-            2
-        else
-            0;
-    }
+    @memset(active_bounds, 0);
     workspace.reaction_span_last_rank = 0;
 
     var active_set_iteration: usize = 0;
@@ -5346,13 +4216,13 @@ fn evaluatePhosphateExtentResiduals(
         output[offset + 4] =
             fluxes.aqueous.calcium_h2po4_pairing_mol_p_per_m3;
         output[offset + 5] =
-            fluxes.surface.h2po4_with_protonated_site_mol_p_per_Mg *
+            fluxes.surface.h2po4_with_protonated_site_mol_p_per_megagram *
             density;
         output[offset + 6] =
-            fluxes.surface.h2po4_with_hydroxyl_site_mol_p_per_Mg *
+            fluxes.surface.h2po4_with_hydroxyl_site_mol_p_per_megagram *
             density;
         output[offset + 7] =
-            fluxes.surface.hpo4_with_hydroxyl_site_mol_p_per_Mg *
+            fluxes.surface.hpo4_with_hydroxyl_site_mol_p_per_megagram *
             density;
     }
     const aqueous_fluxes = try aqueous_rates.calculate(
@@ -5491,8 +4361,8 @@ fn applyPhosphateExtent(
                 zone_index,
                 density,
                 "dissolved_h2po4_mol_p_per_m3",
-                "protonated_site_mol_per_Mg",
-                "adsorbed_h2po4_mol_p_per_Mg",
+                "protonated_site_mol_per_megagram",
+                "adsorbed_h2po4_mol_p_per_megagram",
                 extent_mol_per_m3,
             );
             addPacked(
@@ -5507,8 +4377,8 @@ fn applyPhosphateExtent(
                 zone_index,
                 density,
                 "dissolved_h2po4_mol_p_per_m3",
-                "hydroxyl_site_mol_per_Mg",
-                "adsorbed_h2po4_mol_p_per_Mg",
+                "hydroxyl_site_mol_per_megagram",
+                "adsorbed_h2po4_mol_p_per_megagram",
                 extent_mol_per_m3,
             );
             addPacked(
@@ -5523,8 +4393,8 @@ fn applyPhosphateExtent(
                 zone_index,
                 density,
                 "dissolved_hpo4_mol_p_per_m3",
-                "hydroxyl_site_mol_per_Mg",
-                "adsorbed_hpo4_mol_p_per_Mg",
+                "hydroxyl_site_mol_per_megagram",
+                "adsorbed_hpo4_mol_p_per_megagram",
                 extent_mol_per_m3,
             );
             addPacked(
@@ -5595,7 +4465,7 @@ fn applyPhosphatePairingExtent(
 fn applySiteExchangeExtent(
     vector: []f64,
     zone_index: usize,
-    density_Mg_per_m3: f64,
+    density_megagrams_per_m3: f64,
     comptime dissolved_name: []const u8,
     comptime site_name: []const u8,
     comptime adsorbed_name: []const u8,
@@ -5609,12 +4479,12 @@ fn applySiteExchangeExtent(
     addPacked(
         vector,
         phosphatePackedIndex(zone_index, site_name),
-        -extent_mol_per_m3 / density_Mg_per_m3,
+        -extent_mol_per_m3 / density_megagrams_per_m3,
     );
     addPacked(
         vector,
         phosphatePackedIndex(zone_index, adsorbed_name),
-        extent_mol_per_m3 / density_Mg_per_m3,
+        extent_mol_per_m3 / density_megagrams_per_m3,
     );
 }
 
@@ -5682,19 +4552,19 @@ fn maximumPhosphateExtent(
         5 => @min(
             h2po4,
             density * vector[
-                phosphatePackedIndex(zone_index, "protonated_site_mol_per_Mg")
+                phosphatePackedIndex(zone_index, "protonated_site_mol_per_megagram")
             ],
         ),
         6 => @min(
             h2po4,
             density * vector[
-                phosphatePackedIndex(zone_index, "hydroxyl_site_mol_per_Mg")
+                phosphatePackedIndex(zone_index, "hydroxyl_site_mol_per_megagram")
             ],
         ),
         7 => @min(
             hpo4,
             density * vector[
-                phosphatePackedIndex(zone_index, "hydroxyl_site_mol_per_Mg")
+                phosphatePackedIndex(zone_index, "hydroxyl_site_mol_per_megagram")
             ],
         ),
         else => unreachable,
@@ -5715,19 +4585,19 @@ fn maximumPhosphateExtent(
         ],
         5 => @min(
             density * vector[
-                phosphatePackedIndex(zone_index, "adsorbed_h2po4_mol_p_per_Mg")
+                phosphatePackedIndex(zone_index, "adsorbed_h2po4_mol_p_per_megagram")
             ],
             vector[chemistry.State.packedComponentCount() - 1] / fraction,
         ),
         6 => @min(
             density * vector[
-                phosphatePackedIndex(zone_index, "adsorbed_h2po4_mol_p_per_Mg")
+                phosphatePackedIndex(zone_index, "adsorbed_h2po4_mol_p_per_megagram")
             ],
             vector[aqueousPackedIndex("hydroxide")] / fraction,
         ),
         7 => @min(
             density * vector[
-                phosphatePackedIndex(zone_index, "adsorbed_hpo4_mol_p_per_Mg")
+                phosphatePackedIndex(zone_index, "adsorbed_hpo4_mol_p_per_megagram")
             ],
             vector[aqueousPackedIndex("hydroxide")] / fraction,
         ),
@@ -5790,9 +4660,9 @@ fn phosphateZoneDensity(
     zone_index: usize,
 ) f64 {
     return if (zone_index == 0)
-        parameters.non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3
+        parameters.non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3
     else
-        parameters.band_phosphate_soil_mass_per_water_volume_Mg_per_m3;
+        parameters.band_phosphate_soil_mass_per_water_volume_megagrams_per_m3;
 }
 
 fn phosphateExtentControlsPackedIndex(index: usize) bool {
@@ -5841,10 +4711,10 @@ fn phosphateZoneExtentControlsPackedIndex(index: usize) bool {
             "iron_h2po4_pair_mol_per_m3",
             "calcium_hpo4_pair_mol_per_m3",
             "calcium_h2po4_pair_mol_per_m3",
-            "protonated_site_mol_per_Mg",
-            "hydroxyl_site_mol_per_Mg",
-            "adsorbed_h2po4_mol_p_per_Mg",
-            "adsorbed_hpo4_mol_p_per_Mg",
+            "protonated_site_mol_per_megagram",
+            "hydroxyl_site_mol_per_megagram",
+            "adsorbed_h2po4_mol_p_per_megagram",
+            "adsorbed_hpo4_mol_p_per_megagram",
         }) |field_name| {
             if (index == phosphatePackedIndex(zone_index, field_name))
                 return true;
@@ -5900,6 +4770,36 @@ fn largestScaledResidualIndex(
         }
     }
     return limiting_index;
+}
+
+/// Names the component that stagnated, on the stagnation path.
+///
+/// The convergence-failure path has always reported
+/// `SOLUTE largest residual: ... name=...`, but the stagnation path emitted only
+/// the hydrogen decomposition, so a stagnating cell could not be attributed to a
+/// component at all. Lane A9 reported this as an observability gap after it had
+/// to describe four stagnating examples without being able to say what stagnated.
+/// `limiting_index` is already computed each iteration for the trace, so this
+/// only reports a value that was being discarded.
+fn logTerminalStagnationComponent(
+    current: []const f64,
+    residual: []const f64,
+    options: Options,
+    limiting_index: usize,
+) void {
+    if (limiting_index >= current.len or limiting_index >= residual.len) return;
+    const value = current[limiting_index];
+    const change = residual[limiting_index];
+    std.log.debug(
+        "SOLUTE stagnated component: packed_component={d} name={s} value={e} change={e} scaled={e}",
+        .{
+            limiting_index,
+            chemistry.State.packedComponentName(limiting_index) orelse "unknown",
+            value,
+            change,
+            @abs(change) / residualScale(value, options),
+        },
+    );
 }
 
 fn selectTraceCandidate(
@@ -6118,8 +5018,8 @@ fn equilibriumClosureParameters(
     if (result.aqueous_kinetics.maximum_slow_association_mol_per_m3_step > 0)
         result.aqueous_kinetics.maximum_slow_association_mol_per_m3_step =
             unlimited;
-    if (result.phosphate_surface.maximum_exchange_mol_per_Mg_step > 0)
-        result.phosphate_surface.maximum_exchange_mol_per_Mg_step = unlimited;
+    if (result.phosphate_surface.maximum_exchange_mol_per_megagram_step > 0)
+        result.phosphate_surface.maximum_exchange_mol_per_megagram_step = unlimited;
     if (result.phosphate_minerals) |*minerals| {
         if (minerals.maximum_phosphate_precipitation_mol_per_m3_step > 0)
             minerals.maximum_phosphate_precipitation_mol_per_m3_step =
@@ -6170,8 +5070,8 @@ fn applyKineticGeochemistryStep(
     transformations.cation_exchange_water_ratios =
         parameters.cation_exchange_water_ratios;
     transformations.geochemistry = changes;
-    transformations.carboxyl_soil_mass_per_water_volume_Mg_per_m3 =
-        parameters.cation_exchange_water_ratios.shared_Mg_per_m3;
+    transformations.carboxyl_soil_mass_per_water_volume_megagrams_per_m3 =
+        parameters.cation_exchange_water_ratios.shared_megagrams_per_m3;
     try state.commitCell(cell_index, transformations);
 }
 
@@ -6355,6 +5255,72 @@ test "phosphate trust region uses runtime Picard relaxation and limits only HPO4
     );
 }
 
+/// Proves a complete relaxed fixed-point path off to the side, then publishes
+/// only its converged endpoint. No intermediate lookahead state is realized.
+fn tryTransactionalEquilibriumLookahead(
+    workspace: *Workspace,
+    scratch: *chemistry.State,
+    current: []const f64,
+    parameters: chemistry.ReactionParameters,
+    options: Options,
+    maximum_iterations: u16,
+    accepted_state: []f64,
+    accepted_residual: []f64,
+) !?u16 {
+    if (maximum_iterations == 0) return null;
+    @memcpy(workspace.reaction_span_best_state, current);
+    var iteration: u16 = 0;
+    while (iteration < maximum_iterations) : (iteration += 1) {
+        const transformations = evaluateAt(
+            scratch,
+            workspace.reaction_span_best_state,
+            parameters,
+        ) catch return null;
+        _ = transformedVectorAdmissible(
+            scratch,
+            workspace.reaction_span_best_state,
+            transformations,
+            parameters,
+            options.picard_relaxation,
+            workspace.reaction_span_best_residual,
+        ) catch return null;
+        evaluateGlobalResidualAt(
+            scratch,
+            workspace.reaction_span_best_residual,
+            parameters,
+            accepted_residual,
+        ) catch return null;
+        const norm = try scaledNorm(
+            workspace.reaction_span_best_residual,
+            accepted_residual,
+            options,
+        );
+        if (norm <= 1) {
+            @memcpy(
+                accepted_state,
+                workspace.reaction_span_best_residual,
+            );
+            return iteration + 1;
+        }
+        if (maximumDifference(
+            workspace.reaction_span_best_state,
+            workspace.reaction_span_best_residual,
+        ) <= std.math.floatEps(f64) *
+            @max(
+                1.0,
+                maximumMagnitude(workspace.reaction_span_best_state),
+            ))
+        {
+            return null;
+        }
+        @memcpy(
+            workspace.reaction_span_best_state,
+            workspace.reaction_span_best_residual,
+        );
+    }
+    return null;
+}
+
 fn rememberHistory(
     current: []const f64,
     residual: []const f64,
@@ -6397,7 +5363,7 @@ fn logRejectedFullStep(
             const changes =
                 chemistry.State.assembledAqueousChanges(
                     transformations,
-                    scratch.cation_exchange_mol_per_Mg[0],
+                    scratch.cation_exchange_mol_per_megagram[0],
                 ) catch
                     return;
             const aqueous = scratch.aqueous[0];
@@ -6467,7 +5433,7 @@ fn logLargestResidual(
             largest_scaled = scaled_value;
         }
     }
-    std.log.warn(
+    std.log.debug(
         "SOLUTE largest residual: packed_component={d} name={s} value={e} change={e} scaled={e}",
         .{
             largest_index,
@@ -6501,7 +5467,7 @@ fn transformedVector(scratch: *chemistry.State, current: []const f64, transforma
     const assembled_aqueous_changes =
         try chemistry.State.assembledAqueousChanges(
             accepted,
-            scratch.cation_exchange_mol_per_Mg[0],
+            scratch.cation_exchange_mol_per_megagram[0],
         );
     const provisional_hydrogen =
         scratch.aqueous[0].hydrogen + assembled_aqueous_changes.hydrogen;
@@ -6551,16 +5517,23 @@ fn transformedVectorAdmissible(scratch: *chemistry.State, current: []const f64, 
     const coefficients = try scratch.activityCoefficients(0, parameters.fractions);
     var fraction = requested_fraction;
     var rejected_fraction: ?f64 = null;
+    var last_rejection: ?anyerror = null;
     var attempt: u8 = 0;
     while (attempt < 48) : (attempt += 1) {
-        transformedVector(scratch, current, transformations, coefficients.monovalent_activity_coefficient, parameters.water_activity_product_mol2_per_m6, fraction, output) catch {
+        transformedVector(scratch, current, transformations, coefficients.monovalent_activity_coefficient, parameters.water_activity_product_mol2_per_m6, fraction, output) catch |err| {
+            last_rejection = err;
             rejected_fraction = fraction;
             fraction *= 0.5;
             continue;
         };
         break;
     }
-    if (attempt == 48) return error.NoAdmissibleSoluteReactionStep;
+    // If even a 2^-48 step is inadmissible, expose the physical/domain error
+    // that rejected it. Returning only a generic line-search error would hide
+    // the corrupt component and violate ecosys-ng's fail-fast diagnostic
+    // contract.
+    if (attempt == 48) return last_rejection orelse
+        error.NoAdmissibleSoluteReactionStep;
     var upper = rejected_fraction orelse return fraction;
     var lower = fraction;
     var search: u8 = 0;
@@ -6604,9 +5577,9 @@ fn scaled(transformations: chemistry.CellTransformations, fraction: f64) chemist
     scaleStruct(aqueous_network.Transformations, &result.aqueous, fraction);
     scaleStruct(phosphate_network.Transformations, &result.non_band_phosphate, fraction);
     scaleStruct(phosphate_network.Transformations, &result.band_phosphate, fraction);
-    scaleStruct(cation_exchange.Cations, &result.cation_adsorption_mol_per_Mg, fraction);
+    scaleStruct(cation_exchange.Cations, &result.cation_adsorption_mol_per_megagram, fraction);
     scaleStruct(geochemistry.Transformations, &result.geochemistry, fraction);
-    result.carboxyl_hydrogen_change_mol_per_Mg *= fraction;
+    result.carboxyl_hydrogen_change_mol_per_megagram *= fraction;
     return result;
 }
 
@@ -6653,16 +5626,29 @@ fn filled(comptime T: type, value: f64) T {
     return result;
 }
 
+fn inorganicCarbonMolPerM3(state: *const chemistry.State, cell: usize) f64 {
+    const aqueous = state.aqueous[cell];
+    return aqueous.carbon_dioxide +
+        aqueous.carbonate +
+        aqueous.bicarbonate +
+        aqueous.calcium_carbonate +
+        aqueous.calcium_bicarbonate +
+        aqueous.magnesium_carbonate +
+        aqueous.magnesium_bicarbonate +
+        aqueous.sodium_carbonate +
+        state.geochemistry_solids[cell].calcite_solid_mol_per_m3;
+}
+
 test "dependent water ions do not limit a conservative chemistry step" {
     var state = try chemistry.State.init(std.testing.allocator, 1);
     defer state.deinit();
     state.aqueous[0] = filled(aqueous_network.State, 1);
     state.non_band_phosphate[0] = filled(phosphate_network.State, 1);
     state.band_phosphate[0] = filled(phosphate_network.State, 1);
-    state.cation_exchange_mol_per_Mg[0] =
+    state.cation_exchange_mol_per_megagram[0] =
         filled(cation_exchange.Cations, 1);
     state.geochemistry_solids[0] = filled(geochemistry.SolidState, 1);
-    state.carboxyl_bound_hydrogen_mol_per_Mg[0] = 1;
+    state.carboxyl_bound_hydrogen_mol_per_megagram[0] = 1;
     state.water_mol_per_m3[0] = 1;
     var scratch = try chemistry.State.init(std.testing.allocator, 1);
     defer scratch.deinit();
@@ -6672,9 +5658,9 @@ test "dependent water ions do not limit a conservative chemistry step" {
     var transformations = std.mem.zeroes(chemistry.CellTransformations);
     transformations.aqueous.hydroxide = -0.3;
     transformations.cation_exchange_water_ratios = .{
-        .shared_Mg_per_m3 = 1,
-        .ammonium_non_band_Mg_per_m3 = 1,
-        .ammonium_band_Mg_per_m3 = 1,
+        .shared_megagrams_per_m3 = 1,
+        .ammonium_non_band_megagrams_per_m3 = 1,
+        .ammonium_band_megagrams_per_m3 = 1,
     };
     var test_parameters: chemistry.ReactionParameters = undefined;
     test_parameters.fractions = .{
@@ -6698,6 +5684,78 @@ test "dependent water ions do not limit a conservative chemistry step" {
     try std.testing.expect(output[4] > 0);
     try std.testing.expect(output[5] > 0);
     for (output) |value| try std.testing.expect(value >= 0);
+}
+
+// SOLUTE-037 regression. Extends the invariant already asserted by
+// "dependent water ions do not limit a conservative chemistry step" from the
+// admissibility path to the phosphate extent BOUNDS, which is where it was
+// still being violated. A pH-determined OH- concentration must never cap a
+// phosphate site-desorption extent, because `projectProvisional` re-derives
+// OH- from the water product on every candidate, so it is not a depletable
+// substrate. The source agrees: no reverse bound in `starte.f` 657--677 or
+// `solute.f` 1018--1054 names `AOH1`, `COH1`, or water.
+test "acidic hydroxide does not clamp phosphate site desorption" {
+    var vector: [chemistry.State.packedComponentCount()]f64 = undefined;
+    @memset(&vector, 0);
+    var test_parameters: chemistry.ReactionParameters = undefined;
+    test_parameters.fractions = .{
+        .ammonium_non_band = 0.8,
+        .ammonium_band = 0.2,
+        .nitrate_non_band = 0.6,
+        .nitrate_band = 0.4,
+        .phosphate_non_band = 0.7,
+        .phosphate_band = 0.3,
+    };
+    test_parameters
+        .non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 2;
+    test_parameters
+        .band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 2;
+
+    // `Boreal Black Spruce MB` cell 0 conditions: a strongly acidic horizon
+    // where OH- is ~1e-7 while the adsorbed pool is ~1e-1, a seven-order
+    // separation. Water is left at zero deliberately: under the removed
+    // clamp, family 5 read the water component, so a zero there would have
+    // forced a zero bound.
+    vector[aqueousPackedIndex("hydroxide")] = 1.9952623149688792e-7;
+    vector[phosphatePackedIndex(0, "adsorbed_h2po4_mol_p_per_megagram")] =
+        1.4353423827526443e-1;
+    vector[phosphatePackedIndex(0, "adsorbed_hpo4_mol_p_per_megagram")] =
+        1.7756084305380726e-2;
+
+    const density = 2.0;
+    inline for (.{
+        .{
+            CoupledExtentReaction.non_band_h2po4_protonated_site_exchange,
+            "adsorbed_h2po4_mol_p_per_megagram",
+        },
+        .{
+            CoupledExtentReaction.non_band_h2po4_hydroxyl_site_exchange,
+            "adsorbed_h2po4_mol_p_per_megagram",
+        },
+        .{
+            CoupledExtentReaction.non_band_hpo4_hydroxyl_site_exchange,
+            "adsorbed_hpo4_mol_p_per_megagram",
+        },
+    }) |case| {
+        const reverse = maximumPhosphateExtent(
+            &vector,
+            case[0],
+            -1,
+            test_parameters,
+        );
+        // The bound is the adsorbed inventory, not the OH- concentration.
+        try std.testing.expectApproxEqRel(
+            density * vector[phosphatePackedIndex(0, case[1])],
+            reverse,
+            1e-15,
+        );
+        // And it is not squeezed to the trace OH- scale, which is what made
+        // the clamp absorbing: desorption could not keep up with adsorption,
+        // so the adsorbed pool ratcheted up by 30x and the solve stagnated.
+        try std.testing.expect(
+            reverse > 1e3 * vector[aqueousPackedIndex("hydroxide")],
+        );
+    }
 }
 
 test "packed residual diagnostics identify scientific components" {
@@ -6737,23 +5795,23 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
     state.aqueous[0] = filled(aqueous_network.State, 1);
     state.non_band_phosphate[0] = filled(phosphate_network.State, 1);
     state.band_phosphate[0] = filled(phosphate_network.State, 1);
-    state.cation_exchange_mol_per_Mg[0] = filled(cation_exchange.Cations, 1);
+    state.cation_exchange_mol_per_megagram[0] = filled(cation_exchange.Cations, 1);
     state.geochemistry_solids[0] = filled(geochemistry.SolidState, 1);
     // Keep the synthetic chemistry within its declared physical domain.
     // Water is otherwise inert in this focused reaction-network fixture.
     state.water_mol_per_m3[0] = 100;
     const parameters: chemistry.ReactionParameters = .{
         .fractions = .{ .ammonium_non_band = 0.8, .ammonium_band = 0.2, .nitrate_non_band = 0.6, .nitrate_band = 0.4, .phosphate_non_band = 0.7, .phosphate_band = 0.3 },
-        .non_band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = 1,
-        .band_phosphate_soil_mass_per_water_volume_Mg_per_m3 = 1,
-        .cation_exchange_capacity_mol_charge_per_Mg = 10,
-        .cation_exchange_water_ratios = .{ .shared_Mg_per_m3 = 1, .ammonium_non_band_Mg_per_m3 = 1, .ammonium_band_Mg_per_m3 = 1 },
-        .total_carboxyl_sites_mol_per_Mg = 0,
+        .non_band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 1,
+        .band_phosphate_soil_mass_per_water_volume_megagrams_per_m3 = 1,
+        .cation_exchange_capacity_mol_charge_per_megagram = 10,
+        .cation_exchange_water_ratios = .{ .shared_megagrams_per_m3 = 1, .ammonium_non_band_megagrams_per_m3 = 1, .ammonium_band_megagrams_per_m3 = 1 },
+        .total_carboxyl_sites_mol_per_megagram = 0,
         .carboxyl_exchange_parameters = .{ .dissociation_constant_mol_per_m3 = 0.01, .maximum_exchange_mol_per_m3_per_iteration = 0.01, .substrate_limit_fraction_per_iteration = 0.2 },
         .aqueous_constants = filled(aqueous_rates.EquilibriumConstants, 1),
         .aqueous_kinetics = .{ .ammonium_substrate_limit_fraction = 0.2, .general_substrate_limit_fraction = 0.2, .maximum_fast_association_mol_per_m3_step = 0, .maximum_slow_association_mol_per_m3_step = 0 },
         .phosphate_constants = filled(phosphate_rates.EquilibriumConstants, 1),
-        .phosphate_surface = .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_Mg_step = 0, .substrate_limit_fraction = 0.2 },
+        .phosphate_surface = .{ .protonated_site_equilibrium_constant = 1, .hydroxyl_site_equilibrium_constant = 1, .h2po4_exchange_equilibrium_constant = 1, .hpo4_exchange_equilibrium_constant = 1, .water_activity_product_mol2_per_m6 = 1, .h2po4_dissociation_constant = 1, .maximum_exchange_mol_per_megagram_step = 0, .substrate_limit_fraction = 0.2 },
         .phosphate_minerals = null,
         .phosphate_kinetics = .{ .substrate_limit_fraction = 0.2, .maximum_pairing_mol_per_m3_step = 0 },
         .cation_exchange_parameters = .{ .selectivity = .{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }, .substrate_limit_fraction = 0.2, .maximum_adsorption_mol_charge_per_m3_step = 0 },
@@ -6762,6 +5820,43 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
         .water_activity_product_mol2_per_m6 = 1,
         .negligible_water_ion_concentration_mol_per_m3 = 1e-32,
     };
+    // Accepted equilibrium and kinetic-calcite steps must only repartition
+    // inorganic carbon among aqueous carriers and solid calcite.
+    var carbon_state = try chemistry.State.init(std.testing.allocator, 1);
+    defer carbon_state.deinit();
+    carbon_state.aqueous[0] = filled(aqueous_network.State, 1);
+    carbon_state.aqueous[0].calcium = 2;
+    carbon_state.aqueous[0].carbonate = 2;
+    carbon_state.non_band_phosphate[0] = filled(phosphate_network.State, 1);
+    carbon_state.band_phosphate[0] = filled(phosphate_network.State, 1);
+    carbon_state.cation_exchange_mol_per_megagram[0] =
+        filled(cation_exchange.Cations, 1);
+    carbon_state.geochemistry_solids[0] = filled(geochemistry.SolidState, 1);
+    carbon_state.geochemistry_solids[0].calcite_solid_mol_per_m3 = 0.1;
+    carbon_state.water_mol_per_m3[0] = 100;
+    var carbon_parameters = parameters;
+    carbon_parameters.geochemistry_kinetics
+        .maximum_hydroxide_mineral_mol_per_m3_step = 0.01;
+    const carbon_before = inorganicCarbonMolPerM3(&carbon_state, 0);
+    const calcite_before =
+        carbon_state.geochemistry_solids[0].calcite_solid_mol_per_m3;
+    const carbon_result = try solveCell(
+        std.testing.allocator,
+        &carbon_state,
+        0,
+        carbon_parameters,
+        .{ .max_iterations = 60 },
+    );
+    try std.testing.expect(carbon_result.converged);
+    try std.testing.expect(
+        carbon_state.geochemistry_solids[0].calcite_solid_mol_per_m3 !=
+            calcite_before,
+    );
+    try std.testing.expectApproxEqAbs(
+        carbon_before,
+        inorganicCarbonMolPerM3(&carbon_state, 0),
+        2.0e-14,
+    );
     // Exact standalone reproduction of the first hourly Ottawa limiting
     // coordinate. The 0.025 and 0.00125 values are legacy fixed-cycle
     // relaxation ceilings for aqueous association and cation exchange, not
@@ -6772,7 +5867,7 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
     hourly_state.aqueous[0].ammonium_non_band = 0.6025043003707329;
     hourly_state.non_band_phosphate[0] = filled(phosphate_network.State, 1);
     hourly_state.band_phosphate[0] = filled(phosphate_network.State, 1);
-    hourly_state.cation_exchange_mol_per_Mg[0] =
+    hourly_state.cation_exchange_mol_per_megagram[0] =
         filled(cation_exchange.Cations, 1);
     hourly_state.geochemistry_solids[0] = filled(geochemistry.SolidState, 1);
     hourly_state.water_mol_per_m3[0] = 1;
@@ -6807,7 +5902,7 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
     ottawa_ceiling_parameters.aqueous_kinetics
         .maximum_slow_association_mol_per_m3_step = 0.025;
     ottawa_ceiling_parameters.phosphate_surface
-        .maximum_exchange_mol_per_Mg_step = 0.0025;
+        .maximum_exchange_mol_per_megagram_step = 0.0025;
     ottawa_ceiling_parameters.geochemistry_kinetics
         .maximum_hydroxide_mineral_mol_per_m3_step = 0.0025;
     const closure_parameters = equilibriumClosureParameters(
@@ -6826,7 +5921,7 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
     try std.testing.expectEqual(
         @as(f64, 1.0e100),
         closure_parameters.phosphate_surface
-            .maximum_exchange_mol_per_Mg_step,
+            .maximum_exchange_mol_per_megagram_step,
     );
     try std.testing.expectEqual(
         @as(f64, 0),
@@ -6885,7 +5980,7 @@ test "Ottawa phosphate stays accelerated and weathering applies once" {
     phosphate_parameters.phosphate_kinetics
         .maximum_pairing_mol_per_m3_step = 0.025;
     phosphate_parameters.phosphate_surface
-        .maximum_exchange_mol_per_Mg_step = 0.0025;
+        .maximum_exchange_mol_per_megagram_step = 0.0025;
     const phosphate_result = try solveCell(
         std.testing.allocator,
         &state,

@@ -1,6 +1,7 @@
 const std = @import("std");
 const CellRange = @import("compute.zig").CellRange;
 const canopy_module = @import("canopy_photosynthesis.zig");
+const branch_reserve_equilibration = @import("branch_reserve_equilibration.zig");
 const execution_calendar_date = @import("execution_calendar_date.zig");
 const stages_module = @import("plant_growth_stages.zig");
 const dormancy_module = @import("plant_dormancy.zig");
@@ -14,6 +15,13 @@ const soil_exchange_module = @import("plant_soil_exchange.zig");
 const root_system_module = @import("plant_root_system.zig");
 const root_uptake_module = @import("plant_root_nutrient_uptake.zig");
 const growth_temperature_module = @import("plant_growth_temperature.zig");
+const stalk_growing_node_window = @import("stalk_growing_node_window.zig");
+const storage_carbon_branch_survival = @import("storage_carbon_branch_survival.zig");
+const main_stalk_death_propagation = @import("main_stalk_death_propagation.zig");
+const leaf_structural_nutrient_recycling = @import("leaf_structural_nutrient_recycling.zig");
+const seasonal_growth_flag_reset = @import("seasonal_growth_flag_reset.zig");
+const end_of_season_reproductive_turnover = @import("end_of_season_reproductive_turnover.zig");
+const seasonal_stalk_standing_dead_turnover = @import("seasonal_stalk_standing_dead_turnover.zig");
 const CarbonExchange = @import("canopy_carbon_exchange.zig").State;
 
 pub const PlantParameters = struct {
@@ -113,6 +121,7 @@ pub const NodeGrowthParameters = struct {
     reserve_nitrogen_half_saturation_g_n_per_g_c: f64,
     reserve_phosphorus_half_saturation_g_p_per_g_c: f64,
     physiological_maturity_no_fill_h: f64,
+    maximum_previous_stalk_nodes_in_rolling_window: usize,
     annual_leafoff_delay_h_by_phenology: [4]f64,
     leaf_storage_exchange_fraction_per_h_by_turnover: [6]f64,
 
@@ -145,6 +154,7 @@ pub fn sourceNodeGrowthParameters() NodeGrowthParameters {
         .reserve_nitrogen_half_saturation_g_n_per_g_c = 0.005,
         .reserve_phosphorus_half_saturation_g_p_per_g_c = 0.001,
         .physiological_maturity_no_fill_h = 72,
+        .maximum_previous_stalk_nodes_in_rolling_window = 23,
         .annual_leafoff_delay_h_by_phenology = .{ 360, 1440, 720, 720 },
         .leaf_storage_exchange_fraction_per_h_by_turnover = .{ 5.0e-3, 5.0e-3, 5.0e-6, 5.0e-6, 5.0e-5, 5.0e-4 },
     };
@@ -183,6 +193,7 @@ pub const ApplyContext = struct {
     plant_parameters: []const PlantParameters,
     active_by_plant: []const bool,
     emerged_by_plant: []const bool,
+    sowing_depth_m_by_plant: []const f64,
     roots: *root_system_module.State,
     soil_temperature_k: []const f64,
     soil_layer_capacity: usize,
@@ -210,15 +221,169 @@ pub const ApplyContext = struct {
     solar_noon_hour_by_cell: []const u8,
     execution_year: u16,
     timestep_h: f64,
+    seasonal_litterfall_rate_per_h: f64,
+    seasonal_litterfall_delay_threshold_h: f64,
     dormancy_parameters_by_plant: []const dormancy_module.Parameters,
     litter_partition: *const litter_partition_module.State,
     senescence_recycling: SenescenceRecyclingParameters,
     senescence_products_by_plant: []canopy_module.SenescenceProducts,
+    /// True only when the source-order main-branch IFLGR transaction was
+    /// admitted during this biological step. The orchestrator clears it
+    /// before each call and consumes it for automatic self-seeding.
+    seasonal_turnover_event_by_plant: ?[]bool = null,
     senescence_demand_tolerance_g_c: f64,
     leaf_area_presence_tolerance_m2: f64,
     symbiosis_parameters: symbiosis_module.RuntimeParameters,
     carbon_exchange: ?*CarbonExchange = null,
 };
+
+const SeasonalTurnoverWorkspace = struct {
+    internode_length_m: []f64,
+    internode_mass: []seasonal_stalk_standing_dead_turnover.ElementMass,
+};
+
+fn commitExactSeasonalTurnover(
+    context: *ApplyContext,
+    plant: usize,
+    branch: usize,
+    parameters: PlantParameters,
+    workspace: SeasonalTurnoverWorkspace,
+) !bool {
+    const canopy = context.canopy;
+    const nodes = try canopy.nodeRange(branch);
+    const node_count = nodes.end - nodes.first;
+    if (workspace.internode_length_m.len < node_count or workspace.internode_mass.len < node_count)
+        return error.SeasonalTurnoverWorkspaceTooSmall;
+    var flag_state: seasonal_growth_flag_reset.BranchState = .{
+        .accumulated_leafout_h = context.dormancy.branches[branch].accumulated_leafout_h,
+        .accumulated_leafoff_h = context.dormancy.branches[branch].accumulated_leafoff_h,
+        .leafout_disabled = context.dormancy.branches[branch].leafout_disabled,
+        .leafoff_disabled = context.dormancy.branches[branch].leafoff_disabled,
+        .reproductive_growth_disabled = context.dormancy.branches[branch].reproductive_growth_disabled,
+        .reproductive_litterfall_delay_h = context.dormancy.branches[branch].reproductive_litterfall_delay_h,
+        .leafout_initialization_disabled = !context.development.leafout_initialization_enabled[branch],
+    };
+    _ = try seasonal_growth_flag_reset.applyBranch(&flag_state, .{
+        .required_leafout_h = context.dormancy_parameters_by_plant[plant].required_leafout_h,
+        .required_leafoff_h = context.dormancy_parameters_by_plant[plant].required_leafoff_h,
+        .growth_habit = if (parameters.growth_habit == 0) .annual else .perennial,
+        .phenology = try stages_module.phenologyTypeFromReadq(parameters.leaf_phenology_type),
+        .first_biological_iteration = true,
+    });
+
+    var husk: end_of_season_reproductive_turnover.ElementMass = .{ .carbon_g_c = canopy.branch_husk_carbon_g[branch], .nitrogen_g_n = canopy.branch_husk_nitrogen_g[branch], .phosphorus_g_p = canopy.branch_husk_phosphorus_g[branch] };
+    var ear: end_of_season_reproductive_turnover.ElementMass = .{ .carbon_g_c = canopy.branch_ear_carbon_g[branch], .nitrogen_g_n = canopy.branch_ear_nitrogen_g[branch], .phosphorus_g_p = canopy.branch_ear_phosphorus_g[branch] };
+    var grain: end_of_season_reproductive_turnover.ElementMass = .{ .carbon_g_c = canopy.branch_grain_carbon_g[branch], .nitrogen_g_n = canopy.branch_grain_nitrogen_g[branch], .phosphorus_g_p = canopy.branch_grain_phosphorus_g[branch] };
+    var storage: end_of_season_reproductive_turnover.ElementMass = .{ .carbon_g_c = canopy.plant_seed_storage_carbon_g[plant], .nitrogen_g_n = canopy.plant_seed_storage_nitrogen_g[plant], .phosphorus_g_p = canopy.plant_seed_storage_phosphorus_g[plant] };
+    var potential_sites = canopy.branch_potential_seed_site_count[branch];
+    var seed_count = canopy.branch_seed_count[branch];
+    var individual_seed_carbon = canopy.branch_individual_seed_carbon_g[branch];
+    var products = context.senescence_products_by_plant[plant];
+    const nonfoliar = try context.litter_partition.get(plant, .non_foliar);
+    const admitted = try end_of_season_reproductive_turnover.apply(.{
+        .reproductive_growth_disabled = &flag_state.reproductive_growth_disabled,
+        .litterfall_delay_h = &flag_state.reproductive_litterfall_delay_h,
+        .husk = &husk,
+        .ear = &ear,
+        .grain = &grain,
+        .potential_seed_site_count = &potential_sites,
+        .seed_count = &seed_count,
+        .individual_seed_carbon_g_c = &individual_seed_carbon,
+        .plant_seed_storage = &storage,
+        .litter_carbon_g_c = &products.nonwoody_carbon_g,
+        .litter_nitrogen_g_n = &products.nonwoody_nitrogen_g,
+        .litter_phosphorus_g_p = &products.nonwoody_phosphorus_g,
+    }, .{
+        .timestep_h = context.timestep_h,
+        .litterfall_rate_per_h = context.seasonal_litterfall_rate_per_h,
+        .litterfall_delay_threshold_h = context.seasonal_litterfall_delay_threshold_h,
+        .growth_habit = if (parameters.growth_habit == 0) .annual else .perennial,
+        .phenology = try stages_module.phenologyTypeFromReadq(parameters.leaf_phenology_type),
+        .nonfoliar_kinetics = .{ .carbon = &nonfoliar.carbon, .nitrogen = &nonfoliar.nitrogen, .phosphorus = &nonfoliar.phosphorus },
+    });
+
+    var stalk: seasonal_stalk_standing_dead_turnover.ElementMass = .{ .carbon_g_c = canopy.branch_stalk_carbon_g[branch], .nitrogen_g_n = canopy.branch_stalk_nitrogen_g[branch], .phosphorus_g_p = canopy.branch_stalk_phosphorus_g[branch] };
+    var senescing_stalk: seasonal_stalk_standing_dead_turnover.ElementMass = .{ .carbon_g_c = canopy.branch_senescing_stalk_carbon_g[branch], .nitrogen_g_n = canopy.branch_senescing_stalk_nitrogen_g[branch], .phosphorus_g_p = canopy.branch_senescing_stalk_phosphorus_g[branch] };
+    const lengths = workspace.internode_length_m[0..node_count];
+    const masses = workspace.internode_mass[0..node_count];
+    for (nodes.first..nodes.end, 0..) |node, local| {
+        lengths[local] = canopy.node_internode_length_m[node];
+        masses[local] = .{ .carbon_g_c = canopy.node_internode_carbon_g[node], .nitrogen_g_n = canopy.node_internode_nitrogen_g[node], .phosphorus_g_p = canopy.node_internode_phosphorus_g[node] };
+    }
+    const first_kinetic = plant * 4;
+    var standing_carbon = canopy.plant_standing_dead_carbon_by_kinetic_g[first_kinetic..][0..4].*;
+    var standing_nitrogen = canopy.plant_standing_dead_nitrogen_by_kinetic_g[first_kinetic..][0..4].*;
+    var standing_phosphorus = canopy.plant_standing_dead_phosphorus_by_kinetic_g[first_kinetic..][0..4].*;
+    const standing_before = .{ sumFour(standing_carbon), sumFour(standing_nitrogen), sumFour(standing_phosphorus) };
+    if (admitted) {
+        const stalk_kinetics = try context.litter_partition.get(plant, .stalk);
+        _ = try seasonal_stalk_standing_dead_turnover.apply(.{
+            .stalk = &stalk,
+            .senescing_stalk = &senescing_stalk,
+            .internode_length_m = lengths,
+            .internode_mass = masses,
+            .standing_dead_carbon_g_c = &standing_carbon,
+            .standing_dead_nitrogen_g_n = &standing_nitrogen,
+            .standing_dead_phosphorus_g_p = &standing_phosphorus,
+        }, .{
+            .aboveground_turnover_type = parameters.turnover_type,
+            .root_profile_type = parameters.root_profile_type,
+            .growth_habit = if (parameters.growth_habit == 0) .annual else .perennial,
+            .litterfall_rate_per_h = context.seasonal_litterfall_rate_per_h,
+            .timestep_h = context.timestep_h,
+            .stalk_kinetics = .{ .carbon = &stalk_kinetics.carbon, .nitrogen = &stalk_kinetics.nitrogen, .phosphorus = &stalk_kinetics.phosphorus },
+        });
+    }
+
+    context.dormancy.branches[branch].leafout_disabled = flag_state.leafout_disabled;
+    context.dormancy.branches[branch].leafoff_disabled = flag_state.leafoff_disabled;
+    context.dormancy.branches[branch].reproductive_growth_disabled = flag_state.reproductive_growth_disabled;
+    context.dormancy.branches[branch].reproductive_litterfall_delay_h = flag_state.reproductive_litterfall_delay_h;
+    context.development.leafout_initialization_enabled[branch] = !flag_state.leafout_initialization_disabled;
+    canopy.branch_husk_carbon_g[branch] = husk.carbon_g_c;
+    canopy.branch_husk_nitrogen_g[branch] = husk.nitrogen_g_n;
+    canopy.branch_husk_phosphorus_g[branch] = husk.phosphorus_g_p;
+    canopy.branch_ear_carbon_g[branch] = ear.carbon_g_c;
+    canopy.branch_ear_nitrogen_g[branch] = ear.nitrogen_g_n;
+    canopy.branch_ear_phosphorus_g[branch] = ear.phosphorus_g_p;
+    canopy.branch_grain_carbon_g[branch] = grain.carbon_g_c;
+    canopy.branch_grain_nitrogen_g[branch] = grain.nitrogen_g_n;
+    canopy.branch_grain_phosphorus_g[branch] = grain.phosphorus_g_p;
+    canopy.branch_potential_seed_site_count[branch] = potential_sites;
+    canopy.branch_seed_count[branch] = seed_count;
+    canopy.branch_individual_seed_carbon_g[branch] = individual_seed_carbon;
+    canopy.plant_seed_storage_carbon_g[plant] = storage.carbon_g_c;
+    canopy.plant_seed_storage_nitrogen_g[plant] = storage.nitrogen_g_n;
+    canopy.plant_seed_storage_phosphorus_g[plant] = storage.phosphorus_g_p;
+    context.senescence_products_by_plant[plant] = products;
+    if (admitted) {
+        canopy.branch_stalk_carbon_g[branch] = stalk.carbon_g_c;
+        canopy.branch_stalk_nitrogen_g[branch] = stalk.nitrogen_g_n;
+        canopy.branch_stalk_phosphorus_g[branch] = stalk.phosphorus_g_p;
+        canopy.branch_senescing_stalk_carbon_g[branch] = senescing_stalk.carbon_g_c;
+        canopy.branch_senescing_stalk_nitrogen_g[branch] = senescing_stalk.nitrogen_g_n;
+        canopy.branch_senescing_stalk_phosphorus_g[branch] = senescing_stalk.phosphorus_g_p;
+        for (nodes.first..nodes.end, 0..) |node, local| {
+            canopy.node_internode_length_m[node] = lengths[local];
+            canopy.node_internode_carbon_g[node] = masses[local].carbon_g_c;
+            canopy.node_internode_nitrogen_g[node] = masses[local].nitrogen_g_n;
+            canopy.node_internode_phosphorus_g[node] = masses[local].phosphorus_g_p;
+        }
+        canopy.plant_standing_dead_carbon_by_kinetic_g[first_kinetic..][0..4].* = standing_carbon;
+        canopy.plant_standing_dead_nitrogen_by_kinetic_g[first_kinetic..][0..4].* = standing_nitrogen;
+        canopy.plant_standing_dead_phosphorus_by_kinetic_g[first_kinetic..][0..4].* = standing_phosphorus;
+        canopy.plant_standing_dead_carbon_g[plant] += sumFour(standing_carbon) - standing_before[0];
+        canopy.plant_standing_dead_nitrogen_g[plant] += sumFour(standing_nitrogen) - standing_before[1];
+        canopy.plant_standing_dead_phosphorus_g[plant] += sumFour(standing_phosphorus) - standing_before[2];
+    }
+    return admitted;
+}
+
+fn sumFour(values: [4]f64) f64 {
+    var total: f64 = 0;
+    for (values) |value| total += value;
+    return total;
+}
 
 const PreEmergenceRootPublication = struct {
     respiration_unlimited_by_oxygen_g_c_per_h: f64,
@@ -272,6 +437,9 @@ fn validateNodeGrowthTransaction(
     branch: usize,
     newest_node: usize,
     first_growing_node: usize,
+    leaf_sheath_last_node: usize,
+    stalk_first_node: usize,
+    stalk_last_node: usize,
     maximum_concurrently_growing_nodes: usize,
     leaf: canopy_module.LeafGrowth,
     sheath: canopy_module.LeafGrowth,
@@ -300,11 +468,11 @@ fn validateNodeGrowthTransaction(
     if (plant.specific_leaf_area_m2_per_g_c < 0 or plant.specific_sheath_length_m_per_g_c < 0 or plant.specific_internode_length_m_per_g_c < 0 or plant.sheath_vertical_projection_fraction < 0 or plant.sheath_vertical_projection_fraction > 1 or plant.stalk_vertical_projection_fraction < 0 or plant.stalk_vertical_projection_fraction > 1 or etoliation_factor < 0 or turgor_expansion_fraction < 0 or turgor_expansion_fraction > 1 or cell_area_m2 <= 0 or plant_density_per_m2 <= 0 or stalk_volume_m3_per_g_c <= 0 or maximum_concurrently_growing_nodes == 0) return error.InvalidShootNodeGrowthInput;
     inline for (.{ leaf, sheath, stalk }) |growth| inline for (.{ growth.carbon_g, growth.nitrogen_g, growth.phosphorus_g }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidShootNodeGrowthInput;
     const nodes = try canopy.nodeRange(branch);
-    if (newest_node >= nodes.end - nodes.first or first_growing_node > newest_node) return error.CanopyNodeIndexOutOfBounds;
-    const first = @max(first_growing_node, newest_node + 1 -| maximum_concurrently_growing_nodes);
-    const count_f64: f64 = @floatFromInt(newest_node - first + 1);
+    if (newest_node >= nodes.end - nodes.first or leaf_sheath_last_node >= nodes.end - nodes.first or first_growing_node > leaf_sheath_last_node or stalk_last_node >= nodes.end - nodes.first or stalk_first_node > stalk_last_node) return error.CanopyNodeIndexOutOfBounds;
+    const first = @max(first_growing_node, leaf_sheath_last_node + 1 -| maximum_concurrently_growing_nodes);
+    const count_f64: f64 = @floatFromInt(leaf_sheath_last_node - first + 1);
     var leaf_area_growth_m2: f64 = 0;
-    for (first..newest_node + 1) |local_node| {
+    for (first..leaf_sheath_last_node + 1) |local_node| {
         const node = nodes.first + local_node;
         const leaf_carbon = canopy.node_leaf_carbon_g[node] + leaf.carbon_g / count_f64;
         const leaf_nitrogen = canopy.node_leaf_nitrogen_g[node] + leaf.nitrogen_g / count_f64;
@@ -322,11 +490,10 @@ fn validateNodeGrowthTransaction(
         inline for (.{ leaf_carbon, leaf_nitrogen, leaf_phosphorus, leaf_protein, leaf_specific_area, leaf_area, sheath_carbon, sheath_nitrogen, sheath_phosphorus, sheath_protein, sheath_specific_length, sheath_height }) |value| if (!std.math.isFinite(value) or value < 0) return error.NonFiniteShootNodeGrowthResult;
     }
     if (!std.math.isFinite(canopy.branch_leaf_area_m2[branch] + leaf_area_growth_m2)) return error.NonFiniteShootNodeGrowthResult;
-    const stalk_first = @max(@as(usize, 1), newest_node + 1 -| maximum_concurrently_growing_nodes);
-    if (stalk_first <= newest_node) {
-        const stalk_count_f64: f64 = @floatFromInt(newest_node - stalk_first + 1);
-        var previous_height_m = if (stalk_first > 0) canopy.node_height_m[nodes.first + stalk_first - 1] else 0;
-        for (stalk_first..newest_node + 1) |local_node| {
+    {
+        const stalk_count_f64: f64 = @floatFromInt(stalk_last_node - stalk_first_node + 1);
+        var previous_height_m = if (stalk_first_node > 0) canopy.node_height_m[nodes.first + stalk_first_node - 1] else 0;
+        for (stalk_first_node..stalk_last_node + 1) |local_node| {
             const node = nodes.first + local_node;
             const carbon = canopy.node_internode_carbon_g[node] + stalk.carbon_g / stalk_count_f64;
             const nitrogen = canopy.node_internode_nitrogen_g[node] + stalk.nitrogen_g / stalk_count_f64;
@@ -340,20 +507,32 @@ fn validateNodeGrowthTransaction(
     }
 }
 
-fn equilibratePlantBranchReserves(canopy: *canopy_module.State, branches: canopy_module.Range, controls: NodeGrowthParameters, timestep_h: f64, presence_threshold_g_c: f64) !void {
+fn equilibratePlantBranchReserves(canopy: *canopy_module.State, branches: canopy_module.Range, main_branch: ?usize, controls: NodeGrowthParameters, timestep_h: f64, presence_threshold_g_c: f64) !void {
     if (branches.end > canopy.branch_reserve_carbon_g.len or branches.first >= branches.end) return error.CanopyBranchIndexOutOfBounds;
-    if (branches.end - branches.first <= 1) return;
-    for (branches.first + 1..branches.end) |other_branch| {
-        _ = try canopy_module.equilibrateBranchReserves(
-            canopy,
-            branches.first,
-            other_branch,
-            controls.branch_reserve_carbon_exchange_fraction_per_h,
-            controls.branch_reserve_nutrient_exchange_fraction_per_h,
-            timestep_h,
-            presence_threshold_g_c,
-        );
-    }
+    if (branches.end - branches.first <= 1 or main_branch == null) return;
+    const main = main_branch.?;
+    if (main < branches.first or main >= branches.end) return error.CanopyBranchIndexOutOfBounds;
+    const branch_count = branches.end - branches.first;
+    const workspace_values = try canopy.allocator.alloc(f64, try std.math.mul(usize, branch_count, 3));
+    defer canopy.allocator.free(workspace_values);
+    try branch_reserve_equilibration.apply(.{
+        .sapwood_carbon_g_c = canopy.branch_sapwood_carbon_g,
+        .reserve_carbon_g_c = canopy.branch_reserve_carbon_g,
+        .reserve_nitrogen_g_n = canopy.branch_reserve_nitrogen_g,
+        .reserve_phosphorus_g_p = canopy.branch_reserve_phosphorus_g,
+    }, .{
+        .reserve_carbon_g_c = workspace_values[0..branch_count],
+        .reserve_nitrogen_g_n = workspace_values[branch_count .. 2 * branch_count],
+        .reserve_phosphorus_g_p = workspace_values[2 * branch_count .. 3 * branch_count],
+    }, .{
+        .first_branch = branches.first,
+        .end_branch = branches.end,
+        .main_branch = main,
+        .carbon_exchange_fraction_per_h = controls.branch_reserve_carbon_exchange_fraction_per_h,
+        .nutrient_exchange_fraction_per_h = controls.branch_reserve_nutrient_exchange_fraction_per_h,
+        .timestep_h = timestep_h,
+        .structural_presence_threshold_g_c = presence_threshold_g_c,
+    });
 }
 
 pub fn redistributeMainBranchMobileDuringRemobilization(
@@ -638,19 +817,23 @@ pub fn commitSenescenceStorageBackstop(
     if (!std.math.isFinite(storage_g_c) or storage_g_c < 0) return error.InvalidSenescenceStorageBackstopState;
     if (remaining_respiration_demand_g_c <= tolerance_g_c) return false;
 
-    if (storage_g_c > remaining_respiration_demand_g_c) {
-        canopy.plant_seed_storage_carbon_g[plant] = storage_g_c - remaining_respiration_demand_g_c;
-        return false;
-    }
-    const unsatisfied_g_c = remaining_respiration_demand_g_c - storage_g_c;
-    canopy.plant_seed_storage_carbon_g[plant] = 0;
-    canopy.branch_stalk_carbon_g[branch] = @max(0, canopy.branch_stalk_carbon_g[branch] - unsatisfied_g_c);
-    if (perennial or evergreen) {
+    var status: storage_carbon_branch_survival.BranchStatus = if (growth.branches[branch].dead or development.dead[branch]) .dead else .alive;
+    const outcome = try storage_carbon_branch_survival.apply(.{
+        .plant_storage_carbon_g_c = &canopy.plant_seed_storage_carbon_g[plant],
+        .branch_stalk_carbon_g_c = &canopy.branch_stalk_carbon_g[branch],
+        .branch_status = &status,
+        .leafoff_accumulated_h = &dormancy.branches[branch].accumulated_leafoff_h,
+    }, .{
+        .remaining_respiration_g_c_per_timestep = remaining_respiration_demand_g_c,
+        .growth_habit = if (perennial) .perennial else .annual,
+        .phenology = if (evergreen) .evergreen else .seasonal,
+        .leafoff_required_h = required_leafoff_h,
+    });
+    if (outcome.outcome == .branch_died) {
         growth.branches[branch].dead = true;
         development.dead[branch] = true;
         return true;
     }
-    dormancy.branches[branch].accumulated_leafoff_h = required_leafoff_h + 0.5;
     return false;
 }
 
@@ -716,6 +899,14 @@ test "GROSUB DEATHC storage backstop kills perennial but defers deciduous annual
     try std.testing.expect(!try commitSenescenceStorageBackstop(&canopy, &growth, &development, &dormant, 0, 0, 1, false, false, 20, 1e-12));
     try std.testing.expectApproxEqAbs(@as(f64, 20.5), dormant.branches[0].accumulated_leafoff_h, 1e-12);
     try std.testing.expect(!growth.branches[0].dead);
+
+    canopy.branch_stalk_carbon_g[0] = 0.25;
+    canopy.plant_seed_storage_carbon_g[0] = 0.5;
+    const leafoff_before = dormant.branches[0].accumulated_leafoff_h;
+    try std.testing.expectError(error.StorageCarbonSurvivalStalkOverdraw, commitSenescenceStorageBackstop(&canopy, &growth, &development, &dormant, 0, 0, 1, false, false, 20, 1e-12));
+    try std.testing.expectEqual(@as(f64, 0.5), canopy.plant_seed_storage_carbon_g[0]);
+    try std.testing.expectEqual(@as(f64, 0.25), canopy.branch_stalk_carbon_g[0]);
+    try std.testing.expectEqual(leafoff_before, dormant.branches[0].accumulated_leafoff_h);
 }
 
 test "GROSUB natural dead branch reset clears transient stages and preserves runtime controls" {
@@ -822,19 +1013,24 @@ fn advanceCanopySymbiosis(
     };
     const host_tissue_carbon_g_c = context.canopy.branch_leaf_carbon_g[branch] + context.canopy.branch_sheath_carbon_g[branch];
     const host_leaf_area_m2 = context.canopy.branch_leaf_area_m2[branch];
+    const zerop_g_c = context.structural_presence_threshold_g_per_plant * context.canopy.plant_population_count[plant];
+    const zerop2_g_c = context.grain_fill_detection_threshold_g_per_plant * context.canopy.plant_population_count[plant];
     const metabolism = try symbiosis_module.calculate(.{
         .structural = structural,
         .nonstructural = current_mobile,
         .decomposition_density = try symbiosis_module.canopyDecompositionDensity(
             structural.carbon_g_c,
             host_leaf_area_m2,
-            context.leaf_area_presence_tolerance_m2,
+            zerop2_g_c,
         ),
         .temperature_response = growth_temperature,
         .growth_water_response = water.growth_fraction,
         .maintenance_temperature_response = maintenance_temperature,
         .maintenance_water_response = water.stomatal_fraction,
         .timestep_h = context.timestep_h,
+        .structural_presence_threshold_g_c = zerop_g_c,
+        .ratio_division_threshold = context.structural_presence_threshold_g_per_plant,
+        .fixation_respiration_presence_threshold_g_c = zerop_g_c,
     }, try symbiosis_module.metabolicParameters(
         context.symbiosis_parameters,
         fixation_type,
@@ -848,7 +1044,7 @@ fn advanceCanopySymbiosis(
         .nitrogen_g_n = context.canopy.branch_mobile_nitrogen_g[branch],
         .phosphorus_g_p = context.canopy.branch_mobile_phosphorus_g[branch],
     };
-    const exchange = if (host_mobile.carbon_g_c > context.senescence_demand_tolerance_g_c and host_tissue_carbon_g_c > context.senescence_demand_tolerance_g_c and (parameters.growth_habit != 0 or !physiological_maturity_reached))
+    const exchange = if (host_mobile.carbon_g_c > zerop_g_c and host_tissue_carbon_g_c > zerop2_g_c and (parameters.growth_habit != 0 or !physiological_maturity_reached))
         try symbiosis_module.equilibrateHostAndSymbiont(
             host_mobile,
             metabolism.next_nonstructural,
@@ -857,6 +1053,9 @@ fn advanceCanopySymbiosis(
             context.symbiosis_parameters.initial_bacterial_carbon_g_c_per_m2 * context.cell_area_m2[cell],
             context.symbiosis_parameters.host_exchange_fraction_per_h_by_fixation_type[fixation_type - 1],
             context.timestep_h,
+            zerop_g_c,
+            zerop2_g_c,
+            zerop_g_c,
         )
     else
         symbiosis_module.HostExchange{ .next_host = host_mobile, .next_symbiont = metabolism.next_nonstructural, .host_to_symbiont = .{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 } };
@@ -889,13 +1088,14 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         context.plant_parameters,
         context.active_by_plant,
         context.emerged_by_plant,
+        context.sowing_depth_m_by_plant,
         context.canopy_temperature_k_by_plant,
         context.canopy_total_water_potential_mpa_by_plant,
         context.total_aerodynamic_resistance_h_per_m_by_plant,
         context.stomatal_resistance_h_per_m_by_plant,
         context.plant_radiation_fraction,
     }) |values| if (values.len != plant_count) return error.ShootGrowthRuntimeDimensionMismatch;
-    if (range.end > canopy.cell_count or context.cell_area_m2.len != canopy.cell_count or context.solar_noon_hour_by_cell.len != canopy.cell_count or context.hour_of_day > 23 or context.growth_stages.plant_count != plant_count or context.dormancy.branches.len != canopy.branch_node_offsets.len - 1 or context.development.branch_count != canopy.branch_node_offsets.len - 1 or context.dormancy_parameters_by_plant.len != plant_count or context.litter_partition.plant_count != plant_count or context.senescence_products_by_plant.len != plant_count or !std.math.isFinite(context.timestep_h) or context.timestep_h <= 0 or !std.math.isFinite(context.structural_presence_threshold_g_per_plant) or context.structural_presence_threshold_g_per_plant < 0 or !std.math.isFinite(context.grain_fill_detection_threshold_g_per_plant) or context.grain_fill_detection_threshold_g_per_plant < 0 or !std.math.isFinite(context.senescence_demand_tolerance_g_c) or context.senescence_demand_tolerance_g_c < 0 or !std.math.isFinite(context.leaf_area_presence_tolerance_m2) or context.leaf_area_presence_tolerance_m2 < 0) return error.ShootGrowthRuntimeDimensionMismatch;
+    if (range.end > canopy.cell_count or context.cell_area_m2.len != canopy.cell_count or context.solar_noon_hour_by_cell.len != canopy.cell_count or context.hour_of_day > 23 or context.growth_stages.plant_count != plant_count or context.dormancy.branches.len != canopy.branch_node_offsets.len - 1 or context.development.branch_count != canopy.branch_node_offsets.len - 1 or context.dormancy_parameters_by_plant.len != plant_count or context.litter_partition.plant_count != plant_count or context.senescence_products_by_plant.len != plant_count or (context.seasonal_turnover_event_by_plant != null and context.seasonal_turnover_event_by_plant.?.len != plant_count) or !std.math.isFinite(context.timestep_h) or context.timestep_h <= 0 or !std.math.isFinite(context.seasonal_litterfall_rate_per_h) or context.seasonal_litterfall_rate_per_h <= 0 or !std.math.isFinite(context.seasonal_litterfall_delay_threshold_h) or context.seasonal_litterfall_delay_threshold_h <= 0 or !std.math.isFinite(context.structural_presence_threshold_g_per_plant) or context.structural_presence_threshold_g_per_plant < 0 or !std.math.isFinite(context.grain_fill_detection_threshold_g_per_plant) or context.grain_fill_detection_threshold_g_per_plant < 0 or !std.math.isFinite(context.senescence_demand_tolerance_g_c) or context.senescence_demand_tolerance_g_c < 0 or !std.math.isFinite(context.leaf_area_presence_tolerance_m2) or context.leaf_area_presence_tolerance_m2 < 0) return error.ShootGrowthRuntimeDimensionMismatch;
     for (context.solar_noon_hour_by_cell) |hour| if (hour > 23) return error.ShootGrowthRuntimeDimensionMismatch;
     _ = execution_calendar_date.fromDayOfYear(
         context.day_of_year,
@@ -909,6 +1109,18 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
     try context.symbiosis_parameters.validate();
     try context.canopy_ammonia_parameters.validate();
     if (!std.math.isFinite(context.atmospheric_ammonia_g_n_per_m3) or context.atmospheric_ammonia_g_n_per_m3 < 0 or !std.math.isFinite(context.ammonia_solubility_at_25_c) or context.ammonia_solubility_at_25_c <= 0) return error.InvalidShootGrowthRuntimeAmmoniaInput;
+    var maximum_node_count: usize = 0;
+    for (0..canopy.branch_node_offsets.len - 1) |branch| maximum_node_count = @max(maximum_node_count, canopy.branch_node_offsets[branch + 1] - canopy.branch_node_offsets[branch]);
+    const recycling_nitrogen_g_n = try canopy.allocator.alloc(f64, maximum_node_count);
+    defer canopy.allocator.free(recycling_nitrogen_g_n);
+    const recycling_phosphorus_g_p = try canopy.allocator.alloc(f64, maximum_node_count);
+    defer canopy.allocator.free(recycling_phosphorus_g_p);
+    const recycling_protein_g = try canopy.allocator.alloc(f64, maximum_node_count);
+    defer canopy.allocator.free(recycling_protein_g);
+    const seasonal_internode_length_m = try canopy.allocator.alloc(f64, maximum_node_count);
+    defer canopy.allocator.free(seasonal_internode_length_m);
+    const seasonal_internode_mass = try canopy.allocator.alloc(seasonal_stalk_standing_dead_turnover.ElementMass, maximum_node_count);
+    defer canopy.allocator.free(seasonal_internode_mass);
     for (range.first..range.end) |cell| for (0..canopy.species_count) |species| {
         const plant = try canopy.plantIndex(cell, species);
         if (!context.active_by_plant[plant]) continue;
@@ -940,6 +1152,10 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         const planting_root = try context.roots.layerIndex(plant, 0, planting_layer);
         const branches = try canopy.branchRange(plant);
         const main_branch = try context.growth_stages.mainLivingBranch(plant);
+        const presence_threshold_g_c = try metabolism_module.plantScaledPresenceThresholdG(
+            context.structural_presence_threshold_g_per_plant,
+            canopy.plant_population_count[plant],
+        );
         canopy.plant_leaf_sheath_partition_fraction[plant] = 0;
         var plant_leaf_area_m2: f64 = 0;
         for (branches.first..branches.end) |branch| plant_leaf_area_m2 += canopy.branch_leaf_area_m2[branch];
@@ -1098,7 +1314,22 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             const etoliation_factor = 1 + nutrient_constraint;
             const nodes = try canopy.nodeRange(branch);
             const newest_node = @min(stage.newest_growing_leaf_ordinal, nodes.end - nodes.first - 1);
-            const first_growing_node = @min(@as(usize, 1), newest_node);
+            const growth_window = try @import("shoot_growing_node_window.zig").calculate(.{
+                .newest_growing_node = newest_node,
+                .maximum_concurrently_growing_nodes = context.development.maximum_concurrently_growing_nodes[branch],
+                .runtime_node_count = nodes.end - nodes.first,
+                .is_main_branch = main_branch != null and branch == main_branch.?,
+                .canopy_height_m = canopy.plant_hypocotyledon_height_m[plant],
+                .sowing_depth_m = context.sowing_depth_m_by_plant[plant],
+            });
+            const stalk_growth_window = try stalk_growing_node_window.calculate(.{
+                .newest_growing_node = newest_node,
+                .maximum_concurrently_growing_nodes = context.development.maximum_concurrently_growing_nodes[branch],
+                .maximum_previous_nodes_in_rolling_window = context.node_growth_parameters.maximum_previous_stalk_nodes_in_rolling_window,
+                .runtime_node_count = nodes.end - nodes.first,
+                .emergence_date_is_set = context.development.stage_day[branch * 10] != 0,
+            });
+            const first_growing_node = growth_window.first_node;
             const leaf_growth: canopy_module.LeafGrowth = .{ .carbon_g = organ_growth.carbon_g[0], .nitrogen_g = organ_growth.nitrogen_g[0], .phosphorus_g = organ_growth.phosphorus_g[0] };
             const sheath_growth: canopy_module.LeafGrowth = .{ .carbon_g = organ_growth.carbon_g[1], .nitrogen_g = organ_growth.nitrogen_g[1], .phosphorus_g = organ_growth.phosphorus_g[1] };
             const stalk_growth: canopy_module.LeafGrowth = .{ .carbon_g = organ_growth.carbon_g[2], .nitrogen_g = organ_growth.nitrogen_g[2], .phosphorus_g = organ_growth.phosphorus_g[2] };
@@ -1107,6 +1338,9 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
                 branch,
                 newest_node,
                 first_growing_node,
+                growth_window.last_node,
+                stalk_growth_window.first_node,
+                stalk_growth_window.last_node,
                 context.development.maximum_concurrently_growing_nodes[branch],
                 leaf_growth,
                 sheath_growth,
@@ -1156,7 +1390,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             canopy_module.distributeLeafGrowth(
                 canopy,
                 branch,
-                newest_node,
+                growth_window.last_node,
                 first_growing_node,
                 context.development.maximum_concurrently_growing_nodes[branch],
                 leaf_growth,
@@ -1172,7 +1406,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             canopy_module.distributeSheathGrowth(
                 canopy,
                 branch,
-                newest_node,
+                growth_window.last_node,
                 first_growing_node,
                 context.development.maximum_concurrently_growing_nodes[branch],
                 sheath_growth,
@@ -1189,9 +1423,8 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             const stalk_geometry = canopy_module.distributeStalkGrowth(
                 canopy,
                 branch,
-                newest_node,
-                true,
-                context.development.maximum_concurrently_growing_nodes[branch],
+                stalk_growth_window.first_node,
+                stalk_growth_window.last_node,
                 stalk_growth,
                 etoliation_factor,
                 parameters.specific_internode_length_m_per_g_c,
@@ -1216,25 +1449,12 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             {
                 canopy.plant_stem_diameter_m[plant] = stalk_geometry.stem_diameter_m;
             }
-            for (0..newest_node + 1) |node_within_branch| {
-                _ = try canopy_module.remobilizeNodeLeafNutrients(
-                    canopy,
-                    branch,
-                    node_within_branch,
-                    context.node_growth_parameters.leaf_nutrient_exchange_fraction,
-                    context.metabolism_parameters.minimum_leaf_nutrient_fraction,
-                    parameters.nitrogen_to_carbon_g_n_per_g_c[0],
-                    parameters.phosphorus_to_carbon_g_p_per_g_c[0],
-                    context.node_growth_parameters.protein_per_nitrogen_g_protein_per_g_n,
-                    context.node_growth_parameters.protein_per_phosphorus_g_protein_per_g_p,
-                );
-            }
             const dormancy_state = context.dormancy.branches[branch];
             const senescence_demand = try canopy_module.senescenceDemand(
                 dormancy_state.shoot_remobilization_enabled,
                 dormancy_state.phenological_remobilization_enabled,
                 parameters.growth_habit != 0,
-                canopy.branch_leaf_area_m2[branch],
+                plant_leaf_area_m2,
                 context.cell_area_m2[cell],
                 context.node_growth_parameters.leaf_storage_exchange_fraction_per_h_by_turnover[@min(@as(usize, parameters.turnover_type), 5)],
                 canopy.branch_leaf_carbon_g[branch] + canopy.branch_sheath_carbon_g[branch],
@@ -1265,10 +1485,11 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
                     .{
                         .total_respiration_demand_g_c = senescence_demand.total_respiration_g_c,
                         .phenological_senescence_fraction = senescence_demand.phenological_fraction,
-                        .first_node_within_branch = 0,
+                        .first_node_within_branch = senescence_demand.first_preceding_node,
                         .last_node_within_branch = newest_node,
                         .node_group_count = senescence_demand.node_group_count,
                         .perennial = parameters.growth_habit != 0,
+                        .leaf_presence_threshold_g_c = presence_threshold_g_c,
                         .demand_tolerance_g_c = context.senescence_demand_tolerance_g_c,
                     },
                     recycling,
@@ -1292,36 +1513,48 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
                 context.dormancy_parameters_by_plant[plant].required_leafoff_h,
                 context.senescence_demand_tolerance_g_c,
             );
-            if (branch_died and main_branch != null and branch == main_branch.? and parameters.turnover_type != 0 and parameters.root_profile_type > 1) {
-                const plant_branches = try context.growth_stages.branchRange(plant);
-                for (plant_branches.first..plant_branches.end) |other_branch| {
-                    context.growth_stages.branches[other_branch].dead = true;
-                    context.development.dead[other_branch] = true;
+            _ = branch_died;
+            if (main_branch) |main| {
+                if (main_stalk_death_propagation.shouldPropagate(
+                    parameters.turnover_type != 0,
+                    parameters.root_profile_type > 1,
+                    context.growth_stages.branches[main].dead or context.development.dead[main],
+                )) {
+                    context.growth_stages.branches[branch].dead = true;
+                    context.development.dead[branch] = true;
                 }
             }
-            if (dormancy_state.phenological_remobilization_enabled) {
-                const turnover_fraction = @min(
-                    1,
-                    context.timestep_h / context.dormancy_parameters_by_plant[plant].full_senescence_duration_h,
-                );
-                try commitEndOfSeasonReproductiveTurnover(
-                    canopy,
-                    branch,
-                    plant,
-                    turnover_fraction,
-                    parameters.growth_habit == 0 and parameters.leaf_phenology_type != 0,
-                    try context.litter_partition.get(plant, .non_foliar),
-                    &context.senescence_products_by_plant[plant],
-                );
-                if ((parameters.turnover_type == 0 or parameters.root_profile_type <= 1) and parameters.growth_habit != 0) {
-                    try commitSeasonalStalkToStandingDead(
-                        canopy,
-                        branch,
-                        plant,
-                        turnover_fraction,
-                        try context.litter_partition.get(plant, .stalk),
-                    );
-                }
+            const first_recycling_node = newest_node -| 24;
+            try leaf_structural_nutrient_recycling.apply(.{
+                .leaf_carbon_g_c = canopy.node_leaf_carbon_g[nodes.first..nodes.end],
+                .leaf_nitrogen_g_n = canopy.node_leaf_nitrogen_g[nodes.first..nodes.end],
+                .leaf_phosphorus_g_p = canopy.node_leaf_phosphorus_g[nodes.first..nodes.end],
+                .leaf_protein_g = canopy.node_leaf_protein_g[nodes.first..nodes.end],
+                .branch_leaf_nitrogen_g_n = &canopy.branch_leaf_nitrogen_g[branch],
+                .branch_leaf_phosphorus_g_p = &canopy.branch_leaf_phosphorus_g[branch],
+                .mobile_carbon_g_c = canopy.branch_mobile_carbon_g[branch],
+                .mobile_nitrogen_g_n = &canopy.branch_mobile_nitrogen_g[branch],
+                .mobile_phosphorus_g_p = &canopy.branch_mobile_phosphorus_g[branch],
+            }, .{
+                .nitrogen_g_n = recycling_nitrogen_g_n,
+                .phosphorus_g_p = recycling_phosphorus_g_p,
+                .protein_g = recycling_protein_g,
+            }, .{
+                .first_node = first_recycling_node,
+                .end_node = newest_node + 1,
+                .carbon_pool_threshold_g_c = presence_threshold_g_c,
+                .minimum_relative_leaf_nutrient_fraction = context.metabolism_parameters.minimum_leaf_nutrient_fraction,
+                .maximum_leaf_nitrogen_per_carbon_g_n_per_g_c = parameters.nitrogen_to_carbon_g_n_per_g_c[0],
+                .maximum_leaf_phosphorus_per_carbon_g_p_per_g_c = parameters.phosphorus_to_carbon_g_p_per_g_c[0],
+                .protein_per_nitrogen_g_per_g_n = context.node_growth_parameters.protein_per_nitrogen_g_protein_per_g_n,
+                .protein_per_phosphorus_g_per_g_p = context.node_growth_parameters.protein_per_phosphorus_g_protein_per_g_p,
+            });
+            const seasonal_turnover_admitted = try commitExactSeasonalTurnover(context, plant, branch, parameters, .{
+                .internode_length_m = seasonal_internode_length_m,
+                .internode_mass = seasonal_internode_mass,
+            });
+            if (seasonal_turnover_admitted and main_branch != null and branch == main_branch.?) {
+                if (context.seasonal_turnover_event_by_plant) |events| events[plant] = true;
             }
             const grain_fill = try canopy_module.fillGrainFromReserve(
                 canopy,
@@ -1375,12 +1608,8 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             );
         }
         const growth_habit: usize = if (context.plant_parameters[plant].growth_habit == 0) 0 else 1;
-        const presence_threshold_g_c = try metabolism_module.plantScaledPresenceThresholdG(
-            context.structural_presence_threshold_g_per_plant,
-            canopy.plant_population_count[plant],
-        );
         try equilibratePlantBranchMobilePools(canopy, context.growth_stages, context.development, branches, context.storage_remobilization_duration_h_by_growth_habit[growth_habit], context.branch_mobile_exchange_parameters, context.timestep_h, presence_threshold_g_c);
-        try equilibratePlantBranchReserves(canopy, branches, context.node_growth_parameters, context.timestep_h, presence_threshold_g_c);
+        try equilibratePlantBranchReserves(canopy, branches, main_branch, context.node_growth_parameters, context.timestep_h, presence_threshold_g_c);
     };
 }
 
@@ -1457,6 +1686,7 @@ test "live C3 branch commits mobile pools and organ growth atomically" {
     var plant_parameter_values = [_]PlantParameters{plant_parameters};
     var active = [_]bool{true};
     var emerged = [_]bool{true};
+    var sowing_depth_m = [_]f64{0.03};
     var temperature_k = [_]f64{298.15};
     var water_potential_mpa = [_]f64{-0.1};
     var aerodynamic_resistance_h_per_m = [_]f64{0.01};
@@ -1473,6 +1703,7 @@ test "live C3 branch commits mobile pools and organ growth atomically" {
         .plant_parameters = &plant_parameter_values,
         .active_by_plant = &active,
         .emerged_by_plant = &emerged,
+        .sowing_depth_m_by_plant = &sowing_depth_m,
         .roots = &roots,
         .soil_temperature_k = &temperature_k,
         .soil_layer_capacity = 1,
@@ -1500,6 +1731,8 @@ test "live C3 branch commits mobile pools and organ growth atomically" {
         .solar_noon_hour_by_cell = &solar_noon_hour,
         .execution_year = 2000,
         .timestep_h = 1,
+        .seasonal_litterfall_rate_per_h = 2.884e-3,
+        .seasonal_litterfall_delay_threshold_h = 240,
         .dormancy_parameters_by_plant = &dormancy_parameters,
         .litter_partition = &litter_partition,
         .senescence_recycling = .{ .minimum_carbon_fraction = 0.167, .responsive_carbon_fraction = 0.333, .maximum_nitrogen_fraction = 0.667, .maximum_phosphorus_fraction = 0.667 },
@@ -1509,6 +1742,95 @@ test "live C3 branch commits mobile pools and organ growth atomically" {
         .symbiosis_parameters = symbiosis_module.sourceRuntimeParameters(),
         .carbon_exchange = &carbon_exchange,
     };
+    var seasonal_lengths: [3]f64 = undefined;
+    var seasonal_masses: [3]seasonal_stalk_standing_dead_turnover.ElementMass = undefined;
+    const seasonal_workspace: SeasonalTurnoverWorkspace = .{ .internode_length_m = &seasonal_lengths, .internode_mass = &seasonal_masses };
+
+    // The entry IFLGR gate admits the threshold hour, then clears IFLGR/FLGQ
+    // while both reproductive and perennial stalk turnover still commit.
+    plant_parameter_values[0].growth_habit = 1;
+    plant_parameter_values[0].leaf_phenology_type = 1;
+    context.seasonal_litterfall_rate_per_h = 0.25;
+    context.seasonal_litterfall_delay_threshold_h = 240;
+    dormancy.branches[0].reproductive_growth_disabled = true;
+    dormancy.branches[0].reproductive_litterfall_delay_h = 239;
+    canopy.branch_husk_carbon_g[0] = 2;
+    canopy.branch_husk_nitrogen_g[0] = 0.2;
+    canopy.branch_husk_phosphorus_g[0] = 0.02;
+    canopy.branch_ear_carbon_g[0] = 2;
+    canopy.branch_ear_nitrogen_g[0] = 0.2;
+    canopy.branch_ear_phosphorus_g[0] = 0.02;
+    canopy.branch_grain_carbon_g[0] = 4;
+    canopy.branch_grain_nitrogen_g[0] = 0.4;
+    canopy.branch_grain_phosphorus_g[0] = 0.04;
+    canopy.branch_stalk_carbon_g[0] = 8;
+    canopy.branch_stalk_nitrogen_g[0] = 0.8;
+    canopy.branch_stalk_phosphorus_g[0] = 0.08;
+    const seasonal_carbon_before = canopy.branch_husk_carbon_g[0] + canopy.branch_ear_carbon_g[0] + canopy.branch_grain_carbon_g[0] + canopy.branch_stalk_carbon_g[0];
+    const seasonal_nitrogen_before = canopy.branch_husk_nitrogen_g[0] + canopy.branch_ear_nitrogen_g[0] + canopy.branch_grain_nitrogen_g[0] + canopy.branch_stalk_nitrogen_g[0];
+    const seasonal_phosphorus_before = canopy.branch_husk_phosphorus_g[0] + canopy.branch_ear_phosphorus_g[0] + canopy.branch_grain_phosphorus_g[0] + canopy.branch_stalk_phosphorus_g[0];
+    try std.testing.expect(try commitExactSeasonalTurnover(&context, 0, 0, plant_parameter_values[0], seasonal_workspace));
+    var seasonal_litter_carbon: f64 = 0;
+    var seasonal_litter_nitrogen: f64 = 0;
+    var seasonal_litter_phosphorus: f64 = 0;
+    for (senescence_products[0].nonwoody_carbon_g) |value| seasonal_litter_carbon += value;
+    for (senescence_products[0].nonwoody_nitrogen_g) |value| seasonal_litter_nitrogen += value;
+    for (senescence_products[0].nonwoody_phosphorus_g) |value| seasonal_litter_phosphorus += value;
+    try std.testing.expect(!dormancy.branches[0].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 0), dormancy.branches[0].reproductive_litterfall_delay_h);
+    try std.testing.expectApproxEqAbs(seasonal_carbon_before, canopy.branch_husk_carbon_g[0] + canopy.branch_ear_carbon_g[0] + canopy.branch_grain_carbon_g[0] + canopy.branch_stalk_carbon_g[0] + seasonal_litter_carbon + canopy.plant_standing_dead_carbon_g[0], 1.0e-12);
+    try std.testing.expectApproxEqAbs(seasonal_nitrogen_before, canopy.branch_husk_nitrogen_g[0] + canopy.branch_ear_nitrogen_g[0] + canopy.branch_grain_nitrogen_g[0] + canopy.branch_stalk_nitrogen_g[0] + seasonal_litter_nitrogen + canopy.plant_standing_dead_nitrogen_g[0], 1.0e-12);
+    try std.testing.expectApproxEqAbs(seasonal_phosphorus_before, canopy.branch_husk_phosphorus_g[0] + canopy.branch_ear_phosphorus_g[0] + canopy.branch_grain_phosphorus_g[0] + canopy.branch_stalk_phosphorus_g[0] + seasonal_litter_phosphorus + canopy.plant_standing_dead_phosphorus_g[0], 1.0e-12);
+
+    // A leafoff threshold opens IFLGR and performs turnover in the same call.
+    dormancy.branches[0].leafout_disabled = true;
+    dormancy.branches[0].leafoff_disabled = false;
+    dormancy.branches[0].accumulated_leafoff_h = 2;
+    dormancy.branches[0].reproductive_growth_disabled = false;
+    canopy.branch_husk_carbon_g[0] = 1;
+    try std.testing.expect(try commitExactSeasonalTurnover(&context, 0, 0, plant_parameter_values[0], seasonal_workspace));
+    try std.testing.expect(dormancy.branches[0].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 1), dormancy.branches[0].reproductive_litterfall_delay_h);
+
+    // A late stalk-destination failure leaves the staged reproductive and
+    // persistent flag transaction untouched.
+    dormancy.branches[0].leafoff_disabled = true;
+    dormancy.branches[0].reproductive_growth_disabled = true;
+    dormancy.branches[0].reproductive_litterfall_delay_h = 10;
+    canopy.branch_husk_carbon_g[0] = 1;
+    const husk_before_failure = canopy.branch_husk_carbon_g[0];
+    const flag_before_failure = dormancy.branches[0];
+    canopy.plant_standing_dead_phosphorus_by_kinetic_g[3] = std.math.nan(f64);
+    try std.testing.expectError(error.InvalidSeasonalStalkTurnoverState, commitExactSeasonalTurnover(&context, 0, 0, plant_parameter_values[0], seasonal_workspace));
+    try std.testing.expectEqual(husk_before_failure, canopy.branch_husk_carbon_g[0]);
+    try std.testing.expectEqualDeep(flag_before_failure, dormancy.branches[0]);
+
+    // Restore the general live-growth fixture after the focused transactions.
+    canopy.plant_standing_dead_phosphorus_by_kinetic_g[3] = 0;
+    canopy.plant_standing_dead_carbon_g[0] = 0;
+    canopy.plant_standing_dead_nitrogen_g[0] = 0;
+    canopy.plant_standing_dead_phosphorus_g[0] = 0;
+    @memset(canopy.plant_standing_dead_carbon_by_kinetic_g, 0);
+    @memset(canopy.plant_standing_dead_nitrogen_by_kinetic_g, 0);
+    @memset(canopy.plant_standing_dead_phosphorus_by_kinetic_g, 0);
+    @memset(senescence_products[0].nonwoody_carbon_g[0..], 0);
+    @memset(senescence_products[0].nonwoody_nitrogen_g[0..], 0);
+    @memset(senescence_products[0].nonwoody_phosphorus_g[0..], 0);
+    canopy.branch_husk_carbon_g[0] = 0;
+    canopy.branch_husk_nitrogen_g[0] = 0;
+    canopy.branch_husk_phosphorus_g[0] = 0;
+    canopy.branch_ear_carbon_g[0] = 0;
+    canopy.branch_ear_nitrogen_g[0] = 0;
+    canopy.branch_ear_phosphorus_g[0] = 0;
+    canopy.branch_grain_carbon_g[0] = 0;
+    canopy.branch_grain_nitrogen_g[0] = 0;
+    canopy.branch_grain_phosphorus_g[0] = 0;
+    canopy.branch_stalk_carbon_g[0] = 0;
+    canopy.branch_stalk_nitrogen_g[0] = 0;
+    canopy.branch_stalk_phosphorus_g[0] = 0;
+    dormancy.branches[0] = .{};
+    plant_parameter_values[0] = plant_parameters;
+    context.seasonal_litterfall_rate_per_h = 2.884e-3;
     active[0] = false;
     context.day_of_year = 366;
     context.execution_year = 1900;
@@ -1597,22 +1919,26 @@ test "live C3 branch commits mobile pools and organ growth atomically" {
 }
 
 test "live plant postprocess conserves pairwise branch reserve C N P" {
-    var canopy = try canopy_module.State.init(std.testing.allocator, 1, 1, &.{2}, &.{ 1, 1 }, &.{ 0, 0 });
+    var canopy = try canopy_module.State.init(std.testing.allocator, 1, 1, &.{3}, &.{ 1, 1, 1 }, &.{ 0, 0, 0 });
     defer canopy.deinit();
     canopy.plant_uptake_growth_temperature_response[0] = 1;
-    canopy.branch_sapwood_carbon_g[0] = 2;
-    canopy.branch_sapwood_carbon_g[1] = 1;
-    canopy.branch_reserve_carbon_g[0] = 3;
-    canopy.branch_reserve_nitrogen_g[0] = 0.3;
-    canopy.branch_reserve_phosphorus_g[0] = 0.03;
-    const before_c = canopy.branch_reserve_carbon_g[0] + canopy.branch_reserve_carbon_g[1];
-    const before_n = canopy.branch_reserve_nitrogen_g[0] + canopy.branch_reserve_nitrogen_g[1];
-    const before_p = canopy.branch_reserve_phosphorus_g[0] + canopy.branch_reserve_phosphorus_g[1];
-    try equilibratePlantBranchReserves(&canopy, try canopy.branchRange(0), sourceNodeGrowthParameters(), 1, 0);
-    try std.testing.expectApproxEqAbs(before_c, canopy.branch_reserve_carbon_g[0] + canopy.branch_reserve_carbon_g[1], 1.0e-15);
-    try std.testing.expectApproxEqAbs(before_n, canopy.branch_reserve_nitrogen_g[0] + canopy.branch_reserve_nitrogen_g[1], 1.0e-15);
-    try std.testing.expectApproxEqAbs(before_p, canopy.branch_reserve_phosphorus_g[0] + canopy.branch_reserve_phosphorus_g[1], 1.0e-15);
-    try std.testing.expect(canopy.branch_reserve_carbon_g[1] > 0);
+    canopy.branch_sapwood_carbon_g[0] = 1;
+    canopy.branch_sapwood_carbon_g[1] = 2;
+    canopy.branch_sapwood_carbon_g[2] = 1;
+    canopy.branch_reserve_carbon_g[1] = 10;
+    canopy.branch_reserve_carbon_g[2] = 4;
+    canopy.branch_reserve_nitrogen_g[1] = 1;
+    canopy.branch_reserve_nitrogen_g[2] = 0.4;
+    canopy.branch_reserve_phosphorus_g[1] = 0.1;
+    canopy.branch_reserve_phosphorus_g[2] = 0.04;
+    const before_c = canopy.branch_reserve_carbon_g[0] + canopy.branch_reserve_carbon_g[1] + canopy.branch_reserve_carbon_g[2];
+    const before_n = canopy.branch_reserve_nitrogen_g[0] + canopy.branch_reserve_nitrogen_g[1] + canopy.branch_reserve_nitrogen_g[2];
+    const before_p = canopy.branch_reserve_phosphorus_g[0] + canopy.branch_reserve_phosphorus_g[1] + canopy.branch_reserve_phosphorus_g[2];
+    try equilibratePlantBranchReserves(&canopy, try canopy.branchRange(0), 1, sourceNodeGrowthParameters(), 1, 0);
+    try std.testing.expectApproxEqAbs(before_c, canopy.branch_reserve_carbon_g[0] + canopy.branch_reserve_carbon_g[1] + canopy.branch_reserve_carbon_g[2], 1.0e-15);
+    try std.testing.expectApproxEqAbs(before_n, canopy.branch_reserve_nitrogen_g[0] + canopy.branch_reserve_nitrogen_g[1] + canopy.branch_reserve_nitrogen_g[2], 1.0e-15);
+    try std.testing.expectApproxEqAbs(before_p, canopy.branch_reserve_phosphorus_g[0] + canopy.branch_reserve_phosphorus_g[1] + canopy.branch_reserve_phosphorus_g[2], 1.0e-15);
+    try std.testing.expect(canopy.branch_reserve_carbon_g[0] > 0);
 }
 
 test "GROSUB interbranch mobile exchange uses eligible branch snapshots and conserves C N P" {

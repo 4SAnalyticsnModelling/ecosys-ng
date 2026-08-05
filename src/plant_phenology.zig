@@ -535,7 +535,7 @@ test "GROSUB grazing does not reset post-cut development" {
 
 test "annual pre-floral rates respond to water and oxygen stress" {
     const allocator = std.testing.allocator;
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var plants = try PlantState.init(allocator, config);
     defer plants.deinit();
     plants.canopy_temperature_k[0] = 298.15;

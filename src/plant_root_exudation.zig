@@ -1,6 +1,7 @@
 const std = @import("std");
 const RootState = @import("plant_root_system.zig").State;
 const SoilState = @import("soil_organic_initialization.zig").State;
+const OrganicPool = @import("soil_organic_initialization.zig").ElementPool;
 
 pub const substrate_count: usize = @import("plant_root_system.zig").organic_substrate_count;
 
@@ -49,6 +50,17 @@ pub const Input = struct {
 /// Positive values are soil uptake by the root; negative values are exudation,
 /// retaining the RDFOMC/RDFOMN/RDFOMP source sign convention.
 pub const Result = struct { carbon_g_c: f64, nitrogen_g_n: f64, phosphorus_g_p: f64 };
+pub const TransactionMapping = [substrate_count]Result;
+
+pub fn mapTransactionResult(staged_results: []const Result) !TransactionMapping {
+    if (staged_results.len != substrate_count) return error.RootExudationSubstrateCountMismatch;
+    var mapped: TransactionMapping = undefined;
+    for (staged_results, 0..) |result, substrate| {
+        inline for (@typeInfo(Result).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name))) return error.NonFiniteRootExudationResult;
+        mapped[substrate] = result;
+    }
+    return mapped;
+}
 
 pub const Competitor = struct { plant: usize, domain: usize, layer: usize };
 
@@ -56,19 +68,23 @@ pub const Workspace = struct {
     allocator: std.mem.Allocator,
     competitor_capacity: usize,
     competitors: []Competitor,
+    admission_index_by_competitor: []usize,
     staged_results: []Result,
 
     pub fn init(allocator: std.mem.Allocator, competitor_capacity: usize) !Workspace {
         if (competitor_capacity == 0) return error.ZeroRootExudationCompetitorCapacity;
         const competitors = try allocator.alloc(Competitor, competitor_capacity);
         errdefer allocator.free(competitors);
+        const admission_indices = try allocator.alloc(usize, competitor_capacity);
+        errdefer allocator.free(admission_indices);
         const staged = try allocator.alloc(Result, try std.math.mul(usize, competitor_capacity, substrate_count));
         @memset(staged, .{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 });
-        return .{ .allocator = allocator, .competitor_capacity = competitor_capacity, .competitors = competitors, .staged_results = staged };
+        return .{ .allocator = allocator, .competitor_capacity = competitor_capacity, .competitors = competitors, .admission_index_by_competitor = admission_indices, .staged_results = staged };
     }
 
     pub fn deinit(self: *Workspace) void {
         self.allocator.free(self.staged_results);
+        self.allocator.free(self.admission_index_by_competitor);
         self.allocator.free(self.competitors);
         self.* = undefined;
     }
@@ -182,14 +198,27 @@ pub const Workspace = struct {
             }
         }
     }
+
+    pub fn advanceLayer(self: *Workspace, roots: *RootState, soil: *SoilState, soil_layer: usize, biologically_active_water_m3: f64, substrate_fraction: []const f64, parameters: Parameters, significance_threshold_g: f64, competitor_count: usize) !void {
+        try self.stageLayer(roots, soil, soil_layer, biologically_active_water_m3, substrate_fraction, parameters, significance_threshold_g, competitor_count);
+        try self.commitLayer(roots, soil, soil_layer, competitor_count);
+    }
 };
 
 pub const GridWorkspace = struct {
     allocator: std.mem.Allocator,
     per_cell: []Workspace,
+    admission_capacity_per_cell: usize,
+    transaction_organic_storage: []TransactionMapping,
+    transaction_organic_selected: []bool,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize) !GridWorkspace {
+        return initWithAdmissionCapacity(allocator, cell_count, competitor_capacity_per_cell, competitor_capacity_per_cell);
+    }
+
+    pub fn initWithAdmissionCapacity(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize, admission_capacity_per_cell: usize) !GridWorkspace {
         if (cell_count == 0) return error.ZeroRootExudationGridCells;
+        if (admission_capacity_per_cell == 0) return error.ZeroRootExudationAdmissionCapacity;
         const cells = try allocator.alloc(Workspace, cell_count);
         errdefer allocator.free(cells);
         var initialized: usize = 0;
@@ -198,11 +227,28 @@ pub const GridWorkspace = struct {
             cell.* = try Workspace.init(allocator, competitor_capacity_per_cell);
             initialized += 1;
         }
-        return .{ .allocator = allocator, .per_cell = cells };
+        const admission_count = try std.math.mul(usize, cell_count, admission_capacity_per_cell);
+        const transaction_organic_storage = try allocator.alloc(TransactionMapping, admission_count);
+        errdefer allocator.free(transaction_organic_storage);
+        const transaction_organic_selected = try allocator.alloc(bool, admission_count);
+        @memset(transaction_organic_selected, false);
+        return .{ .allocator = allocator, .per_cell = cells, .admission_capacity_per_cell = admission_capacity_per_cell, .transaction_organic_storage = transaction_organic_storage, .transaction_organic_selected = transaction_organic_selected };
+    }
+
+    pub fn transactionOrganicBuffer(self: *GridWorkspace, cell: usize) ![]TransactionMapping {
+        if (cell >= self.per_cell.len) return error.RootExudationGridCellOutOfBounds;
+        return self.transaction_organic_storage[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
+    }
+
+    pub fn transactionOrganicSelection(self: *GridWorkspace, cell: usize) ![]bool {
+        if (cell >= self.per_cell.len) return error.RootExudationGridCellOutOfBounds;
+        return self.transaction_organic_selected[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
     }
 
     pub fn deinit(self: *GridWorkspace) void {
         for (self.per_cell) |*cell| cell.deinit();
+        self.allocator.free(self.transaction_organic_selected);
+        self.allocator.free(self.transaction_organic_storage);
         self.allocator.free(self.per_cell);
         self.* = undefined;
     }
@@ -350,4 +396,110 @@ test "five-substrate exudation workspace supports runtime competitors and rolls 
     try std.testing.expectError(error.InsufficientElementForRootExudation, workspace.commitLayer(&roots, &soil, 0, 7));
     try std.testing.expectEqual(soil_before_failure, soil.dissolved[0].carbon_g_c);
     try std.testing.expectEqual(root_before_failure, roots.mobile_carbon_g[0]);
+}
+
+test "RDFOM advance is bit-identical to immutable stage then commit in shared source order" {
+    var combined_roots = try RootState.init(std.testing.allocator, 2, 1, 1);
+    defer combined_roots.deinit();
+    var staged_roots = try RootState.init(std.testing.allocator, 2, 1, 1);
+    defer staged_roots.deinit();
+    var combined_soil = try SoilState.init(std.testing.allocator, 1);
+    defer combined_soil.deinit();
+    var staged_soil = try SoilState.init(std.testing.allocator, 1);
+    defer staged_soil.deinit();
+    var combined = try Workspace.init(std.testing.allocator, 2);
+    defer combined.deinit();
+    var staged = try Workspace.init(std.testing.allocator, 2);
+    defer staged.deinit();
+    for (0..substrate_count) |substrate| {
+        const pool = OrganicPool{ .carbon_g_c = 2 + @as(f64, @floatFromInt(substrate)), .nitrogen_g_n = 0.4, .phosphorus_g_p = 0.08 };
+        combined_soil.dissolved[substrate] = pool;
+        staged_soil.dissolved[substrate] = pool;
+    }
+    for (0..2) |plant| {
+        const competitor: Competitor = .{ .plant = plant, .domain = 0, .layer = 0 };
+        combined.competitors[plant] = competitor;
+        staged.competitors[plant] = competitor;
+        combined.admission_index_by_competitor[plant] = plant + 1;
+        staged.admission_index_by_competitor[plant] = plant + 1;
+        const combined_root = try combined_roots.layerIndex(plant, 0, 0);
+        const staged_root = try staged_roots.layerIndex(plant, 0, 0);
+        combined_roots.aqueous_volume_m3[combined_root] = 0.2;
+        staged_roots.aqueous_volume_m3[staged_root] = 0.2;
+        combined_roots.mobile_carbon_g[combined_root] = 3 + @as(f64, @floatFromInt(plant));
+        staged_roots.mobile_carbon_g[staged_root] = combined_roots.mobile_carbon_g[combined_root];
+        combined_roots.mobile_nitrogen_g[combined_root] = 0.3;
+        staged_roots.mobile_nitrogen_g[staged_root] = 0.3;
+        combined_roots.mobile_phosphorus_g[combined_root] = 0.06;
+        staged_roots.mobile_phosphorus_g[staged_root] = 0.06;
+    }
+    const fractions = [_]f64{0.2} ** substrate_count;
+    try combined.advanceLayer(&combined_roots, &combined_soil, 0, 1, &fractions, compatibilityParameters(), 1.0e-12, 2);
+    const root_before_stage = try std.testing.allocator.dupe(f64, staged_roots.mobile_carbon_g);
+    defer std.testing.allocator.free(root_before_stage);
+    const soil_before_stage = try std.testing.allocator.dupe(OrganicPool, staged_soil.dissolved);
+    defer std.testing.allocator.free(soil_before_stage);
+    try staged.stageLayer(&staged_roots, &staged_soil, 0, 1, &fractions, compatibilityParameters(), 1.0e-12, 2);
+    try std.testing.expectEqualSlices(f64, root_before_stage, staged_roots.mobile_carbon_g);
+    try std.testing.expectEqualSlices(OrganicPool, soil_before_stage, staged_soil.dissolved);
+    try staged.commitLayer(&staged_roots, &staged_soil, 0, 2);
+    try std.testing.expectEqualSlices(OrganicPool, combined_soil.dissolved, staged_soil.dissolved);
+    try std.testing.expectEqualSlices(f64, combined_roots.mobile_carbon_g, staged_roots.mobile_carbon_g);
+    try std.testing.expectEqualSlices(f64, combined_roots.mobile_nitrogen_g, staged_roots.mobile_nitrogen_g);
+    try std.testing.expectEqualSlices(f64, combined_roots.mobile_phosphorus_g, staged_roots.mobile_phosphorus_g);
+    try std.testing.expectEqualSlices(Result, combined.staged_results, staged.staged_results);
+}
+
+test "RDFOM signed uptake and exudation conserve C N P with late rollback and disabled selection" {
+    var roots = try RootState.init(std.testing.allocator, 2, 1, 1);
+    defer roots.deinit();
+    var soil = try SoilState.init(std.testing.allocator, 1);
+    defer soil.deinit();
+    var workspace = try Workspace.init(std.testing.allocator, 2);
+    defer workspace.deinit();
+    for (0..2) |plant| workspace.competitors[plant] = .{ .plant = plant, .domain = 0, .layer = 0 };
+    for (0..substrate_count) |substrate| soil.dissolved[substrate] = .{ .carbon_g_c = 1, .nitrogen_g_n = 0.1, .phosphorus_g_p = 0.02 };
+    for (0..2) |plant| {
+        const root = try roots.layerIndex(plant, 0, 0);
+        roots.mobile_carbon_g[root] = 2;
+        roots.mobile_nitrogen_g[root] = 0.2;
+        roots.mobile_phosphorus_g[root] = 0.04;
+    }
+    workspace.staged_results[0] = .{ .carbon_g_c = 0.2, .nitrogen_g_n = -0.01, .phosphorus_g_p = 0.002 };
+    workspace.staged_results[substrate_count] = .{ .carbon_g_c = -0.1, .nitrogen_g_n = 0.02, .phosphorus_g_p = -0.001 };
+    const before = .{ totalOrganicElement(&roots, &soil, .carbon), totalOrganicElement(&roots, &soil, .nitrogen), totalOrganicElement(&roots, &soil, .phosphorus) };
+    try workspace.commitLayer(&roots, &soil, 0, 2);
+    try std.testing.expectEqual(before[0], totalOrganicElement(&roots, &soil, .carbon));
+    try std.testing.expectEqual(before[1], totalOrganicElement(&roots, &soil, .nitrogen));
+    try std.testing.expectEqual(before[2], totalOrganicElement(&roots, &soil, .phosphorus));
+
+    const soil_before = try std.testing.allocator.dupe(OrganicPool, soil.dissolved);
+    defer std.testing.allocator.free(soil_before);
+    const root_before = try std.testing.allocator.dupe(f64, roots.mobile_carbon_g);
+    defer std.testing.allocator.free(root_before);
+    workspace.staged_results[substrate_count + substrate_count - 1] = .{ .carbon_g_c = soil.dissolved[substrate_count - 1].carbon_g_c + 1, .nitrogen_g_n = 0, .phosphorus_g_p = 0 };
+    try std.testing.expectError(error.InsufficientElementForRootExudation, workspace.commitLayer(&roots, &soil, 0, 2));
+    try std.testing.expectEqualSlices(OrganicPool, soil_before, soil.dissolved);
+    try std.testing.expectEqualSlices(f64, root_before, roots.mobile_carbon_g);
+    var grid = try GridWorkspace.initWithAdmissionCapacity(std.testing.allocator, 1, 2, 4);
+    defer grid.deinit();
+    try std.testing.expectEqualSlices(bool, &[_]bool{false} ** 4, try grid.transactionOrganicSelection(0));
+}
+
+const OrganicElement = enum { carbon, nitrogen, phosphorus };
+
+fn totalOrganicElement(roots: *const RootState, soil: *const SoilState, element: OrganicElement) f64 {
+    var total: f64 = 0;
+    for (soil.dissolved) |pool| total += switch (element) {
+        .carbon => pool.carbon_g_c,
+        .nitrogen => pool.nitrogen_g_n,
+        .phosphorus => pool.phosphorus_g_p,
+    };
+    const values = switch (element) {
+        .carbon => roots.mobile_carbon_g,
+        .nitrogen => roots.mobile_nitrogen_g,
+        .phosphorus => roots.mobile_phosphorus_g,
+    };
+    for (values) |value| total += value;
+    return total;
 }

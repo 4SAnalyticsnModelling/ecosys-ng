@@ -34,7 +34,7 @@ pub const DynamicRates = struct {
     carbon_dioxide_mol_c_per_m3_step: f64,
     bicarbonate_mol_c_per_m3_step: f64,
     sulfate_mol_s_per_m3_step: f64,
-    carboxyl_hydrogen_exchange_mol_per_Mg_step: f64,
+    carboxyl_hydrogen_exchange_mol_per_megagram_step: f64,
     aluminum_hydroxide_mol_mineral_per_m3_step: f64,
     iron_hydroxide_mol_mineral_per_m3_step: f64,
     calcite_mol_mineral_per_m3_step: f64,
@@ -61,7 +61,7 @@ pub const Inputs = struct {
     existing_totals: Totals,
     rates: Rates,
     litter_water_volume_m3: f64,
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
 };
 
 /// Direct source-order translation of SOLUTE.F lines 5127--5166.
@@ -86,8 +86,8 @@ pub fn calculateSourceOrder(inputs: Inputs) !Totals {
                 rates.sulfate_mol_s_per_m3_step * water_volume;
             totals.exchange_and_minerals
                 .carboxyl_hydrogen_exchange_mol_per_step +=
-                rates.carboxyl_hydrogen_exchange_mol_per_Mg_step *
-                inputs.litter_dry_mass_Mg;
+                rates.carboxyl_hydrogen_exchange_mol_per_megagram_step *
+                inputs.litter_dry_mass_megagrams;
             totals.exchange_and_minerals
                 .aluminum_hydroxide_mol_mineral_per_step +=
                 rates.aluminum_hydroxide_mol_mineral_per_m3_step *
@@ -144,7 +144,7 @@ fn validateInputs(inputs: Inputs) !void {
     );
     inline for (.{
         inputs.litter_water_volume_m3,
-        inputs.litter_dry_mass_Mg,
+        inputs.litter_dry_mass_megagrams,
     }) |value| {
         if (!std.math.isFinite(value) or value < 0)
             return error.InvalidSurfaceLitterAccumulationInput;
@@ -199,7 +199,7 @@ fn dynamicInputs() Inputs {
             .carbon_dioxide_mol_c_per_m3_step = 0.2,
             .bicarbonate_mol_c_per_m3_step = 0.3,
             .sulfate_mol_s_per_m3_step = 0.4,
-            .carboxyl_hydrogen_exchange_mol_per_Mg_step = 0.5,
+            .carboxyl_hydrogen_exchange_mol_per_megagram_step = 0.5,
             .aluminum_hydroxide_mol_mineral_per_m3_step = 0.6,
             .iron_hydroxide_mol_mineral_per_m3_step = 0.7,
             .calcite_mol_mineral_per_m3_step = 0.8,
@@ -210,7 +210,7 @@ fn dynamicInputs() Inputs {
             .hydrogen_hydroxide_equilibration_mol_per_m3_step = 0.2,
         } },
         .litter_water_volume_m3 = 2,
-        .litter_dry_mass_Mg = 3,
+        .litter_dry_mass_megagrams = 3,
     };
 }
 
@@ -234,8 +234,8 @@ test "SOLUTE dynamic surface accumulation preserves every source update" {
     try std.testing.expectEqual(
         initial.exchange_and_minerals
             .carboxyl_hydrogen_exchange_mol_per_step +
-            rates.carboxyl_hydrogen_exchange_mol_per_Mg_step *
-                inputs.litter_dry_mass_Mg,
+            rates.carboxyl_hydrogen_exchange_mol_per_megagram_step *
+                inputs.litter_dry_mass_megagrams,
         result.exchange_and_minerals
             .carboxyl_hydrogen_exchange_mol_per_step,
     );
@@ -289,7 +289,7 @@ test "static accumulation updates only H OH and buffered water" {
             .hydroxide_equilibration_mol_per_m3_step = 0.7,
         } },
         .litter_water_volume_m3 = 2,
-        .litter_dry_mass_Mg = 3,
+        .litter_dry_mass_megagrams = 3,
     };
     const result = try calculateSourceOrder(inputs);
     const initial = inputs.existing_totals;
@@ -328,7 +328,7 @@ test "static accumulation updates only H OH and buffered water" {
 test "zero litter dimensions leave all totals unchanged" {
     var inputs = dynamicInputs();
     inputs.litter_water_volume_m3 = 0;
-    inputs.litter_dry_mass_Mg = 0;
+    inputs.litter_dry_mass_megagrams = 0;
 
     try std.testing.expectEqualDeep(
         inputs.existing_totals,

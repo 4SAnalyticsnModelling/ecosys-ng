@@ -2,7 +2,11 @@ const std = @import("std");
 const spatial_grid = @import("spatial_grid.zig");
 
 const magic = "ECOSTILE";
-const format_version: u32 = 6;
+// Version 7 renames the four persisted soil-thermal field names from the
+// ambiguous `mj` suffix to `megajoules`. Field names are validated on read, so
+// a version-6 tile file is intentionally rejected rather than silently
+// reinterpreted.
+const format_version: u32 = 7;
 const morton_order_tag: u8 = 1;
 const generation_manifest_name = "generation.morton.manifest";
 const generation_manifest_magic = "ECOGEN01";
@@ -72,8 +76,8 @@ pub const FileStore = struct {
     pub fn saveOwnedFields(
         self: FileStore,
         tile: spatial_grid.Tile,
-        grid_row_count: usize,
-        grid_column_count: usize,
+        lat_count: usize,
+        lon_count: usize,
         fields: []const Field,
     ) !void {
         const file_name = try tileFileName(self.allocator, tile.z_order_index);
@@ -92,8 +96,8 @@ pub const FileStore = struct {
             &writer.interface,
             self.generation_index,
             tile,
-            grid_row_count,
-            grid_column_count,
+            lat_count,
+            lon_count,
             fields,
         );
         try writer.interface.flush();
@@ -128,8 +132,8 @@ pub const FileStore = struct {
                 self.generation_index,
                 source_tile,
                 destination_tile,
-                plan.grid_row_count,
-                plan.grid_column_count,
+                plan.lat_count,
+                plan.lon_count,
                 fields,
             );
         }
@@ -204,8 +208,8 @@ pub const FileStore = struct {
                 &tile_reader.interface,
                 self.generation_index,
                 tile,
-                plan.grid_row_count,
-                plan.grid_column_count,
+                plan.lat_count,
+                plan.lon_count,
                 fields,
             );
         }
@@ -318,8 +322,8 @@ fn writeGenerationManifest(
     try writer.writeInt(u32, generation_manifest_version, .little);
     try writer.writeInt(u64, generation_index, .little);
     try writer.writeByte(morton_order_tag);
-    try writer.writeInt(u64, @intCast(plan.grid_row_count), .little);
-    try writer.writeInt(u64, @intCast(plan.grid_column_count), .little);
+    try writer.writeInt(u64, @intCast(plan.lat_count), .little);
+    try writer.writeInt(u64, @intCast(plan.lon_count), .little);
     try writer.writeInt(u32, @intCast(fields.len), .little);
     for (fields) |field| {
         try writeFieldName(writer, field.name);
@@ -361,8 +365,8 @@ fn readAndValidateGenerationManifest(
         return error.TileGenerationManifestIndexMismatch;
     if (try reader.takeByte() != morton_order_tag)
         return error.UnsupportedTileTraversalOrder;
-    if (try reader.takeInt(u64, .little) != plan.grid_row_count or
-        try reader.takeInt(u64, .little) != plan.grid_column_count)
+    if (try reader.takeInt(u64, .little) != plan.lat_count or
+        try reader.takeInt(u64, .little) != plan.lon_count)
         return error.TileGenerationManifestGridMismatch;
     if (try reader.takeInt(u32, .little) != fields.len)
         return error.TileStateFieldCountMismatch;
@@ -412,8 +416,8 @@ pub fn writeOwnedFields(
     allocator: std.mem.Allocator,
     writer: anytype,
     tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const Field,
 ) !void {
     return writeOwnedFieldsForGeneration(
@@ -421,8 +425,8 @@ pub fn writeOwnedFields(
         writer,
         0,
         tile,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
         fields,
     );
 }
@@ -432,11 +436,11 @@ fn writeOwnedFieldsForGeneration(
     writer: anytype,
     generation_index: u64,
     tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const Field,
 ) !void {
-    const grid_cell_count = try std.math.mul(usize, grid_row_count, grid_column_count);
+    const grid_cell_count = try std.math.mul(usize, lat_count, lon_count);
     if (fields.len == 0 or fields.len > std.math.maxInt(u32))
         return error.InvalidTileFieldCount;
     try ensureUniqueFieldNames(fields);
@@ -454,8 +458,8 @@ fn writeOwnedFieldsForGeneration(
     }
     const indices = try tile.ownedCellIndicesZOrder(
         allocator,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
     );
     defer allocator.free(indices);
 
@@ -466,8 +470,8 @@ fn writeOwnedFieldsForGeneration(
     // Morton order. These tags make that persistent contract explicit.
     try writer.writeByte(morton_order_tag);
     try writer.writeByte(morton_order_tag);
-    try writer.writeInt(u64, @intCast(grid_row_count), .little);
-    try writer.writeInt(u64, @intCast(grid_column_count), .little);
+    try writer.writeInt(u64, @intCast(lat_count), .little);
+    try writer.writeInt(u64, @intCast(lon_count), .little);
     try writer.writeInt(u64, tile.z_order_index, .little);
     inline for (.{
         tile.owned_north_row,
@@ -512,8 +516,8 @@ pub fn readOwnedFieldsInto(
     reader: *std.Io.Reader,
     source_tile: spatial_grid.Tile,
     destination_tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const MutableField,
 ) !void {
     return readOwnedFieldsIntoForGeneration(
@@ -522,8 +526,8 @@ pub fn readOwnedFieldsInto(
         0,
         source_tile,
         destination_tile,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
         fields,
     );
 }
@@ -534,8 +538,8 @@ fn readOwnedFieldsIntoForGeneration(
     generation_index: u64,
     source_tile: spatial_grid.Tile,
     destination_tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const MutableField,
 ) !void {
     return consumeOwnedFieldsForGeneration(
@@ -544,8 +548,8 @@ fn readOwnedFieldsIntoForGeneration(
         generation_index,
         source_tile,
         destination_tile,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
         fields,
         true,
     );
@@ -556,8 +560,8 @@ fn validateOwnedFieldsForGeneration(
     reader: *std.Io.Reader,
     generation_index: u64,
     source_tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const MutableField,
 ) !void {
     return consumeOwnedFieldsForGeneration(
@@ -566,8 +570,8 @@ fn validateOwnedFieldsForGeneration(
         generation_index,
         source_tile,
         source_tile,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
         fields,
         false,
     );
@@ -579,12 +583,12 @@ fn consumeOwnedFieldsForGeneration(
     generation_index: u64,
     source_tile: spatial_grid.Tile,
     destination_tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     fields: []const MutableField,
     apply_values: bool,
 ) !void {
-    const grid_cell_count = try std.math.mul(usize, grid_row_count, grid_column_count);
+    const grid_cell_count = try std.math.mul(usize, lat_count, lon_count);
     if (fields.len == 0 or fields.len > std.math.maxInt(u32))
         return error.InvalidTileFieldCount;
     try ensureUniqueFieldNames(fields);
@@ -610,8 +614,8 @@ fn consumeOwnedFieldsForGeneration(
         return error.UnsupportedTileTraversalOrder;
     if (try reader.takeByte() != morton_order_tag)
         return error.UnsupportedTileCellOrder;
-    if (try reader.takeInt(u64, .little) != grid_row_count or
-        try reader.takeInt(u64, .little) != grid_column_count or
+    if (try reader.takeInt(u64, .little) != lat_count or
+        try reader.takeInt(u64, .little) != lon_count or
         try reader.takeInt(u64, .little) != source_tile.z_order_index)
         return error.TileStateGridMismatch;
     inline for (.{
@@ -638,16 +642,16 @@ fn consumeOwnedFieldsForGeneration(
     }
     const indices = try source_tile.ownedCellIndicesZOrder(
         allocator,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
     );
     defer allocator.free(indices);
     if (try reader.takeInt(u64, .little) != indices.len)
         return error.TileStateCellCountMismatch;
     for (fields) |field| for (indices) |cell| {
         const first = cell * field.components_per_cell;
-        const row = cell / grid_column_count;
-        const column = cell % grid_column_count;
+        const row = cell / lon_count;
+        const column = cell % lon_count;
         const inside_loaded =
             row >= destination_tile.loaded_north_row and
             row < destination_tile.loaded_south_row_exclusive and
@@ -1027,8 +1031,8 @@ test "generation validation consumes every tile record without mutating state" {
     );
     for (plan.tiles) |tile| try store.saveOwnedFields(
         tile,
-        plan.grid_row_count,
-        plan.grid_column_count,
+        plan.lat_count,
+        plan.lon_count,
         &.{.{
             .name = "surface_temperature_k",
             .values = &source,

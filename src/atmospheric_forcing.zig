@@ -12,9 +12,9 @@ pub const State = struct {
     precipitation_m: []f64,
     rainfall_m: []f64,
     snowfall_water_equivalent_m: []f64,
-    shortwave_radiation_mj_per_m2: []f64,
+    shortwave_radiation_megajoules_per_m2: []f64,
     wind_speed_m_per_h: []f64,
-    longwave_radiation_mj_per_m2: []f64,
+    longwave_radiation_megajoules_per_m2: []f64,
     longwave_is_observed: []bool,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
@@ -27,9 +27,9 @@ pub const State = struct {
             .precipitation_m = undefined,
             .rainfall_m = undefined,
             .snowfall_water_equivalent_m = undefined,
-            .shortwave_radiation_mj_per_m2 = undefined,
+            .shortwave_radiation_megajoules_per_m2 = undefined,
             .wind_speed_m_per_h = undefined,
-            .longwave_radiation_mj_per_m2 = undefined,
+            .longwave_radiation_megajoules_per_m2 = undefined,
             .longwave_is_observed = undefined,
         };
         errdefer allocator.free(result.air_temperature_k);
@@ -41,30 +41,30 @@ pub const State = struct {
         errdefer allocator.free(result.rainfall_m);
         result.snowfall_water_equivalent_m = try allocator.alloc(f64, cell_count);
         errdefer allocator.free(result.snowfall_water_equivalent_m);
-        result.shortwave_radiation_mj_per_m2 = try allocator.alloc(f64, cell_count);
-        errdefer allocator.free(result.shortwave_radiation_mj_per_m2);
+        result.shortwave_radiation_megajoules_per_m2 = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(result.shortwave_radiation_megajoules_per_m2);
         result.wind_speed_m_per_h = try allocator.alloc(f64, cell_count);
         errdefer allocator.free(result.wind_speed_m_per_h);
-        result.longwave_radiation_mj_per_m2 = try allocator.alloc(f64, cell_count);
-        errdefer allocator.free(result.longwave_radiation_mj_per_m2);
+        result.longwave_radiation_megajoules_per_m2 = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(result.longwave_radiation_megajoules_per_m2);
         result.longwave_is_observed = try allocator.alloc(bool, cell_count);
         @memset(result.air_temperature_k, 273.15);
         @memset(result.vapor_pressure_kpa, 0);
         @memset(result.precipitation_m, 0);
         @memset(result.rainfall_m, 0);
         @memset(result.snowfall_water_equivalent_m, 0);
-        @memset(result.shortwave_radiation_mj_per_m2, 0);
+        @memset(result.shortwave_radiation_megajoules_per_m2, 0);
         @memset(result.wind_speed_m_per_h, 0);
-        @memset(result.longwave_radiation_mj_per_m2, 0);
+        @memset(result.longwave_radiation_megajoules_per_m2, 0);
         @memset(result.longwave_is_observed, false);
         return result;
     }
 
     pub fn deinit(self: *State) void {
         self.allocator.free(self.longwave_is_observed);
-        self.allocator.free(self.longwave_radiation_mj_per_m2);
+        self.allocator.free(self.longwave_radiation_megajoules_per_m2);
         self.allocator.free(self.wind_speed_m_per_h);
-        self.allocator.free(self.shortwave_radiation_mj_per_m2);
+        self.allocator.free(self.shortwave_radiation_megajoules_per_m2);
         self.allocator.free(self.precipitation_m);
         self.allocator.free(self.snowfall_water_equivalent_m);
         self.allocator.free(self.rainfall_m);
@@ -96,7 +96,7 @@ pub fn applyUniformTile(context: *ApplyContext, range: CellRange) !void {
     inline for (@typeInfo(HourlyForcing).@"struct".fields) |field| if (field.type == f64) {
         if (!std.math.isFinite(@field(forcing, field.name))) return error.NonFiniteWeatherForcing;
     };
-    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_mj_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidWeatherForcing;
+    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_megajoules_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidWeatherForcing;
     if (range.end > context.state.cell_count) return error.AtmosphericTileOutOfBounds;
     for (range.first..range.end) |cell| {
         context.state.air_temperature_k[cell] = forcing.air_temperature_c + 273.15;
@@ -104,10 +104,10 @@ pub fn applyUniformTile(context: *ApplyContext, range: CellRange) !void {
         context.state.precipitation_m[cell] = forcing.precipitation_m;
         context.state.rainfall_m[cell] = forcing.rainfall_m;
         context.state.snowfall_water_equivalent_m[cell] = forcing.snowfall_water_equivalent_m;
-        context.state.shortwave_radiation_mj_per_m2[cell] = forcing.shortwave_radiation_mj_per_m2;
+        context.state.shortwave_radiation_megajoules_per_m2[cell] = forcing.shortwave_radiation_megajoules_per_m2;
         context.state.wind_speed_m_per_h[cell] = forcing.wind_speed_m_per_h;
-        context.state.longwave_is_observed[cell] = forcing.longwave_radiation_mj_per_m2 != null;
-        context.state.longwave_radiation_mj_per_m2[cell] = forcing.longwave_radiation_mj_per_m2 orelse 0;
+        context.state.longwave_is_observed[cell] = forcing.longwave_radiation_megajoules_per_m2 != null;
+        context.state.longwave_radiation_megajoules_per_m2[cell] = forcing.longwave_radiation_megajoules_per_m2 orelse 0;
     }
 }
 
@@ -120,16 +120,16 @@ pub fn applyMappedTile(context: *MappedApplyContext, range: CellRange) !void {
             if (field.type == f64 and !std.math.isFinite(@field(forcing, field.name)))
                 return error.NonFiniteWeatherForcing;
         }
-        if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_mj_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidWeatherForcing;
+        if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_megajoules_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidWeatherForcing;
         context.state.air_temperature_k[cell] = forcing.air_temperature_c + 273.15;
         context.state.vapor_pressure_kpa[cell] = forcing.vapor_pressure_kpa;
         context.state.precipitation_m[cell] = forcing.precipitation_m;
         context.state.rainfall_m[cell] = forcing.rainfall_m;
         context.state.snowfall_water_equivalent_m[cell] = forcing.snowfall_water_equivalent_m;
-        context.state.shortwave_radiation_mj_per_m2[cell] = forcing.shortwave_radiation_mj_per_m2;
+        context.state.shortwave_radiation_megajoules_per_m2[cell] = forcing.shortwave_radiation_megajoules_per_m2;
         context.state.wind_speed_m_per_h[cell] = forcing.wind_speed_m_per_h;
-        context.state.longwave_is_observed[cell] = forcing.longwave_radiation_mj_per_m2 != null;
-        context.state.longwave_radiation_mj_per_m2[cell] = forcing.longwave_radiation_mj_per_m2 orelse 0;
+        context.state.longwave_is_observed[cell] = forcing.longwave_radiation_megajoules_per_m2 != null;
+        context.state.longwave_radiation_megajoules_per_m2[cell] = forcing.longwave_radiation_megajoules_per_m2 orelse 0;
     }
 }
 
@@ -142,9 +142,9 @@ test "parallel tiles apply forcing across runtime grid" {
         .vapor_pressure_kpa = 1.2,
         .precipitation_m = 0.003,
         .rainfall_m = 0.003,
-        .shortwave_radiation_mj_per_m2 = 0.7,
+        .shortwave_radiation_megajoules_per_m2 = 0.7,
         .wind_speed_m_per_h = 3600,
-        .longwave_radiation_mj_per_m2 = null,
+        .longwave_radiation_megajoules_per_m2 = null,
     } };
     const executor = try @import("compute.zig").CpuExecutor.init(allocator, 7, 113);
     try executor.run(state.cell_count, &context, applyUniformTile);
@@ -157,8 +157,8 @@ test "mapped forcing preserves distinct weather for adjacent cells" {
     var state = try State.init(std.testing.allocator, 2);
     defer state.deinit();
     const forcing = [_]HourlyForcing{
-        .{ .air_temperature_c = 1, .vapor_pressure_kpa = 0.5, .precipitation_m = 0, .shortwave_radiation_mj_per_m2 = 0, .wind_speed_m_per_h = 100, .longwave_radiation_mj_per_m2 = null },
-        .{ .air_temperature_c = 20, .vapor_pressure_kpa = 2, .precipitation_m = 0.001, .rainfall_m = 0.001, .shortwave_radiation_mj_per_m2 = 1, .wind_speed_m_per_h = 500, .longwave_radiation_mj_per_m2 = null },
+        .{ .air_temperature_c = 1, .vapor_pressure_kpa = 0.5, .precipitation_m = 0, .shortwave_radiation_megajoules_per_m2 = 0, .wind_speed_m_per_h = 100, .longwave_radiation_megajoules_per_m2 = null },
+        .{ .air_temperature_c = 20, .vapor_pressure_kpa = 2, .precipitation_m = 0.001, .rainfall_m = 0.001, .shortwave_radiation_megajoules_per_m2 = 1, .wind_speed_m_per_h = 500, .longwave_radiation_megajoules_per_m2 = null },
     };
     var context = MappedApplyContext{ .state = &state, .forcing_by_cell = &forcing };
     try applyMappedTile(&context, .{ .first = 0, .end = 2 });

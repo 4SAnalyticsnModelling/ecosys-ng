@@ -109,29 +109,29 @@ pub fn transferSolidLayerFraction(
     chemistry: *chemistry_module.State,
     source: usize,
     destination: usize,
-    source_soil_mass_Mg: f64,
-    destination_soil_mass_Mg: f64,
+    source_soil_mass_megagrams: f64,
+    destination_soil_mass_megagrams: f64,
     source_water_m3: f64,
     destination_water_m3: f64,
-    source_soil_mass_after_Mg: f64,
-    destination_soil_mass_after_Mg: f64,
+    source_soil_mass_after_megagrams: f64,
+    destination_soil_mass_after_megagrams: f64,
     source_water_after_m3: f64,
     destination_water_after_m3: f64,
     fraction: f64,
 ) !void {
     if (source >= chemistry.cell_count or destination >= chemistry.cell_count or source == destination) return error.ChemistryLayerRemapIndexOutOfBounds;
-    inline for (.{ source_soil_mass_Mg, destination_soil_mass_Mg, source_water_m3, destination_water_m3, source_soil_mass_after_Mg, destination_soil_mass_after_Mg, source_water_after_m3, destination_water_after_m3, fraction }) |value|
+    inline for (.{ source_soil_mass_megagrams, destination_soil_mass_megagrams, source_water_m3, destination_water_m3, source_soil_mass_after_megagrams, destination_soil_mass_after_megagrams, source_water_after_m3, destination_water_after_m3, fraction }) |value|
         if (!std.math.isFinite(value)) return error.InvalidChemistryLayerRemapInput;
-    if (source_soil_mass_Mg <= 0 or destination_soil_mass_Mg <= 0 or source_water_m3 < 0 or destination_water_m3 < 0 or source_soil_mass_after_Mg < 0 or destination_soil_mass_after_Mg <= 0 or source_water_after_m3 < 0 or destination_water_after_m3 < 0 or fraction < 0 or fraction > 1) return error.InvalidChemistryLayerRemapInput;
+    if (source_soil_mass_megagrams <= 0 or destination_soil_mass_megagrams <= 0 or source_water_m3 < 0 or destination_water_m3 < 0 or source_soil_mass_after_megagrams < 0 or destination_soil_mass_after_megagrams <= 0 or source_water_after_m3 < 0 or destination_water_after_m3 < 0 or fraction < 0 or fraction > 1) return error.InvalidChemistryLayerRemapInput;
 
-    var next_source_cations = chemistry.cation_exchange_mol_per_Mg[source];
-    var next_destination_cations = chemistry.cation_exchange_mol_per_Mg[destination];
+    var next_source_cations = chemistry.cation_exchange_mol_per_megagram[source];
+    var next_destination_cations = chemistry.cation_exchange_mol_per_megagram[destination];
     inline for (@typeInfo(cation.Cations).@"struct".fields) |field| {
-        const next = try transferConcentration(@field(next_source_cations, field.name), @field(next_destination_cations, field.name), source_soil_mass_Mg, destination_soil_mass_Mg, source_soil_mass_after_Mg, destination_soil_mass_after_Mg, fraction);
+        const next = try transferConcentration(@field(next_source_cations, field.name), @field(next_destination_cations, field.name), source_soil_mass_megagrams, destination_soil_mass_megagrams, source_soil_mass_after_megagrams, destination_soil_mass_after_megagrams, fraction);
         @field(next_source_cations, field.name) = next.source;
         @field(next_destination_cations, field.name) = next.destination;
     }
-    const next_carboxyl = try transferConcentration(chemistry.carboxyl_bound_hydrogen_mol_per_Mg[source], chemistry.carboxyl_bound_hydrogen_mol_per_Mg[destination], source_soil_mass_Mg, destination_soil_mass_Mg, source_soil_mass_after_Mg, destination_soil_mass_after_Mg, fraction);
+    const next_carboxyl = try transferConcentration(chemistry.carboxyl_bound_hydrogen_mol_per_megagram[source], chemistry.carboxyl_bound_hydrogen_mol_per_megagram[destination], source_soil_mass_megagrams, destination_soil_mass_megagrams, source_soil_mass_after_megagrams, destination_soil_mass_after_megagrams, fraction);
 
     var next_source_non_band = chemistry.non_band_phosphate[source];
     var next_destination_non_band = chemistry.non_band_phosphate[destination];
@@ -142,10 +142,10 @@ pub fn transferSolidLayerFraction(
         .{ &next_source_band, &next_destination_band },
     }) |zones| inline for (@typeInfo(phosphate.State).@"struct".fields) |field| {
         if (comptime isPondedPhosphateField(field.name)) {
-            const source_scale = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) source_soil_mass_Mg else source_water_m3;
-            const destination_scale = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) destination_soil_mass_Mg else destination_water_m3;
-            const source_scale_after = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) source_soil_mass_after_Mg else source_water_after_m3;
-            const destination_scale_after = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) destination_soil_mass_after_Mg else destination_water_after_m3;
+            const source_scale = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) source_soil_mass_megagrams else source_water_m3;
+            const destination_scale = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) destination_soil_mass_megagrams else destination_water_m3;
+            const source_scale_after = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) source_soil_mass_after_megagrams else source_water_after_m3;
+            const destination_scale_after = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) destination_soil_mass_after_megagrams else destination_water_after_m3;
             const next = try transferConcentration(@field(zones[0].*, field.name), @field(zones[1].*, field.name), source_scale, destination_scale, source_scale_after, destination_scale_after, fraction);
             @field(zones[0].*, field.name) = next.source;
             @field(zones[1].*, field.name) = next.destination;
@@ -160,10 +160,10 @@ pub fn transferSolidLayerFraction(
         @field(next_destination_solids, field.name) = next.destination;
     }
 
-    chemistry.cation_exchange_mol_per_Mg[source] = next_source_cations;
-    chemistry.cation_exchange_mol_per_Mg[destination] = next_destination_cations;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[source] = next_carboxyl.source;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[destination] = next_carboxyl.destination;
+    chemistry.cation_exchange_mol_per_megagram[source] = next_source_cations;
+    chemistry.cation_exchange_mol_per_megagram[destination] = next_destination_cations;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[source] = next_carboxyl.source;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[destination] = next_carboxyl.destination;
     chemistry.non_band_phosphate[source] = next_source_non_band;
     chemistry.non_band_phosphate[destination] = next_destination_non_band;
     chemistry.band_phosphate[source] = next_source_band;
@@ -176,12 +176,12 @@ pub fn validateSolidLayerFraction(
     chemistry: *const chemistry_module.State,
     source: usize,
     destination: usize,
-    source_soil_mass_Mg: f64,
-    destination_soil_mass_Mg: f64,
+    source_soil_mass_megagrams: f64,
+    destination_soil_mass_megagrams: f64,
     source_water_m3: f64,
     destination_water_m3: f64,
-    source_soil_mass_after_Mg: f64,
-    destination_soil_mass_after_Mg: f64,
+    source_soil_mass_after_megagrams: f64,
+    destination_soil_mass_after_megagrams: f64,
     source_water_after_m3: f64,
     destination_water_after_m3: f64,
     fraction: f64,
@@ -189,7 +189,7 @@ pub fn validateSolidLayerFraction(
     if (source >= chemistry.cell_count or destination >= chemistry.cell_count) return error.ChemistryLayerRemapIndexOutOfBounds;
     var view = twoCellView(chemistry, source, destination);
     var state = view.bindState();
-    try transferSolidLayerFraction(&state, 0, 1, source_soil_mass_Mg, destination_soil_mass_Mg, source_water_m3, destination_water_m3, source_soil_mass_after_Mg, destination_soil_mass_after_Mg, source_water_after_m3, destination_water_after_m3, fraction);
+    try transferSolidLayerFraction(&state, 0, 1, source_soil_mass_megagrams, destination_soil_mass_megagrams, source_water_m3, destination_water_m3, source_soil_mass_after_megagrams, destination_soil_mass_after_megagrams, source_water_after_m3, destination_water_after_m3, fraction);
 }
 
 const TwoCellView = struct {
@@ -209,8 +209,8 @@ const TwoCellView = struct {
             .non_band_phosphate = &self.non_band_values,
             .band_phosphate = &self.band_values,
             .water_mol_per_m3 = &self.water_values,
-            .cation_exchange_mol_per_Mg = &self.cation_values,
-            .carboxyl_bound_hydrogen_mol_per_Mg = &self.carboxyl_values,
+            .cation_exchange_mol_per_megagram = &self.cation_values,
+            .carboxyl_bound_hydrogen_mol_per_megagram = &self.carboxyl_values,
             .geochemistry_solids = &self.solid_values,
         };
     }
@@ -222,8 +222,8 @@ fn twoCellView(chemistry: *const chemistry_module.State, source: usize, destinat
     result.non_band_values = .{ chemistry.non_band_phosphate[source], chemistry.non_band_phosphate[destination] };
     result.band_values = .{ chemistry.band_phosphate[source], chemistry.band_phosphate[destination] };
     result.water_values = .{ chemistry.water_mol_per_m3[source], chemistry.water_mol_per_m3[destination] };
-    result.cation_values = .{ chemistry.cation_exchange_mol_per_Mg[source], chemistry.cation_exchange_mol_per_Mg[destination] };
-    result.carboxyl_values = .{ chemistry.carboxyl_bound_hydrogen_mol_per_Mg[source], chemistry.carboxyl_bound_hydrogen_mol_per_Mg[destination] };
+    result.cation_values = .{ chemistry.cation_exchange_mol_per_megagram[source], chemistry.cation_exchange_mol_per_megagram[destination] };
+    result.carboxyl_values = .{ chemistry.carboxyl_bound_hydrogen_mol_per_megagram[source], chemistry.carboxyl_bound_hydrogen_mol_per_megagram[destination] };
     result.solid_values = .{ chemistry.geochemistry_solids[source], chemistry.geochemistry_solids[destination] };
     return result;
 }
@@ -254,7 +254,7 @@ fn concentration(amount: f64, scale: f64) !f64 {
 
 fn isPondedPhosphateField(comptime name: []const u8) bool {
     @setEvalBranchQuota(10_000);
-    return std.mem.endsWith(u8, name, "_per_Mg") or std.mem.indexOf(u8, name, "_solid_mol_per_m3") != null;
+    return std.mem.endsWith(u8, name, "_per_megagram") or std.mem.indexOf(u8, name, "_solid_mol_per_m3") != null;
 }
 
 fn isAqueousPhosphateField(comptime name: []const u8) bool {
@@ -291,15 +291,15 @@ fn validateZoneWater(volumes: ZoneWaterVolumes) !void {
 test "REDIST solid chemistry remap conserves native amounts across unequal layer bases" {
     var chemistry = try chemistry_module.State.init(std.testing.allocator, 2);
     defer chemistry.deinit();
-    chemistry.cation_exchange_mol_per_Mg[0].calcium = 2;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[0] = 3;
-    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_Mg = 4;
+    chemistry.cation_exchange_mol_per_megagram[0].calcium = 2;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[0] = 3;
+    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_megagram = 4;
     chemistry.band_phosphate[0].aluminum_phosphate_solid_mol_per_m3 = 5;
     chemistry.geochemistry_solids[0].potassium_ground_silicate_mol_per_m3 = 6;
     try transferSolidLayerFraction(&chemistry, 0, 1, 10, 20, 2, 4, 10, 20, 2, 4, 0.25);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.5), chemistry.cation_exchange_mol_per_Mg[0].calcium, 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.25), chemistry.cation_exchange_mol_per_Mg[1].calcium, 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.5), chemistry.non_band_phosphate[1].adsorbed_hpo4_mol_p_per_Mg, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), chemistry.cation_exchange_mol_per_megagram[0].calcium, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.25), chemistry.cation_exchange_mol_per_megagram[1].calcium, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), chemistry.non_band_phosphate[1].adsorbed_hpo4_mol_p_per_megagram, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 0.625), chemistry.band_phosphate[1].aluminum_phosphate_solid_mol_per_m3, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 0.75), chemistry.geochemistry_solids[1].potassium_ground_silicate_mol_per_m3, 1e-14);
 }
@@ -307,11 +307,11 @@ test "REDIST solid chemistry remap conserves native amounts across unequal layer
 test "REDIST solid chemistry remap rejects dry recipient before mutation" {
     var chemistry = try chemistry_module.State.init(std.testing.allocator, 2);
     defer chemistry.deinit();
-    chemistry.cation_exchange_mol_per_Mg[0].calcium = 2;
+    chemistry.cation_exchange_mol_per_megagram[0].calcium = 2;
     chemistry.geochemistry_solids[0].calcite_solid_mol_per_m3 = 3;
     try std.testing.expectError(error.ChemistryLayerRemapRequiresRecipientVolume, transferSolidLayerFraction(&chemistry, 0, 1, 10, 10, 1, 0, 10, 10, 1, 0, 0.5));
-    try std.testing.expectEqual(@as(f64, 2), chemistry.cation_exchange_mol_per_Mg[0].calcium);
-    try std.testing.expectEqual(@as(f64, 0), chemistry.cation_exchange_mol_per_Mg[1].calcium);
+    try std.testing.expectEqual(@as(f64, 2), chemistry.cation_exchange_mol_per_megagram[0].calcium);
+    try std.testing.expectEqual(@as(f64, 0), chemistry.cation_exchange_mol_per_megagram[1].calcium);
 }
 
 test "REDIST aqueous chemistry respects independent runtime band carriers" {

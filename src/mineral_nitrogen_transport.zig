@@ -109,6 +109,26 @@ pub const State = struct {
         );
     }
 
+    /// Refreshes the extensive matrix inventory after reaction or surface-
+    /// pond commits have changed the concentration-based chemistry owner.
+    /// Macropore amounts remain transport-owned and are not modified.
+    pub fn refreshMatrixFromReactionState(
+        self: *State,
+        chemistry: *const chemistry_module.State,
+        reactive: *const reactive_module.State,
+        matrix_water_volume_m3: []const f64,
+        fractions: ZoneFractions,
+        nitrogen_molar_mass_g_per_mol: f64,
+    ) !void {
+        try self.initializeMatrix(
+            chemistry,
+            reactive,
+            matrix_water_volume_m3,
+            fractions,
+            nitrogen_molar_mass_g_per_mol,
+        );
+    }
+
     pub fn validate(self: *const State) !void {
         if (self.matrix.cell_count != self.cell_count or self.macropore.cell_count != self.cell_count or self.matrix.species_count != species_count or self.macropore.species_count != species_count) return error.InvalidMineralNitrogenTransportDimensions;
         for (self.matrix.amount_mol, self.macropore.amount_mol) |matrix_amount, macropore_amount| {
@@ -129,7 +149,12 @@ pub const State = struct {
         for (0..self.cell_count) |cell| {
             const water = self.matrix.water_volume_m3[cell];
             const amounts = try self.matrix.cellAmountsConst(cell);
-            chemistry.aqueous[cell].ammonium_non_band = try concentration(amounts[index(.ammonium_non_band)], water, fractions.ammonium_non_band);
+            const nh4_non_band_conc = try concentration(amounts[index(.ammonium_non_band)], water, fractions.ammonium_non_band);
+            if (nh4_non_band_conc > 1000) std.log.warn(
+                "large ammonium from transport publish: cell={d} conc_mol_m3={e} amount_mol={e} water_m3={e}",
+                .{ cell, nh4_non_band_conc, amounts[index(.ammonium_non_band)], water },
+            );
+            chemistry.aqueous[cell].ammonium_non_band = nh4_non_band_conc;
             chemistry.aqueous[cell].ammonium_band = try concentration(amounts[index(.ammonium_band)], water, fractions.ammonium_band);
             chemistry.aqueous[cell].ammonia_non_band = try concentration(amounts[index(.ammonia_non_band)], water, fractions.ammonium_non_band);
             chemistry.aqueous[cell].ammonia_band = try concentration(amounts[index(.ammonia_band)], water, fractions.ammonium_band);

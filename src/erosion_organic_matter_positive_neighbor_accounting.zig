@@ -60,8 +60,8 @@ pub const OrganicMatterFlux = struct {
 };
 
 pub const NeighborSide = struct {
-    local_total_sediment_Mg_per_step: f64,
-    positive_neighbor_total_sediment_Mg_per_step: f64,
+    local_total_sediment_megagrams_per_step: f64,
+    positive_neighbor_total_sediment_megagrams_per_step: f64,
     positive_neighbor_organic_matter: OrganicMatterFlux,
     connection: NeighborConnection,
 };
@@ -69,7 +69,7 @@ pub const NeighborSide = struct {
 pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     dimensions: OrganicDimensions,
     neighbor_by_boundary_side: []const NeighborSide,
 };
@@ -113,10 +113,10 @@ pub fn account(inputs: Inputs, state: *State, workspace: Workspace) !void {
     copyState(workspace, state.*);
 
     for (inputs.neighbor_by_boundary_side) |side| {
-        if (@abs(side.local_total_sediment_Mg_per_step) <=
-            inputs.sediment_activity_threshold_Mg_per_step and
-            @abs(side.positive_neighbor_total_sediment_Mg_per_step) <=
-                inputs.sediment_activity_threshold_Mg_per_step)
+        if (@abs(side.local_total_sediment_megagrams_per_step) <=
+            inputs.sediment_activity_threshold_megagrams_per_step and
+            @abs(side.positive_neighbor_total_sediment_megagrams_per_step) <=
+                inputs.sediment_activity_threshold_megagrams_per_step)
         {
             continue;
         }
@@ -204,16 +204,16 @@ fn validateFluxDimensions(flux: OrganicMatterFlux, extents: Extents) !void {
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.sediment_activity_threshold_Mg_per_step))
+    if (!std.math.isFinite(inputs.sediment_activity_threshold_megagrams_per_step))
         return error.NonFiniteOrganicNeighborErosionInput;
-    if (inputs.sediment_activity_threshold_Mg_per_step < 0)
+    if (inputs.sediment_activity_threshold_megagrams_per_step < 0)
         return error.InvalidErosionActivityThreshold;
     try validateStateFinite(state);
     try validateWorkspaceOwnership(workspace, state, inputs);
     for (inputs.neighbor_by_boundary_side) |side| {
-        if (!std.math.isFinite(side.local_total_sediment_Mg_per_step) or
+        if (!std.math.isFinite(side.local_total_sediment_megagrams_per_step) or
             !std.math.isFinite(
-                side.positive_neighbor_total_sediment_Mg_per_step,
+                side.positive_neighbor_total_sediment_megagrams_per_step,
             ))
         {
             return error.NonFiniteOrganicNeighborErosionInput;
@@ -404,8 +404,8 @@ test "runtime dimensions subtract every connected organic inventory" {
     } ** 2;
     const soil = [_]SoilOrganicFlux{filled(SoilOrganicFlux, 2)} ** 4;
     const sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 2,
-        .positive_neighbor_total_sediment_Mg_per_step = 0,
+        .local_total_sediment_megagrams_per_step = 2,
+        .positive_neighbor_total_sediment_megagrams_per_step = 0,
         .positive_neighbor_organic_matter = .{
             .microbial_by_class_group_component = &microbial,
             .residue_by_class_component = &residue,
@@ -438,7 +438,7 @@ test "runtime dimensions subtract every connected organic inventory" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .dimensions = test_dimensions,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{
@@ -472,20 +472,20 @@ test "strict activity and connection gates are independent" {
     };
     const sides = [_]NeighborSide{
         .{
-            .local_total_sediment_Mg_per_step = 2,
-            .positive_neighbor_total_sediment_Mg_per_step = 2,
+            .local_total_sediment_megagrams_per_step = 2,
+            .positive_neighbor_total_sediment_megagrams_per_step = 2,
             .positive_neighbor_organic_matter = flux,
             .connection = .blocked,
         },
         .{
-            .local_total_sediment_Mg_per_step = 1,
-            .positive_neighbor_total_sediment_Mg_per_step = -1,
+            .local_total_sediment_megagrams_per_step = 1,
+            .positive_neighbor_total_sediment_megagrams_per_step = -1,
             .positive_neighbor_organic_matter = flux,
             .connection = .connected,
         },
         .{
-            .local_total_sediment_Mg_per_step = 0,
-            .positive_neighbor_total_sediment_Mg_per_step = -2,
+            .local_total_sediment_megagrams_per_step = 0,
+            .positive_neighbor_total_sediment_megagrams_per_step = -2,
             .positive_neighbor_organic_matter = flux,
             .connection = .connected,
         },
@@ -514,7 +514,7 @@ test "strict activity and connection gates are independent" {
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .dimensions = test_dimensions,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{
@@ -545,8 +545,8 @@ test "shared face transfer conserves carbon nitrogen and phosphorus exactly" {
     var source_adsorbed = adsorbed;
     var source_soil = soil;
     const sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 0,
-        .positive_neighbor_total_sediment_Mg_per_step = 2,
+        .local_total_sediment_megagrams_per_step = 0,
+        .positive_neighbor_total_sediment_megagrams_per_step = 2,
         .positive_neighbor_organic_matter = .{
             .microbial_by_class_group_component = &microbial,
             .residue_by_class_component = &residue,
@@ -568,7 +568,7 @@ test "shared face transfer conserves carbon nitrogen and phosphorus exactly" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .dimensions = test_dimensions,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{
@@ -599,14 +599,14 @@ test "disabled and vertical modes bypass unused organic storage" {
     try account(.{
         .disturbance_mode = .freeze_thaw,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .dimensions = std.mem.zeroes(OrganicDimensions),
         .neighbor_by_boundary_side = &.{},
     }, &state, workspace);
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .vertical,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .dimensions = std.mem.zeroes(OrganicDimensions),
         .neighbor_by_boundary_side = &.{},
     }, &state, workspace);
@@ -624,8 +624,8 @@ test "invalid dimensions alias and overflow preserve organic state atomically" {
     } ** 2;
     const soil = [_]SoilOrganicFlux{filled(SoilOrganicFlux, 1)} ** 4;
     const sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 2,
-        .positive_neighbor_total_sediment_Mg_per_step = 2,
+        .local_total_sediment_megagrams_per_step = 2,
+        .positive_neighbor_total_sediment_megagrams_per_step = 2,
         .positive_neighbor_organic_matter = .{
             .microbial_by_class_group_component = &microbial,
             .residue_by_class_component = &residue,
@@ -657,7 +657,7 @@ test "invalid dimensions alias and overflow preserve organic state atomically" {
     const inputs = Inputs{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .dimensions = test_dimensions,
         .neighbor_by_boundary_side = &sides,
     };

@@ -18,7 +18,7 @@ pub const WaterHeatFlux = struct {
     /// Micropore water including the infiltration wetting-front adjustment.
     wetting_front_micropore_water_m3_per_step: f64 = 0,
     macropore_water_m3_per_step: f64 = 0,
-    convective_heat_MJ_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const PositiveNeighborColumn = struct {

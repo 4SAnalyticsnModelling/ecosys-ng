@@ -9,9 +9,9 @@ pub const Geometry = struct {
     band_ammonium_water_volume_m3: f64,
     non_band_phosphate_water_volume_m3: f64,
     band_phosphate_water_volume_m3: f64,
-    shared_soil_mass_Mg: f64,
-    non_band_ammonium_soil_mass_Mg: f64,
-    band_ammonium_soil_mass_Mg: f64,
+    shared_soil_mass_megagrams: f64,
+    non_band_ammonium_soil_mass_megagrams: f64,
+    band_ammonium_soil_mass_megagrams: f64,
 };
 
 pub const WaterResetChanges = struct {
@@ -85,7 +85,7 @@ pub const Inputs = struct {
     geometry: Geometry,
     transformation_rates: transformations.Result,
     water_reset_changes: WaterResetChanges,
-    cation_exchange_rates_mol_per_Mg_step: cation_exchange.Cations,
+    cation_exchange_rates_mol_per_megagram_step: cation_exchange.Cations,
 };
 
 /// Exact source-order comparator for SOLUTE.F lines 3659--3725.
@@ -98,7 +98,7 @@ pub fn accumulateSourceOrder(inputs: Inputs) !Totals {
     try validateInputs(inputs);
     const geometry = inputs.geometry;
     const rates = inputs.transformation_rates;
-    const exchange = inputs.cation_exchange_rates_mol_per_Mg_step;
+    const exchange = inputs.cation_exchange_rates_mol_per_megagram_step;
     var result = inputs.previous_totals;
 
     // SOLUTE.F 3682--3725. Preserve source statement and operation order.
@@ -197,16 +197,16 @@ fn accumulateCationExchange(
     geometry: Geometry,
 ) void {
     total.non_band_ammonium_mol_n_per_step +=
-        rates.ammonium_non_band * geometry.non_band_ammonium_soil_mass_Mg;
+        rates.ammonium_non_band * geometry.non_band_ammonium_soil_mass_megagrams;
     total.band_ammonium_mol_n_per_step +=
-        rates.ammonium_band * geometry.band_ammonium_soil_mass_Mg;
-    total.hydrogen_mol_per_step += rates.hydrogen * geometry.shared_soil_mass_Mg;
-    total.aluminum_mol_per_step += rates.aluminum * geometry.shared_soil_mass_Mg;
-    total.iron_mol_per_step += rates.iron * geometry.shared_soil_mass_Mg;
-    total.calcium_mol_per_step += rates.calcium * geometry.shared_soil_mass_Mg;
-    total.magnesium_mol_per_step += rates.magnesium * geometry.shared_soil_mass_Mg;
-    total.sodium_mol_per_step += rates.sodium * geometry.shared_soil_mass_Mg;
-    total.potassium_mol_per_step += rates.potassium * geometry.shared_soil_mass_Mg;
+        rates.ammonium_band * geometry.band_ammonium_soil_mass_megagrams;
+    total.hydrogen_mol_per_step += rates.hydrogen * geometry.shared_soil_mass_megagrams;
+    total.aluminum_mol_per_step += rates.aluminum * geometry.shared_soil_mass_megagrams;
+    total.iron_mol_per_step += rates.iron * geometry.shared_soil_mass_megagrams;
+    total.calcium_mol_per_step += rates.calcium * geometry.shared_soil_mass_megagrams;
+    total.magnesium_mol_per_step += rates.magnesium * geometry.shared_soil_mass_megagrams;
+    total.sodium_mol_per_step += rates.sodium * geometry.shared_soil_mass_megagrams;
+    total.potassium_mol_per_step += rates.potassium * geometry.shared_soil_mass_megagrams;
 }
 
 fn accumulatePhosphateSurface(
@@ -256,7 +256,7 @@ fn validateInputs(inputs: Inputs) !void {
         error.NonFiniteFixedPhExtensiveInput,
     );
     try validateFiniteStruct(
-        inputs.cation_exchange_rates_mol_per_Mg_step,
+        inputs.cation_exchange_rates_mol_per_megagram_step,
         error.NonFiniteFixedPhExtensiveInput,
     );
     try validateTransformationRates(inputs.transformation_rates);
@@ -349,9 +349,9 @@ fn testGeometry() Geometry {
         .band_ammonium_water_volume_m3 = 5,
         .non_band_phosphate_water_volume_m3 = 7,
         .band_phosphate_water_volume_m3 = 11,
-        .shared_soil_mass_Mg = 13,
-        .non_band_ammonium_soil_mass_Mg = 17,
-        .band_ammonium_soil_mass_Mg = 19,
+        .shared_soil_mass_megagrams = 13,
+        .non_band_ammonium_soil_mass_megagrams = 17,
+        .band_ammonium_soil_mass_megagrams = 19,
     };
 }
 
@@ -421,12 +421,12 @@ test "fixed-pH extensive accumulation matches every source statement" {
             .hydrogen_mol_per_m3_step = 0.5,
             .hydroxide_mol_per_m3_step = -0.75,
         },
-        .cation_exchange_rates_mol_per_Mg_step = testCationRates(),
+        .cation_exchange_rates_mol_per_megagram_step = testCationRates(),
     };
     const actual = try accumulateSourceOrder(inputs);
     const g = inputs.geometry;
     const r = inputs.transformation_rates;
-    const x = inputs.cation_exchange_rates_mol_per_Mg_step;
+    const x = inputs.cation_exchange_rates_mol_per_megagram_step;
     var expected = inputs.previous_totals;
     expected.ammonium.non_band_ammonium_mol_n_per_step +=
         r.ammonium.non_band_ammonium_mol_n_per_m3_step *
@@ -520,7 +520,7 @@ test "fixed-pH extensive accumulation closes pH reset and water product" {
             .hydrogen_mol_per_m3_step = reset.hydrogen_reset_mol_per_m3_step,
             .hydroxide_mol_per_m3_step = reset.hydroxide_reset_mol_per_m3_step,
         },
-        .cation_exchange_rates_mol_per_Mg_step = testCationRates(),
+        .cation_exchange_rates_mol_per_megagram_step = testCationRates(),
     });
 
     try std.testing.expectApproxEqAbs(
@@ -551,9 +551,9 @@ test "fixed-pH extensive scaling conserves exchange and phosphate transfers" {
         .band_ammonium_water_volume_m3 = 5,
         .non_band_phosphate_water_volume_m3 = 7,
         .band_phosphate_water_volume_m3 = 11,
-        .shared_soil_mass_Mg = 13,
-        .non_band_ammonium_soil_mass_Mg = 17,
-        .band_ammonium_soil_mass_Mg = 19,
+        .shared_soil_mass_megagrams = 13,
+        .non_band_ammonium_soil_mass_megagrams = 17,
+        .band_ammonium_soil_mass_megagrams = 19,
     };
     const exchange: cation_exchange.Cations = .{
         .ammonium_non_band = 0.02,
@@ -568,10 +568,10 @@ test "fixed-pH extensive scaling conserves exchange and phosphate transfers" {
     };
     const assembled = try transformations.assembleSourceOrder(.{
         .geometry = .{
-            .shared_soil_mass_per_water_volume_Mg_per_m3 = geometry.shared_soil_mass_Mg / geometry.shared_water_volume_m3,
-            .non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3 = geometry.non_band_ammonium_soil_mass_Mg /
+            .shared_soil_mass_per_water_volume_megagrams_per_m3 = geometry.shared_soil_mass_megagrams / geometry.shared_water_volume_m3,
+            .non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3 = geometry.non_band_ammonium_soil_mass_megagrams /
                 geometry.non_band_ammonium_water_volume_m3,
-            .band_ammonium_soil_mass_per_water_volume_Mg_per_m3 = geometry.band_ammonium_soil_mass_Mg /
+            .band_ammonium_soil_mass_per_water_volume_megagrams_per_m3 = geometry.band_ammonium_soil_mass_megagrams /
                 geometry.band_ammonium_water_volume_m3,
         },
         .ammonium = .{
@@ -598,7 +598,7 @@ test "fixed-pH extensive scaling conserves exchange and phosphate transfers" {
             .surface = std.mem.zeroes(transformations.SurfacePhosphateRates),
             .minerals = std.mem.zeroes(transformations.PhosphateMineralRates),
         },
-        .cation_exchange_mol_per_Mg_step = exchange,
+        .cation_exchange_mol_per_megagram_step = exchange,
     });
     const totals = try accumulateSourceOrder(.{
         .previous_totals = filledTotals(0),
@@ -608,7 +608,7 @@ test "fixed-pH extensive scaling conserves exchange and phosphate transfers" {
             .hydrogen_mol_per_m3_step = 0,
             .hydroxide_mol_per_m3_step = 0,
         },
-        .cation_exchange_rates_mol_per_Mg_step = exchange,
+        .cation_exchange_rates_mol_per_megagram_step = exchange,
     });
 
     try std.testing.expectApproxEqAbs(
@@ -652,11 +652,11 @@ test "fixed-pH extensive accumulation preserves zero zones and rejects invalid s
             .hydrogen_mol_per_m3_step = 0,
             .hydroxide_mol_per_m3_step = 0,
         },
-        .cation_exchange_rates_mol_per_Mg_step = testCationRates(),
+        .cation_exchange_rates_mol_per_megagram_step = testCationRates(),
     };
     inputs.geometry.non_band_ammonium_water_volume_m3 = 0;
     inputs.geometry.non_band_phosphate_water_volume_m3 = 0;
-    inputs.geometry.non_band_ammonium_soil_mass_Mg = 0;
+    inputs.geometry.non_band_ammonium_soil_mass_megagrams = 0;
     const zero_zone = try accumulateSourceOrder(inputs);
     try std.testing.expectEqual(
         @as(f64, 0),

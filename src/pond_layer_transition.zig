@@ -19,12 +19,12 @@ pub const SurfaceInputs = struct {
     active_layer_end: usize,
     uppermost_water_layer: usize,
     layer_thickness_m: []const f64,
-    bulk_density_Mg_per_m3: []const f64,
-    total_heat_capacity_mj_per_k: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
+    total_heat_capacity_megajoules_per_k: []const f64,
     matrix_liquid_water_m3: []const f64,
     matrix_ice_water_m3: []const f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    minimum_heat_capacity_mj_per_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     minimum_layer_thickness_m: f64,
     surface_pond_liquid_water_m3: f64,
     surface_pond_ice_m3: f64,
@@ -43,9 +43,9 @@ pub fn selectSurfaceTransition(inputs: SurfaceInputs) !?Transition {
     try validateSurfaceInputs(inputs);
     const first = inputs.first_active_layer;
 
-    const first_is_pond = inputs.bulk_density_Mg_per_m3[first] <= 0;
+    const first_is_pond = inputs.bulk_density_megagrams_per_m3[first] <= 0;
     if (first_is_pond and
-        (inputs.total_heat_capacity_mj_per_k[first] <= inputs.minimum_heat_capacity_mj_per_k or inputs.uppermost_water_layer > first))
+        (inputs.total_heat_capacity_megajoules_per_k[first] <= inputs.minimum_heat_capacity_megajoules_per_k or inputs.uppermost_water_layer > first))
     {
         var next = first + 1;
         while (next < inputs.active_layer_end) : (next += 1) {
@@ -67,7 +67,7 @@ pub fn selectSurfaceTransition(inputs: SurfaceInputs) !?Transition {
     if (!first_is_pond and
         first > inputs.initial_first_active_layer and
         inputs.current_surface_boundary_depth_m > inputs.initial_surface_boundary_depth_m and
-        excess_surface_water_m3 > inputs.minimum_heat_capacity_mj_per_k / inputs.liquid_water_heat_capacity_mj_per_m3_k)
+        excess_surface_water_m3 > inputs.minimum_heat_capacity_megajoules_per_k / inputs.liquid_water_heat_capacity_megajoules_per_m3_k)
     {
         const boundary_change_m = -excess_surface_water_m3 / inputs.horizontal_area_m2;
         const pond_depth_m = (@max(0, inputs.surface_pond_liquid_water_m3 + inputs.surface_pond_ice_m3 - inputs.surface_litter_water_capacity_m3) +
@@ -93,8 +93,8 @@ pub const SeparatedSurfaceInputs = struct {
     surface_litter_volume_m3: f64,
     surface_litter_water_capacity_m3: f64,
     horizontal_area_m2: f64,
-    minimum_heat_capacity_mj_per_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 /// Equivalent selector for ecosys-ng's separated surface representation.
@@ -105,9 +105,9 @@ pub fn selectSeparatedSurfacePondTransfer(inputs: SeparatedSurfaceInputs) !?Tran
         const value = @field(inputs, field.name);
         if (!std.math.isFinite(value)) return error.NonFinitePondTransitionInput;
     };
-    if (inputs.surface_pond_liquid_water_m3 < 0 or inputs.surface_pond_ice_m3 < 0 or inputs.surface_ponding_capacity_m3 < 0 or inputs.surface_litter_volume_m3 < 0 or inputs.surface_litter_water_capacity_m3 < 0 or inputs.horizontal_area_m2 <= 0 or inputs.minimum_heat_capacity_mj_per_k < 0 or inputs.liquid_water_heat_capacity_mj_per_m3_k <= 0) return error.InvalidPondTransitionInput;
+    if (inputs.surface_pond_liquid_water_m3 < 0 or inputs.surface_pond_ice_m3 < 0 or inputs.surface_ponding_capacity_m3 < 0 or inputs.surface_litter_volume_m3 < 0 or inputs.surface_litter_water_capacity_m3 < 0 or inputs.horizontal_area_m2 <= 0 or inputs.minimum_heat_capacity_megajoules_per_k < 0 or inputs.liquid_water_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidPondTransitionInput;
     const excess_m3 = @max(0, inputs.surface_pond_liquid_water_m3 + inputs.surface_pond_ice_m3 - inputs.surface_ponding_capacity_m3);
-    if (excess_m3 <= inputs.minimum_heat_capacity_mj_per_k / inputs.liquid_water_heat_capacity_mj_per_m3_k) return null;
+    if (excess_m3 <= inputs.minimum_heat_capacity_megajoules_per_k / inputs.liquid_water_heat_capacity_megajoules_per_m3_k) return null;
     const boundary_change_m = -excess_m3 / inputs.horizontal_area_m2;
     const pond_depth_m = (@max(0, inputs.surface_pond_liquid_water_m3 + inputs.surface_pond_ice_m3 - inputs.surface_litter_water_capacity_m3) + inputs.surface_litter_volume_m3) / inputs.horizontal_area_m2;
     return .{
@@ -123,7 +123,7 @@ pub const SubsurfaceInputs = struct {
     boundary_layer: usize,
     first_active_layer: usize,
     layer_thickness_m: []const f64,
-    bulk_density_Mg_per_m3: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
     matrix_liquid_water_m3: []const f64,
     matrix_ice_water_m3: []const f64,
     matrix_pore_capacity_m3: []const f64,
@@ -137,8 +137,8 @@ pub fn selectSubsurfaceTransition(inputs: SubsurfaceInputs) !?Transition {
     try validateSubsurfaceInputs(inputs);
     const upper = inputs.boundary_layer;
     const lower = upper + 1;
-    const upper_is_soil = inputs.bulk_density_Mg_per_m3[upper] > 0;
-    const lower_is_pond = inputs.bulk_density_Mg_per_m3[lower] <= 0;
+    const upper_is_soil = inputs.bulk_density_megagrams_per_m3[upper] > 0;
+    const lower_is_pond = inputs.bulk_density_megagrams_per_m3[lower] <= 0;
     if (upper_is_soil and lower_is_pond and
         inputs.layer_thickness_m[lower] <= inputs.minimum_layer_thickness_m and
         inputs.layer_thickness_m[lower] > 0)
@@ -171,27 +171,27 @@ pub fn selectSubsurfaceTransition(inputs: SubsurfaceInputs) !?Transition {
 
 fn validateSurfaceInputs(inputs: SurfaceInputs) !void {
     const count = inputs.layer_thickness_m.len;
-    if (count == 0 or inputs.bulk_density_Mg_per_m3.len != count or inputs.total_heat_capacity_mj_per_k.len != count or inputs.matrix_liquid_water_m3.len != count or inputs.matrix_ice_water_m3.len != count or inputs.first_active_layer >= count or inputs.initial_first_active_layer >= count or inputs.active_layer_end > count or inputs.first_active_layer >= inputs.active_layer_end) return error.PondTransitionDimensionMismatch;
+    if (count == 0 or inputs.bulk_density_megagrams_per_m3.len != count or inputs.total_heat_capacity_megajoules_per_k.len != count or inputs.matrix_liquid_water_m3.len != count or inputs.matrix_ice_water_m3.len != count or inputs.first_active_layer >= count or inputs.initial_first_active_layer >= count or inputs.active_layer_end > count or inputs.first_active_layer >= inputs.active_layer_end) return error.PondTransitionDimensionMismatch;
     inline for (.{
-        inputs.minimum_heat_capacity_mj_per_k,         inputs.minimum_layer_thickness_m,
+        inputs.minimum_heat_capacity_megajoules_per_k,         inputs.minimum_layer_thickness_m,
         inputs.surface_pond_liquid_water_m3,           inputs.surface_pond_ice_m3,
         inputs.surface_ponding_capacity_m3,            inputs.surface_litter_volume_m3,
         inputs.surface_litter_water_capacity_m3,       inputs.horizontal_area_m2,
         inputs.current_surface_boundary_depth_m,       inputs.initial_surface_boundary_depth_m,
-        inputs.liquid_water_heat_capacity_mj_per_m3_k,
+        inputs.liquid_water_heat_capacity_megajoules_per_m3_k,
     }) |value| if (!std.math.isFinite(value)) return error.NonFinitePondTransitionInput;
-    if (inputs.minimum_heat_capacity_mj_per_k < 0 or inputs.minimum_layer_thickness_m <= 0 or inputs.surface_pond_liquid_water_m3 < 0 or inputs.surface_pond_ice_m3 < 0 or inputs.surface_ponding_capacity_m3 < 0 or inputs.surface_litter_volume_m3 < 0 or inputs.surface_litter_water_capacity_m3 < 0 or inputs.horizontal_area_m2 <= 0 or inputs.liquid_water_heat_capacity_mj_per_m3_k <= 0) return error.InvalidPondTransitionInput;
-    for (inputs.layer_thickness_m, inputs.bulk_density_Mg_per_m3, inputs.total_heat_capacity_mj_per_k, inputs.matrix_liquid_water_m3, inputs.matrix_ice_water_m3) |thickness, density, capacity, liquid, ice| {
+    if (inputs.minimum_heat_capacity_megajoules_per_k < 0 or inputs.minimum_layer_thickness_m <= 0 or inputs.surface_pond_liquid_water_m3 < 0 or inputs.surface_pond_ice_m3 < 0 or inputs.surface_ponding_capacity_m3 < 0 or inputs.surface_litter_volume_m3 < 0 or inputs.surface_litter_water_capacity_m3 < 0 or inputs.horizontal_area_m2 <= 0 or inputs.liquid_water_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidPondTransitionInput;
+    for (inputs.layer_thickness_m, inputs.bulk_density_megagrams_per_m3, inputs.total_heat_capacity_megajoules_per_k, inputs.matrix_liquid_water_m3, inputs.matrix_ice_water_m3) |thickness, density, capacity, liquid, ice| {
         if (!std.math.isFinite(thickness) or !std.math.isFinite(density) or !std.math.isFinite(capacity) or !std.math.isFinite(liquid) or !std.math.isFinite(ice) or thickness < 0 or density < 0 or capacity < 0 or liquid < 0 or ice < 0) return error.InvalidPondTransitionLayerState;
     }
 }
 
 fn validateSubsurfaceInputs(inputs: SubsurfaceInputs) !void {
     const count = inputs.layer_thickness_m.len;
-    if (count < 2 or inputs.bulk_density_Mg_per_m3.len != count or inputs.matrix_liquid_water_m3.len != count or inputs.matrix_ice_water_m3.len != count or inputs.matrix_pore_capacity_m3.len != count or inputs.boundary_layer + 1 >= count or inputs.first_active_layer >= count) return error.PondTransitionDimensionMismatch;
+    if (count < 2 or inputs.bulk_density_megagrams_per_m3.len != count or inputs.matrix_liquid_water_m3.len != count or inputs.matrix_ice_water_m3.len != count or inputs.matrix_pore_capacity_m3.len != count or inputs.boundary_layer + 1 >= count or inputs.first_active_layer >= count) return error.PondTransitionDimensionMismatch;
     inline for (.{ inputs.horizontal_area_m2, inputs.minimum_layer_thickness_m, inputs.negligible_water_volume_m3 }) |value| if (!std.math.isFinite(value)) return error.NonFinitePondTransitionInput;
     if (inputs.horizontal_area_m2 <= 0 or inputs.minimum_layer_thickness_m <= 0 or inputs.negligible_water_volume_m3 < 0) return error.InvalidPondTransitionInput;
-    for (inputs.layer_thickness_m, inputs.bulk_density_Mg_per_m3, inputs.matrix_liquid_water_m3, inputs.matrix_ice_water_m3, inputs.matrix_pore_capacity_m3) |thickness, density, liquid, ice, pore| {
+    for (inputs.layer_thickness_m, inputs.bulk_density_megagrams_per_m3, inputs.matrix_liquid_water_m3, inputs.matrix_ice_water_m3, inputs.matrix_pore_capacity_m3) |thickness, density, liquid, ice, pore| {
         inline for (.{ thickness, density, liquid, ice, pore }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidPondTransitionLayerState;
     }
 }
@@ -203,12 +203,12 @@ test "surface pond disappearance selects next material layer without fixed layer
         .active_layer_end = 5,
         .uppermost_water_layer = 2,
         .layer_thickness_m = &.{ 0, 0.01, 0, 0.2, 0.3 },
-        .bulk_density_Mg_per_m3 = &.{ 1, 0, 0, 1.2, 1.3 },
-        .total_heat_capacity_mj_per_k = &.{ 1, 0, 0, 2, 3 },
+        .bulk_density_megagrams_per_m3 = &.{ 1, 0, 0, 1.2, 1.3 },
+        .total_heat_capacity_megajoules_per_k = &.{ 1, 0, 0, 2, 3 },
         .matrix_liquid_water_m3 = &.{ 0, 0.1, 0, 0, 0 },
         .matrix_ice_water_m3 = &.{ 0, 0, 0, 0, 0 },
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-        .minimum_heat_capacity_mj_per_k = 1e-6,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+        .minimum_heat_capacity_megajoules_per_k = 1e-6,
         .minimum_layer_thickness_m = 1e-4,
         .surface_pond_liquid_water_m3 = 0,
         .surface_pond_ice_m3 = 0,
@@ -230,12 +230,12 @@ test "surface pond reappearance uses explicit surface owner and source water thr
         .active_layer_end = 2,
         .uppermost_water_layer = 1,
         .layer_thickness_m = &.{ 0, 0.2 },
-        .bulk_density_Mg_per_m3 = &.{ 0, 1.2 },
-        .total_heat_capacity_mj_per_k = &.{ 0, 2 },
+        .bulk_density_megagrams_per_m3 = &.{ 0, 1.2 },
+        .total_heat_capacity_megajoules_per_k = &.{ 0, 2 },
         .matrix_liquid_water_m3 = &.{ 0, 0.2 },
         .matrix_ice_water_m3 = &.{ 0, 0 },
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-        .minimum_heat_capacity_mj_per_k = 0.0419,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+        .minimum_heat_capacity_megajoules_per_k = 0.0419,
         .minimum_layer_thickness_m = 1e-4,
         .surface_pond_liquid_water_m3 = 0.4,
         .surface_pond_ice_m3 = 0.1,
@@ -257,7 +257,7 @@ test "subsurface recharge selects fractional downward transfer" {
         .boundary_layer = 0,
         .first_active_layer = 0,
         .layer_thickness_m = &.{ 0.2, 0.1 },
-        .bulk_density_Mg_per_m3 = &.{ 1.2, 0 },
+        .bulk_density_megagrams_per_m3 = &.{ 1.2, 0 },
         .matrix_liquid_water_m3 = &.{ 1.2, 0 },
         .matrix_ice_water_m3 = &.{ 0.3, 0 },
         .matrix_pore_capacity_m3 = &.{ 1, 0 },
@@ -278,8 +278,8 @@ test "separated surface pond routes to topsoil without changing soil indexing" {
         .surface_litter_volume_m3 = 0.1,
         .surface_litter_water_capacity_m3 = 0.1,
         .horizontal_area_m2 = 10,
-        .minimum_heat_capacity_mj_per_k = 0.0419,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
+        .minimum_heat_capacity_megajoules_per_k = 0.0419,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
     })).?;
     try std.testing.expectEqual(@as(usize, 0), transition.next_first_active_layer);
     try std.testing.expectApproxEqAbs(@as(f64, 0.6), transition.transfer_fraction, 1e-14);

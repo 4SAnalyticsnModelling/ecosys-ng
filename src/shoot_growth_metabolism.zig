@@ -1,5 +1,6 @@
 const std = @import("std");
 const partition_module = @import("plant_organ_partition.zig");
+const nutrient_limitation = @import("shoot_growth_nutrient_limitation.zig");
 
 pub const Parameters = struct {
     maximum_mobile_carbon_oxidation_per_h: f64,
@@ -506,14 +507,19 @@ pub fn calculate(parameters: Parameters, growth: Coefficients, inputs: Inputs) !
     const excess_maintenance = @max(0, maintenance - substrate_respiration);
     const nitrogen_demand = growth.other_shoot_nitrogen_g_n_per_g_c_consumed + growth.minimum_leaf_nitrogen_g_n_per_g_c_consumed + growth.variable_leaf_nitrogen_g_n_per_g_c_consumed * inputs.nutrient_growth_fraction;
     const phosphorus_demand = growth.other_shoot_phosphorus_g_p_per_g_c_consumed + growth.minimum_leaf_phosphorus_g_p_per_g_c_consumed + growth.variable_leaf_phosphorus_g_p_per_g_c_consumed * inputs.nutrient_growth_fraction;
-    const growth_respiration = if (excess_growth_respiration > 0 and (nitrogen_demand > 0 or phosphorus_demand > 0))
-        @min(
-            excess_growth_respiration,
-            if (nitrogen_demand > 0) inputs.mobile_nitrogen_g_n * growth.respiration_fraction_g_c_per_g_c / nitrogen_demand else std.math.inf(f64),
-            if (phosphorus_demand > 0) inputs.mobile_phosphorus_g_p * growth.respiration_fraction_g_c_per_g_c / phosphorus_demand else std.math.inf(f64),
-        )
-    else
-        0;
+    const growth_respiration = try nutrient_limitation.limit(.{
+        .growth_respiration_unlimited_g_c = excess_growth_respiration,
+        .mobile_nitrogen_g_n = inputs.mobile_nitrogen_g_n,
+        .mobile_phosphorus_g_p = inputs.mobile_phosphorus_g_p,
+        .respiration_fraction_g_c_per_g_c_consumed = growth.respiration_fraction_g_c_per_g_c,
+        .other_shoot_nitrogen_g_n_per_g_c_consumed = growth.other_shoot_nitrogen_g_n_per_g_c_consumed,
+        .minimum_leaf_nitrogen_g_n_per_g_c_consumed = growth.minimum_leaf_nitrogen_g_n_per_g_c_consumed,
+        .variable_leaf_nitrogen_g_n_per_g_c_consumed = growth.variable_leaf_nitrogen_g_n_per_g_c_consumed,
+        .other_shoot_phosphorus_g_p_per_g_c_consumed = growth.other_shoot_phosphorus_g_p_per_g_c_consumed,
+        .minimum_leaf_phosphorus_g_p_per_g_c_consumed = growth.minimum_leaf_phosphorus_g_p_per_g_c_consumed,
+        .variable_leaf_phosphorus_g_p_per_g_c_consumed = growth.variable_leaf_phosphorus_g_p_per_g_c_consumed,
+        .nutrient_growth_fraction = inputs.nutrient_growth_fraction,
+    });
     const carbon_consumption = growth_respiration / growth.respiration_fraction_g_c_per_g_c;
     const assimilated_n = @max(0, @min(inputs.mobile_nitrogen_g_n, carbon_consumption * nitrogen_demand));
     const assimilated_p = @max(0, @min(inputs.mobile_phosphorus_g_p, carbon_consumption * phosphorus_demand));
@@ -562,6 +568,38 @@ test "GROSUB shoot respiration and nutrient limitation preserve source equations
     try std.testing.expect(result.assimilated_nitrogen_g_n <= 10);
     try std.testing.expect(result.assimilated_phosphorus_g_p <= 1);
     try std.testing.expectApproxEqRel(@as(f64, 1), try maintenanceTemperatureFraction(298.15, 0), 0.01);
+}
+
+test "post-emergence production path preserves the source N-only growth admission gate" {
+    const parameters = compatibilityParameters();
+    const result = try calculate(parameters, .{
+        .shoot_growth_yield_g_c_per_g_c = 0.8,
+        .respiration_fraction_g_c_per_g_c = 0.2,
+        .minimum_leaf_nitrogen_g_n_per_g_c_consumed = 0.01,
+        .variable_leaf_nitrogen_g_n_per_g_c_consumed = 0,
+        .other_shoot_nitrogen_g_n_per_g_c_consumed = 0,
+        .minimum_leaf_phosphorus_g_p_per_g_c_consumed = 0.001,
+        .variable_leaf_phosphorus_g_p_per_g_c_consumed = 0,
+        .other_shoot_phosphorus_g_p_per_g_c_consumed = 0,
+    }, .{
+        .mobile_carbon_g_c = 100,
+        .mobile_nitrogen_g_n = 10,
+        .mobile_phosphorus_g_p = 1,
+        .mobile_carbon_concentration_g_c_per_g_c = 0.05,
+        .structural_nitrogen_g_n = 0,
+        .fixed_carbon_g_c = 0,
+        .growth_temperature_fraction = 1,
+        .maintenance_temperature_fraction = 1,
+        .growth_water_fraction = 1,
+        .maintenance_water_fraction = 1,
+        .termination_fraction = 1,
+        .nutrient_growth_fraction = 1,
+        .metabolically_active = true,
+        .timestep_h = 1,
+    });
+    try std.testing.expect(result.substrate_respiration_g_c > 0);
+    try std.testing.expectEqual(@as(f64, 0), result.growth_respiration_g_c);
+    try std.testing.expectEqual(@as(f64, 0), result.growth_carbon_consumption_g_c);
 }
 
 test "GROSUB maintenance structural nitrogen uses sapwood and prematurity organs" {

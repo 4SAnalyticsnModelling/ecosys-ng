@@ -22,7 +22,7 @@ pub const State = struct {
     layer_count: usize,
     total_root_length_density_m_per_m3: []f64,
     total_water_uptake_m3_per_h: []f64,
-    convective_water_heat_mj_per_h: []f64,
+    convective_water_heat_megajoules_per_h: []f64,
     /// CO2-C, O2-O, CH4-C, N2O-N, NH3-N, and H2-H by runtime soil layer.
     total_root_gas_content_g: [root_gas_count][]f64,
     total_soil_to_root_gas_exchange_g_per_h: [root_gas_count][]f64,
@@ -60,7 +60,7 @@ pub const State = struct {
             .layer_count = layer_count,
             .total_root_length_density_m_per_m3 = values[0..layer_count],
             .total_water_uptake_m3_per_h = values[layer_count .. 2 * layer_count],
-            .convective_water_heat_mj_per_h = values[2 * layer_count .. 3 * layer_count],
+            .convective_water_heat_megajoules_per_h = values[2 * layer_count .. 3 * layer_count],
             .total_root_gas_content_g = .{
                 values[3 * layer_count .. 4 * layer_count],
                 values[4 * layer_count .. 5 * layer_count],
@@ -197,7 +197,7 @@ pub fn refresh(
 
     @memset(state.total_root_length_density_m_per_m3, 0);
     @memset(state.total_water_uptake_m3_per_h, 0);
-    @memset(state.convective_water_heat_mj_per_h, 0);
+    @memset(state.convective_water_heat_megajoules_per_h, 0);
     inline for (state.total_root_gas_content_g) |values| @memset(values, 0);
     inline for (state.total_soil_to_root_gas_exchange_g_per_h) |values| @memset(values, 0);
     inline for (state.total_aqueous_to_gaseous_root_exchange_g_per_h) |values| @memset(values, 0);
@@ -220,7 +220,7 @@ pub fn refresh(
                 roots.root_length_density_m_per_m3[root] * plant_population_count[plant] / cell_area_m2[cell];
             const uptake_m3_per_h = roots.water_uptake_m3_per_h[root];
             state.total_water_uptake_m3_per_h[layer] += uptake_m3_per_h;
-            state.convective_water_heat_mj_per_h[layer] += uptake_m3_per_h * 4.19 * grid.soil_temperature_k[layer];
+            state.convective_water_heat_megajoules_per_h[layer] += uptake_m3_per_h * 4.19 * grid.soil_temperature_k[layer];
             inline for (.{
                 .{ roots.gaseous_carbon_dioxide_g_c, roots.aqueous_carbon_dioxide_g_c },
                 .{ roots.gaseous_oxygen_g_o, roots.aqueous_oxygen_g_o },
@@ -283,7 +283,7 @@ pub fn refresh(
     inline for (.{
         state.total_root_length_density_m_per_m3,
         state.total_water_uptake_m3_per_h,
-        state.convective_water_heat_mj_per_h,
+        state.convective_water_heat_megajoules_per_h,
     }) |values| for (values) |value| if (!std.math.isFinite(value)) return error.NonFiniteRootUptakeLedger;
     inline for (state.total_root_gas_content_g) |values| for (values) |value|
         if (!std.math.isFinite(value) or value < 0) return error.NonFiniteRootGasLedger;
@@ -319,7 +319,7 @@ pub fn atmosphereToRootForCellGPerH(state: *const State, grid: *const Grid, cell
 
 test "EXTRACT root uptake ledger supports seven species and preserves source signs" {
     const config = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 7 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 7 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20 },
     );
@@ -352,7 +352,7 @@ test "EXTRACT root uptake ledger supports seven species and preserves source sig
     try refresh(&state, &grid, &roots, 7, &.{ 2, 2, 2, 2, 2, 2, 2 }, &.{ 10, 10, 10, 10, 10, 10, 10 }, &.{5}, true);
     try std.testing.expectApproxEqAbs(@as(f64, 56), state.total_root_length_density_m_per_m3[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, -0.14), state.total_water_uptake_m3_per_h[0], 1e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, -0.14 * 4.19 * 280), state.convective_water_heat_mj_per_h[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, -0.14 * 4.19 * 280), state.convective_water_heat_megajoules_per_h[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 42), state.total_root_gas_content_g[0][0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 14), state.total_soil_to_root_gas_exchange_g_per_h[0][0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, -7), state.total_aqueous_to_gaseous_root_exchange_g_per_h[0][0], 1e-12);

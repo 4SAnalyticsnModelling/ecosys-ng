@@ -1,4 +1,5 @@
 const std = @import("std");
+const anaerobic = @import("soil_anaerobic_growth_respiration.zig");
 
 pub const AcetotrophicInputs = struct {
     soil_temperature_k: f64,
@@ -19,6 +20,13 @@ pub const AcetotrophicParameters = struct {
     reference_energy_yield_kj_per_g_c: f64,
     growth_energy_requirement_kj_per_g_c: f64,
     minimum_growth_respiration_fraction: f64,
+    /// Source `NITRO.F` 1002 divisor `GOMM=GOMX/24.0`, gram carbon per mole.
+    /// Defaults to the source value so existing callers are unchanged.
+    feedback_carbon_basis_g_c_per_mol: f64 =
+        anaerobic.source_carbon_basis.acetotrophic_methanogenesis_g_c_per_mol,
+    /// Source `8.3143E-03` at line 1000, kilojoule per mole per kelvin.
+    gas_constant_kilojoule_per_mol_kelvin: f64 =
+        anaerobic.source_feedback_environment.gas_constant_kilojoule_per_mol_kelvin,
 };
 
 pub const AcetotrophicResult = struct {
@@ -33,8 +41,10 @@ pub const AcetotrophicResult = struct {
 pub fn acetotrophic(inputs: AcetotrophicInputs, parameters: AcetotrophicParameters) !AcetotrophicResult {
     try validateStruct(inputs, error.InvalidAcetotrophicMethanogenesisInput);
     try validateStruct(parameters, error.InvalidAcetotrophicMethanogenesisParameter);
-    if (inputs.soil_temperature_k <= 0 or inputs.aqueous_acetate_concentration_g_c_per_m3 < 0 or inputs.aqueous_acetate_g_c < 0 or inputs.acetate_competition_fraction < 0 or inputs.nutrient_limitation_fraction < 0 or inputs.water_stress_fraction < 0 or inputs.temperature_response < 0 or inputs.active_biomass_g_c < 0 or inputs.timestep_h <= 0 or parameters.acetate_inhibition_concentration_g_c_per_m3 <= 0 or parameters.acetate_half_saturation_g_c_per_m3 <= 0 or parameters.specific_respiration_per_h < 0 or parameters.growth_energy_requirement_kj_per_g_c <= 0 or parameters.minimum_growth_respiration_fraction < 0 or parameters.minimum_growth_respiration_fraction > 1) return error.InvalidAcetotrophicMethanogenesis;
-    const feedback_kj_per_g_c = 8.3143e-3 * inputs.soil_temperature_k * @log(@max(std.math.floatMin(f64), inputs.aqueous_acetate_concentration_g_c_per_m3 / parameters.acetate_inhibition_concentration_g_c_per_m3)) / 24;
+    if (inputs.soil_temperature_k <= 0 or inputs.aqueous_acetate_concentration_g_c_per_m3 < 0 or inputs.aqueous_acetate_g_c < 0 or inputs.acetate_competition_fraction < 0 or inputs.nutrient_limitation_fraction < 0 or inputs.water_stress_fraction < 0 or inputs.temperature_response < 0 or inputs.active_biomass_g_c < 0 or inputs.timestep_h <= 0 or parameters.acetate_inhibition_concentration_g_c_per_m3 <= 0 or parameters.acetate_half_saturation_g_c_per_m3 <= 0 or parameters.specific_respiration_per_h < 0 or parameters.growth_energy_requirement_kj_per_g_c <= 0 or parameters.minimum_growth_respiration_fraction < 0 or parameters.minimum_growth_respiration_fraction > 1 or parameters.feedback_carbon_basis_g_c_per_mol <= 0 or parameters.gas_constant_kilojoule_per_mol_kelvin <= 0) return error.InvalidAcetotrophicMethanogenesis;
+    // Source NITRO.F 1000--1002: GOMX then GOMM. The 24 gram carbon per mole
+    // basis is a runtime parameter, not a literal.
+    const feedback_kj_per_g_c = parameters.gas_constant_kilojoule_per_mol_kelvin * inputs.soil_temperature_k * @log(@max(std.math.floatMin(f64), inputs.aqueous_acetate_concentration_g_c_per_m3 / parameters.acetate_inhibition_concentration_g_c_per_m3)) / parameters.feedback_carbon_basis_g_c_per_mol;
     const respiration_fraction = @max(parameters.minimum_growth_respiration_fraction, @min(1, 1 / (1 + @max(0, parameters.reference_energy_yield_kj_per_g_c + feedback_kj_per_g_c) / parameters.growth_energy_requirement_kj_per_g_c)));
     const monod = inputs.aqueous_acetate_concentration_g_c_per_m3 / (inputs.aqueous_acetate_concentration_g_c_per_m3 + parameters.acetate_half_saturation_g_c_per_m3);
     const unlimited = @max(0, parameters.specific_respiration_per_h * inputs.nutrient_limitation_fraction * inputs.water_stress_fraction * inputs.active_biomass_g_c * inputs.timestep_h);
@@ -64,6 +74,10 @@ pub const HydrogenotrophicParameters = struct {
     minimum_growth_respiration_fraction: f64,
     hydrogen_supply_conversion_g_c_per_g_h: f64,
     fermentation_hydrogen_to_pool_fraction: f64,
+    /// Source `NITRO.F` 1317 divisor `GH2H=GH2X/12.0`, gram carbon per mole.
+    /// Defaults to the source value so existing callers are unchanged.
+    feedback_carbon_basis_g_c_per_mol: f64 =
+        anaerobic.source_carbon_basis.hydrogenotrophic_methanogenesis_g_c_per_mol,
 };
 
 pub const HydrogenotrophicResult = struct { co2_reduction_g_c: f64, methane_production_g_c: f64, growth_respiration_fraction: f64 };
@@ -71,8 +85,19 @@ pub const HydrogenotrophicResult = struct { co2_reduction_g_c: f64, methane_prod
 pub fn hydrogenotrophic(inputs: HydrogenotrophicInputs, parameters: HydrogenotrophicParameters) !HydrogenotrophicResult {
     try validateStruct(inputs, error.InvalidHydrogenotrophicMethanogenesisInput);
     try validateStruct(parameters, error.InvalidHydrogenotrophicMethanogenesisParameter);
-    if (inputs.aqueous_hydrogen_concentration_g_h_per_m3 < 0 or inputs.aqueous_hydrogen_g_h < 0 or inputs.fermentation_hydrogen_production_g_h < 0 or inputs.temperature_water_response < 0 or inputs.nutrient_limitation_fraction < 0 or inputs.aqueous_co2_limitation_fraction < 0 or inputs.active_biomass_g_c < 0 or inputs.timestep_h <= 0 or parameters.hydrogen_half_saturation_g_h_per_m3 <= 0 or parameters.specific_co2_reduction_g_c_per_g_c_h < 0 or parameters.growth_energy_requirement_kj_per_g_c <= 0 or parameters.minimum_growth_respiration_fraction < 0 or parameters.minimum_growth_respiration_fraction > 1 or parameters.hydrogen_supply_conversion_g_c_per_g_h <= 0 or parameters.fermentation_hydrogen_to_pool_fraction < 0) return error.InvalidHydrogenotrophicMethanogenesis;
-    const respiration_fraction = @max(parameters.minimum_growth_respiration_fraction, @min(1, 1 / (1 + @max(0, parameters.reference_energy_yield_kj_per_g_c + inputs.hydrogen_feedback_energy_kj_per_mol / 12) / parameters.growth_energy_requirement_kj_per_g_c)));
+    if (inputs.aqueous_hydrogen_concentration_g_h_per_m3 < 0 or inputs.aqueous_hydrogen_g_h < 0 or inputs.fermentation_hydrogen_production_g_h < 0 or inputs.temperature_water_response < 0 or inputs.nutrient_limitation_fraction < 0 or inputs.aqueous_co2_limitation_fraction < 0 or inputs.active_biomass_g_c < 0 or inputs.timestep_h <= 0 or parameters.hydrogen_half_saturation_g_h_per_m3 <= 0 or parameters.specific_co2_reduction_g_c_per_g_c_h < 0 or parameters.growth_energy_requirement_kj_per_g_c <= 0 or parameters.minimum_growth_respiration_fraction < 0 or parameters.minimum_growth_respiration_fraction > 1 or parameters.hydrogen_supply_conversion_g_c_per_g_h <= 0 or parameters.fermentation_hydrogen_to_pool_fraction < 0 or parameters.feedback_carbon_basis_g_c_per_mol <= 0) return error.InvalidHydrogenotrophicMethanogenesis;
+    // Source NITRO.F 1317--1319. The 12 gram carbon per mole basis is a runtime
+    // parameter, not a literal; the hydrogenotrophic basis is six times finer
+    // than the fermenter's 72, which is why they cannot share one divisor.
+    const hydrogen_feedback_kj_per_g_c = try anaerobic.hydrogenotrophicCarbonBasisFeedback_kilojoule_per_g_c(
+        inputs.hydrogen_feedback_energy_kj_per_mol,
+        .{
+            .fermentation_g_c_per_mol = anaerobic.source_carbon_basis.fermentation_g_c_per_mol,
+            .acetotrophic_methanogenesis_g_c_per_mol = anaerobic.source_carbon_basis.acetotrophic_methanogenesis_g_c_per_mol,
+            .hydrogenotrophic_methanogenesis_g_c_per_mol = parameters.feedback_carbon_basis_g_c_per_mol,
+        },
+    );
+    const respiration_fraction = @max(parameters.minimum_growth_respiration_fraction, @min(1, 1 / (1 + @max(0, parameters.reference_energy_yield_kj_per_g_c + hydrogen_feedback_kj_per_g_c) / parameters.growth_energy_requirement_kj_per_g_c)));
     const unlimited = parameters.specific_co2_reduction_g_c_per_g_c_h * inputs.temperature_water_response * inputs.nutrient_limitation_fraction * inputs.aqueous_co2_limitation_fraction * inputs.active_biomass_g_c * inputs.timestep_h;
     const monod = inputs.aqueous_hydrogen_concentration_g_h_per_m3 / (inputs.aqueous_hydrogen_concentration_g_h_per_m3 + parameters.hydrogen_half_saturation_g_h_per_m3);
     const hydrogen_supply_g_h = inputs.aqueous_hydrogen_g_h + parameters.fermentation_hydrogen_to_pool_fraction * inputs.fermentation_hydrogen_production_g_h;

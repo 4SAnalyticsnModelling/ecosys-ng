@@ -71,6 +71,11 @@ pub const SolidState = struct {
     potassium_ground_silicate_mol_per_m3: f64,
 };
 
+pub const SourceIterationStage = enum {
+    before_iteration_ceiling,
+    iteration_ceiling,
+};
+
 pub fn commitSolids(state: *SolidState, transformations: Transformations) !void {
     try validateSolidState(state.*);
     var next = state.*;
@@ -81,6 +86,42 @@ pub fn commitSolids(state: *SolidState, transformations: Transformations) !void 
     }
     try validateSolidState(next);
     state.* = next;
+}
+
+/// Direct silicate-pool update for SOLUTE.F 2430--2441. All twelve source
+/// additions are unfloored and skipped at `M == MRXN`.
+pub fn applySourceOrderSilicateUpdate(
+    current: SolidState,
+    transformations: Transformations,
+    stage: SourceIterationStage,
+) !SolidState {
+    try validateSolidState(current);
+    inline for (@typeInfo(Transformations).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(transformations, field.name)))
+            return error.NonFiniteGeochemistryTransformation;
+    if (stage == .iteration_ceiling) return current;
+
+    var next = current;
+    inline for (.{
+        "aluminum_natural_silicate_mol_per_m3",
+        "iron_natural_silicate_mol_per_m3",
+        "calcium_natural_silicate_mol_per_m3",
+        "magnesium_natural_silicate_mol_per_m3",
+        "sodium_natural_silicate_mol_per_m3",
+        "potassium_natural_silicate_mol_per_m3",
+        "aluminum_ground_silicate_mol_per_m3",
+        "iron_ground_silicate_mol_per_m3",
+        "calcium_ground_silicate_mol_per_m3",
+        "magnesium_ground_silicate_mol_per_m3",
+        "sodium_ground_silicate_mol_per_m3",
+        "potassium_ground_silicate_mol_per_m3",
+    }) |name| {
+        @field(next, name) = @field(current, name) +
+            @field(transformations, name);
+        if (!std.math.isFinite(@field(next, name)) or @field(next, name) < 0)
+            return error.InvalidGeochemistrySilicateStateUpdate;
+    }
+    return next;
 }
 
 fn validateSolidState(state: SolidState) !void {
@@ -153,4 +194,36 @@ test "geochemistry solid commit rolls back on exhausted mineral" {
     transformations.calcium_natural_silicate_mol_per_m3 = -2;
     try std.testing.expectError(error.NegativeGeochemistrySolidState, commitSolids(&state, transformations));
     try std.testing.expectEqualDeep(before, state);
+}
+
+test "source silicate update is unfloored and ceiling gated" {
+    var current: SolidState = undefined;
+    inline for (@typeInfo(SolidState).@"struct".fields) |field|
+        @field(current, field.name) = 1;
+    var changes: Transformations = undefined;
+    inline for (@typeInfo(Transformations).@"struct".fields) |field|
+        @field(changes, field.name) = 0;
+    changes.aluminum_natural_silicate_mol_per_m3 = -1;
+    changes.potassium_ground_silicate_mol_per_m3 = 0.25;
+
+    const terminal = try applySourceOrderSilicateUpdate(
+        current,
+        changes,
+        .iteration_ceiling,
+    );
+    try std.testing.expectEqualDeep(current, terminal);
+
+    const continuing = try applySourceOrderSilicateUpdate(
+        current,
+        changes,
+        .before_iteration_ceiling,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0),
+        continuing.aluminum_natural_silicate_mol_per_m3,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 1.25),
+        continuing.potassium_ground_silicate_mol_per_m3,
+    );
 }

@@ -107,8 +107,8 @@ pub const ConductivityCoefficients = struct {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     salt_equilibrium_mode: SaltEquilibriumMode,
     flux_by_face: [Face.count][]const BoundaryFlux,
@@ -141,7 +141,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const flux = inputs.flux_by_face[@intFromEnum(face)][cell];
@@ -257,7 +257,7 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var cell_ion_output_mol = state.ion_component_output_mol_by_cell[cell];
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
@@ -281,12 +281,12 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !usize {
-    if (inputs.grid_column_count == 0 or inputs.grid_row_count == 0)
+    if (inputs.lon_count == 0 or inputs.lat_count == 0)
         return error.InvalidRunoffSaltDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidRunoffSaltDimensions;
     inline for (inputs.flux_by_face) |values|
         if (values.len != cell_count) return error.InvalidRunoffSaltDimensions;
@@ -297,8 +297,8 @@ fn validateDimensions(inputs: Inputs, state: State) !usize {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidRunoffSaltBoundaryWindow;
     return cell_count;
 }
@@ -455,8 +455,8 @@ test "REDIST dynamic runoff salt groups preserve source multiplicities" {
         .last_runoff_electrical_conductivity_dS_per_m_by_cell = &conductivity,
     };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -497,8 +497,8 @@ test "west face reverses ledgers while signed carrier ratios retain conductivity
         .last_runoff_electrical_conductivity_dS_per_m_by_cell = &conductivity,
     };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -530,8 +530,8 @@ test "static mode and equal water threshold leave salt state unchanged" {
         .last_runoff_electrical_conductivity_dS_per_m_by_cell = &conductivity,
     };
     const base: Inputs = .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -568,8 +568,8 @@ test "runtime grid indexing conserves the boundary ion ledger" {
         .last_runoff_electrical_conductivity_dS_per_m_by_cell = &conductivity,
     };
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -604,8 +604,8 @@ test "late invalid salt flux leaves every ledger unchanged" {
         .last_runoff_electrical_conductivity_dS_per_m_by_cell = &conductivity,
     };
     try std.testing.expectError(error.InvalidRunoffSaltInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -638,8 +638,8 @@ test "invalid salt runtime window and coefficients fail explicitly" {
     var coefficients = unitConductivity();
     coefficients.nitrate_dS_m2_per_mol = 0;
     const inputs: Inputs = .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,

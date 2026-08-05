@@ -50,12 +50,19 @@ pub const ApplyContext = struct {
 };
 
 /// NITRO RGN2P/RGN2F/RN2FX for aerobic and anaerobic diazotrophs.
+///
+/// Corrected formulation, `docs/model_changes.md` NITRO-N2FIX-SUPPLY. As in
+/// the soil owner, the source's Monod ratio on `CZ2GS = Z2GS/VOLW` is
+/// intensive and cannot bound an extensive draw, so litter fixation is
+/// additionally limited by the dissolved N2 mass actually present and
+/// apportioned across the competing diazotroph populations by demand.
 pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
     try validate(context.*, range);
     const n2_offset = @intFromEnum(gas.Species.nitrogen);
     for (range.first..range.end) |cell| {
-        const dissolved_n2_g_n = context.litter_gas.dissolved_mass_g[cell * gas.species_count + n2_offset];
+        const dissolved_n2_g_n = @max(0, context.litter_gas.dissolved_mass_g[cell * gas.species_count + n2_offset]);
         const n2_concentration_g_n_per_m3 = if (context.litter_water_m3[cell] > 0) dissolved_n2_g_n / context.litter_water_m3[cell] else 0;
+        var cell_demand_g_n: f64 = 0;
         for (0..respiration.litter_complex_count) |complex| for (0..respiration.source_population_count) |population| {
             const unit = complex * respiration.source_population_count + population;
             const index = cell * respiration.unit_count_per_cell + unit;
@@ -77,7 +84,18 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
             context.result.respiration_required_g_c[index] = value.respiration_required_g_c;
             context.result.fixation_respiration_g_c[index] = value.fixation_respiration_g_c;
             context.result.fixed_nitrogen_g_n[index] = value.fixed_nitrogen_g_n;
+            cell_demand_g_n += value.fixed_nitrogen_g_n;
         };
+        if (cell_demand_g_n > dissolved_n2_g_n) {
+            const supply_share = if (cell_demand_g_n > 0) dissolved_n2_g_n / cell_demand_g_n else 0;
+            if (!std.math.isFinite(supply_share) or supply_share < 0 or supply_share > 1) return error.InvalidSurfaceNitrogenFixationSupplyShare;
+            const first = cell * respiration.unit_count_per_cell;
+            for (first..first + respiration.unit_count_per_cell) |index| {
+                context.result.fixed_nitrogen_g_n[index] *= supply_share;
+                context.result.fixation_respiration_g_c[index] *= supply_share;
+            }
+            std.log.debug("litter dissolved N2 limits fixation: cell={d} demand_g_n={e} available_g_n={e} share={e}", .{ cell, cell_demand_g_n, dissolved_n2_g_n, supply_share });
+        }
     }
 }
 

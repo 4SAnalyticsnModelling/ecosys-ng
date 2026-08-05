@@ -20,6 +20,7 @@ const canopy_biochemistry = @import("canopy_biochemistry.zig");
 const dormancy = @import("plant_dormancy.zig");
 const grazing_manure = @import("grazing_manure.zig");
 const surface_nutrients = @import("organic_matter_fire_exchange.zig");
+const spring_reproductive_litterfall = @import("spring_reproductive_litterfall.zig");
 
 pub const ScienceParameters = struct {
     nitrogen_fixation_type: u8 = 0,
@@ -4176,6 +4177,9 @@ pub const Context = struct {
     carbon_exchange_state: ?*carbon_exchange.State = null,
     reseed_population_per_m2_by_plant: ?[]const f64 = null,
     cell_area_m2_by_cell: ?[]const f64 = null,
+    /// Date assigned to source-generated automatic harvests. This mirrors
+    /// IDAYH/IYRH and is distinct from user management schedules.
+    automatic_harvest_date_by_plant: ?[]management.PackedDate = null,
 };
 
 /// Exact GROSUB ARLFY/ARLFR conversion from a negative fractional combined-
@@ -4499,26 +4503,27 @@ pub fn releaseDeadRootsToLitter(context: *Context, plant: usize) !void {
 /// enters end-of-season reproductive turnover.
 pub fn applyAutomaticSelfSeedingHarvests(
     context: *Context,
-    dormancy_state: *const dormancy.RuntimeState,
+    seasonal_turnover_event_by_plant: []const bool,
     growth_habit_by_plant: []const u8,
     leaf_phenology_type_by_plant: []const u8,
+    current_date: management.PackedDate,
 ) !usize {
     const plant_state = context.plant_phenology orelse return error.IncompleteAutomaticSelfSeedingContext;
-    const growth = context.growth_stages orelse return error.IncompleteAutomaticSelfSeedingContext;
     const plant_count = context.canopy_state.plant_branch_offsets.len - 1;
     if (growth_habit_by_plant.len != plant_count or leaf_phenology_type_by_plant.len != plant_count or
         plant_state.active.len != plant_count or plant_state.reseed_pending.len != plant_count or
-        dormancy_state.branches.len != growth.branches.len)
+        seasonal_turnover_event_by_plant.len != plant_count or
+        (context.automatic_harvest_date_by_plant != null and context.automatic_harvest_date_by_plant.?.len != plant_count))
         return error.AutomaticSelfSeedingDimensionMismatch;
+    _ = try current_date.dayOfYear(current_date.year);
     var applied: usize = 0;
     for (0..plant_count) |plant| {
         if (!plant_state.active[plant] or plant_state.reseed_pending[plant] or
             growth_habit_by_plant[plant] != 0 or leaf_phenology_type_by_plant[plant] == 0)
             continue;
-        const branch = (try growth.mainLivingBranch(plant)) orelse continue;
-        if (!dormancy_state.branches[branch].phenological_remobilization_enabled) continue;
+        if (!seasonal_turnover_event_by_plant[plant]) continue;
         try applyEvent(context, plant, .{
-            .date = .{ .day = 1, .month = 1, .year = 9999 },
+            .date = current_date,
             .kind = .grain,
             .termination = .terminate_and_reseed,
             .cutting_height_m_or_lai_fraction = 0,
@@ -4526,6 +4531,7 @@ pub fn applyAutomaticSelfSeedingHarvests(
             .harvested_fraction = .{ .leaf = 1, .nonfoliar = 1, .woody = 1, .standing_dead = 1 },
             .ecosystem_export_fraction = .{ .leaf = 0, .nonfoliar = 1, .woody = 0, .standing_dead = 0 },
         });
+        if (context.automatic_harvest_date_by_plant) |dates| dates[plant] = current_date;
         applied += 1;
     }
     return applied;
@@ -4541,6 +4547,29 @@ pub fn applyStartOfSeasonResidue(
     biomass_turnover_type: u8,
     root_profile_type: u8,
 ) !void {
+    // This transition is rare (once per admitted leafout), so stage the full
+    // canopy owner to guarantee that a late topology/arithmetic failure cannot
+    // publish a partial C/N/P cleanup.
+    var staged_canopy = try context.canopy_state.clone();
+    defer staged_canopy.deinit();
+    const staged_products = try context.canopy_state.allocator.dupe(ProductLedger, context.products_by_plant);
+    defer context.canopy_state.allocator.free(staged_products);
+    var staged_context = context.*;
+    staged_context.canopy_state = &staged_canopy;
+    staged_context.products_by_plant = staged_products;
+    try applyStartOfSeasonResidueStaged(&staged_context, plant, biomass_turnover_type, root_profile_type);
+    inline for (@typeInfo(canopy.State).@"struct".fields) |field| {
+        if (field.type == []f64) @memcpy(@field(context.canopy_state, field.name), @field(staged_canopy, field.name));
+    }
+    @memcpy(context.products_by_plant, staged_products);
+}
+
+fn applyStartOfSeasonResidueStaged(
+    context: *Context,
+    plant: usize,
+    biomass_turnover_type: u8,
+    root_profile_type: u8,
+) !void {
     const state = context.canopy_state;
     if (plant >= context.science_by_plant.len or plant >= context.products_by_plant.len)
         return error.PlantHarvestIndexOutOfBounds;
@@ -4549,6 +4578,7 @@ pub fn applyStartOfSeasonResidue(
     const partitions = context.root_litter_partition orelse return error.IncompleteStartOfSeasonResidueContext;
     if (plant >= partitions.plant_count) return error.PlantHarvestIndexOutOfBounds;
     const stalk_kinetics = try partitions.get(plant, .stalk);
+    const reproductive_kinetics = try partitions.get(plant, .non_foliar);
     const branches = try state.branchRange(plant);
     for (branches.first..branches.end) |branch| {
         if (biomass_turnover_type == 0) {
@@ -4587,15 +4617,35 @@ pub fn applyStartOfSeasonResidue(
                 addProducts(&context.products_by_plant[plant].woody, sheath.woody);
             }
         }
-        const reproductive = try canopy.harvestReproductiveOrgans(state, branch, .{
-            .husk_remaining = 0,
-            .husk_unexported = 1,
-            .ear_remaining = 0,
-            .ear_unexported = 1,
-            .grain_remaining = 0,
-            .grain_unexported = 1,
+        var husk: spring_reproductive_litterfall.Elements = .{ .carbon = state.branch_husk_carbon_g[branch], .nitrogen = state.branch_husk_nitrogen_g[branch], .phosphorus = state.branch_husk_phosphorus_g[branch] };
+        var ear: spring_reproductive_litterfall.Elements = .{ .carbon = state.branch_ear_carbon_g[branch], .nitrogen = state.branch_ear_nitrogen_g[branch], .phosphorus = state.branch_ear_phosphorus_g[branch] };
+        var grain: spring_reproductive_litterfall.Elements = .{ .carbon = state.branch_grain_carbon_g[branch], .nitrogen = state.branch_grain_nitrogen_g[branch], .phosphorus = state.branch_grain_phosphorus_g[branch] };
+        _ = try spring_reproductive_litterfall.apply(.{
+            .husk = &husk,
+            .ear = &ear,
+            .grain = &grain,
+            .potential_seed_site_count = &state.branch_potential_seed_site_count[branch],
+            .grain_count = &state.branch_seed_count[branch],
+            .individual_grain_carbon_g_c = &state.branch_individual_seed_carbon_g[branch],
+            .litter_carbon_g_c = &context.products_by_plant[plant].direct_litter.nonwoody_carbon_g,
+            .litter_nitrogen_g_n = &context.products_by_plant[plant].direct_litter.nonwoody_nitrogen_g,
+            .litter_phosphorus_g_p = &context.products_by_plant[plant].direct_litter.nonwoody_phosphorus_g,
+        }, .{
+            .leafout_status = .enabled,
+            .perennial = true,
+            .accumulated_leafout_h = 1,
+            .required_leafout_h = 1,
+            .reproductive_litter_kinetics = .{ .carbon = &reproductive_kinetics.carbon, .nitrogen = &reproductive_kinetics.nitrogen, .phosphorus = &reproductive_kinetics.phosphorus },
         });
-        addProducts(&context.products_by_plant[plant].nonfoliar, reproductive.products);
+        state.branch_husk_carbon_g[branch] = husk.carbon;
+        state.branch_husk_nitrogen_g[branch] = husk.nitrogen;
+        state.branch_husk_phosphorus_g[branch] = husk.phosphorus;
+        state.branch_ear_carbon_g[branch] = ear.carbon;
+        state.branch_ear_nitrogen_g[branch] = ear.nitrogen;
+        state.branch_ear_phosphorus_g[branch] = ear.phosphorus;
+        state.branch_grain_carbon_g[branch] = grain.carbon;
+        state.branch_grain_nitrogen_g[branch] = grain.nitrogen;
+        state.branch_grain_phosphorus_g[branch] = grain.phosphorus;
 
         if (biomass_turnover_type == 0 or root_profile_type == 1) {
             const stalk: canopy.ElementalMass = .{
@@ -4706,6 +4756,22 @@ pub fn applyWholePlantMortalityResidue(context: *Context, plant: usize) !void {
         state.branch_symbiont_structural_carbon_g[branch] = 0;
         state.branch_symbiont_structural_nitrogen_g[branch] = 0;
         state.branch_symbiont_structural_phosphorus_g[branch] = 0;
+    }
+
+    // Whole-plant death publishes reproductive organs through the nonfoliar
+    // harvest ledger.  The spring-transition owner below deliberately routes
+    // those organs directly to litter, so consume them here before sharing its
+    // foliage and stalk cleanup.
+    for (branches.first..branches.end) |branch| {
+        const reproductive = try canopy.harvestReproductiveOrgans(state, branch, .{
+            .husk_remaining = 0,
+            .husk_unexported = 1,
+            .ear_remaining = 0,
+            .ear_unexported = 1,
+            .grain_remaining = 0,
+            .grain_unexported = 1,
+        });
+        addProducts(&context.products_by_plant[plant].nonfoliar, reproductive.products);
     }
 
     // Death removes foliage for every turnover type and routes every stalk.
@@ -6331,9 +6397,6 @@ test "GROSUB automatic deciduous annual harvest fires once at reproductive turno
     plant_state.lifecycle_initialized[0] = true;
     var growth = try growth_stages.State.init(std.testing.allocator, &.{1});
     defer growth.deinit();
-    var dormant = try dormancy.RuntimeState.init(std.testing.allocator, 1);
-    defer dormant.deinit();
-    dormant.branches[0].phenological_remobilization_enabled = true;
     state.branch_grain_carbon_g[0] = 5;
     state.branch_grain_nitrogen_g[0] = 0.5;
     state.branch_grain_phosphorus_g[0] = 0.05;
@@ -6343,6 +6406,7 @@ test "GROSUB automatic deciduous annual harvest fires once at reproductive turno
     const population = [_]f64{4};
     const area = [_]f64{2};
     const root_woody = [_]f64{0};
+    var automatic_dates = [_]management.PackedDate{.{ .day = 1, .month = 1, .year = 0 }};
     var context: Context = .{
         .canopy_state = &state,
         .canopy_layer_state = &layers,
@@ -6355,12 +6419,15 @@ test "GROSUB automatic deciduous annual harvest fires once at reproductive turno
         .reseed_population_per_m2_by_plant = &population,
         .cell_area_m2_by_cell = &area,
         .root_woody_fraction_by_plant = &root_woody,
+        .automatic_harvest_date_by_plant = &automatic_dates,
     };
-    try std.testing.expectEqual(@as(usize, 1), try applyAutomaticSelfSeedingHarvests(&context, &dormant, &.{0}, &.{1}));
+    const current_date: management.PackedDate = .{ .day = 17, .month = 9, .year = 2004 };
+    try std.testing.expectEqual(@as(usize, 1), try applyAutomaticSelfSeedingHarvests(&context, &.{true}, &.{0}, &.{1}, current_date));
     try std.testing.expectApproxEqAbs(@as(f64, 5), state.plant_seed_storage_carbon_g[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 4), state.plant_population_per_m2[0], 1e-12);
     try std.testing.expect(plant_state.reseed_pending[0]);
-    try std.testing.expectEqual(@as(usize, 0), try applyAutomaticSelfSeedingHarvests(&context, &dormant, &.{0}, &.{1}));
+    try std.testing.expectEqual(current_date, automatic_dates[0]);
+    try std.testing.expectEqual(@as(usize, 0), try applyAutomaticSelfSeedingHarvests(&context, &.{true}, &.{0}, &.{1}, current_date));
 }
 
 test "GROSUB perennial start-of-season residue is conserved before reconstruction" {
@@ -6401,10 +6468,21 @@ test "GROSUB perennial start-of-season residue is conserved before reconstructio
     const science = [_]ScienceParameters{.{ .carbon_woody_fraction = .{ 0.25, 0.75 }, .leaf_nitrogen_woody_fraction = .{ 0.25, 0.75 }, .sheath_nitrogen_woody_fraction = .{ 0.25, 0.75 }, .leaf_phosphorus_woody_fraction = .{ 0.25, 0.75 }, .sheath_phosphorus_woody_fraction = .{ 0.25, 0.75 } }};
     var ledgers = [_]ProductLedger{.{}};
     var context: Context = .{ .canopy_state = &state, .branch_development = &development, .science_by_plant = &science, .products_by_plant = &ledgers, .leaf_area_presence_tolerance_m2 = 1e-12, .root_litter_partition = &partitions };
+    var before_failure = try state.clone();
+    defer before_failure.deinit();
+    const products_before_failure = ledgers;
+    partitions.by_plant_and_organ[@intFromEnum(litter_partition.Organ.stalk)].carbon[3] = std.math.nan(f64);
+    try std.testing.expectError(error.InvalidPlantLitterFraction, applyStartOfSeasonResidue(&context, 0, 0, 1));
+    inline for (@typeInfo(canopy.State).@"struct".fields) |field| if (field.type == []f64)
+        try std.testing.expectEqualSlices(f64, @field(before_failure, field.name), @field(state, field.name));
+    try std.testing.expectEqualDeep(products_before_failure, ledgers);
+    partitions.by_plant_and_organ[@intFromEnum(litter_partition.Organ.stalk)].carbon = .{ 0.1, 0.2, 0.3, 0.4 };
     try applyStartOfSeasonResidue(&context, 0, 0, 1);
     try std.testing.expectApproxEqAbs(@as(f64, 4), state.plant_standing_dead_carbon_g[0], 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 2), state.plant_seed_storage_carbon_g[0], 1e-12);
-    const litter_carbon_g_c = ledgers[0].foliar.litter.carbon_g + ledgers[0].nonfoliar.litter.carbon_g + ledgers[0].woody.litter.carbon_g;
+    var direct_litter_carbon_g_c: f64 = 0;
+    for (ledgers[0].direct_litter.nonwoody_carbon_g) |value| direct_litter_carbon_g_c += value;
+    const litter_carbon_g_c = ledgers[0].foliar.litter.carbon_g + ledgers[0].nonfoliar.litter.carbon_g + ledgers[0].woody.litter.carbon_g + direct_litter_carbon_g_c;
     try std.testing.expectApproxEqAbs(@as(f64, 6), litter_carbon_g_c, 1e-12);
     var standing_kinetic_carbon_g_c: f64 = 0;
     for (state.plant_standing_dead_carbon_by_kinetic_g[0..4]) |value| standing_kinetic_carbon_g_c += value;
@@ -6993,7 +7071,7 @@ test "grazing publication commits manure mineral nutrients and export without ex
     };
     @memset(partitions.by_plant_and_organ, uniform);
     const config = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 10 },
     );
@@ -7097,7 +7175,7 @@ test "thinning then complete mortality conserves host and nodule roots and publi
     partitions.by_plant_and_organ[@intFromEnum(litter_partition.Organ.fine_root)] = uniform;
     partitions.by_plant_and_organ[@intFromEnum(litter_partition.Organ.nonstructural)] = uniform;
     const config = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 10 },
     );

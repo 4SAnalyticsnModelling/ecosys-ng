@@ -9,10 +9,10 @@ pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     species_count: usize,
-    downward_sky_longwave_mj_per_m2: []f64,
-    emitted_sky_longwave_mj_per_m2: []f64,
-    net_longwave_mj_per_m2: []f64,
-    net_radiation_mj_per_m2: []f64,
+    downward_sky_longwave_megajoules_per_m2: []f64,
+    emitted_sky_longwave_megajoules_per_m2: []f64,
+    net_longwave_megajoules_per_m2: []f64,
+    net_radiation_megajoules_per_m2: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, species_count: usize) !State {
         if (cell_count == 0 or species_count == 0) return error.InvalidCanopyEnergyDimensions;
@@ -67,16 +67,16 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         const temperature_k = context.plants.canopy_temperature_k[index];
         const exposure = context.exposure.species_exposure_fraction[index];
         const energy = try calculate(
-            context.interception.absorbed_shortwave_mj_per_m2[index],
-            context.atmosphere.longwave_radiation_mj_per_m2[cell],
+            context.interception.absorbed_shortwave_megajoules_per_m2[index],
+            context.atmosphere.longwave_radiation_megajoules_per_m2[cell],
             temperature_k,
             exposure,
             emissivity,
         );
-        result.downward_sky_longwave_mj_per_m2[index] = energy.downward_longwave;
-        result.emitted_sky_longwave_mj_per_m2[index] = energy.emitted_longwave;
-        result.net_longwave_mj_per_m2[index] = energy.net_longwave;
-        result.net_radiation_mj_per_m2[index] = energy.net_radiation;
+        result.downward_sky_longwave_megajoules_per_m2[index] = energy.downward_longwave;
+        result.emitted_sky_longwave_megajoules_per_m2[index] = energy.emitted_longwave;
+        result.net_longwave_megajoules_per_m2[index] = energy.net_longwave;
+        result.net_radiation_megajoules_per_m2[index] = energy.net_radiation;
     };
 }
 

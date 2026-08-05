@@ -27,7 +27,7 @@ pub const LitterSoilInputs = struct {
     soil_temperature_k: f64,
 };
 
-pub const LitterSoilFlux = struct { water_m3: f64, unenhanced_water_m3: f64, convective_heat_mj: f64 };
+pub const LitterSoilFlux = struct { water_m3: f64, unenhanced_water_m3: f64, convective_heat_megajoules: f64 };
 
 /// NPR is now only the caller's convergence ceiling; this evaluates one
 /// nonlinear litter-soil face for a whole-step Newton/Picard residual.
@@ -38,7 +38,7 @@ pub fn litterSoilFlux(inputs: LitterSoilInputs) !LitterSoilFlux {
     // CVRD exactly; CVRDW scales the face area in FLQX.
     const flux = try water_flux.calculateMatrixFaceFlux(.{ .direction = .vertical, .source_water_m3 = inputs.litter_water_m3, .destination_water_m3 = inputs.soil_matrix_water_m3, .source_air_m3 = inputs.litter_air_m3, .destination_air_m3 = inputs.soil_matrix_air_m3, .source_micropore_volume_m3 = inputs.litter_volume_m3, .destination_micropore_volume_m3 = inputs.soil_matrix_bulk_volume_m3, .source_water_fraction = inputs.litter_water_fraction, .destination_water_fraction = inputs.soil_water_fraction, .source_air_entry_water_fraction = inputs.litter_air_entry_water_fraction, .destination_air_entry_water_fraction = inputs.soil_air_entry_water_fraction, .source_total_water_potential_mpa = inputs.litter_total_water_potential_mpa, .destination_total_water_potential_mpa = inputs.soil_total_water_potential_mpa, .source_hydraulic_conductivity_m2_per_h_mpa = inputs.litter_hydraulic_conductivity_m2_per_h_mpa * inputs.litter_cover_fraction, .destination_hydraulic_conductivity_m2_per_h_mpa = inputs.soil_hydraulic_conductivity_m2_per_h_mpa * inputs.litter_cover_fraction, .source_path_length_m = inputs.litter_thickness_m, .destination_path_length_m = inputs.soil_thickness_m, .face_area_m2 = inputs.soil_face_area_m2 * inputs.wet_litter_cover_fraction, .wetting_depth_factor = inputs.time_fraction, .time_fraction = inputs.time_fraction, .destination_excess_pore_volume_m3 = inputs.soil_excess_pore_volume_m3 });
     const donor_temperature = if (flux.limited_water_m3 > 0) inputs.litter_temperature_k else inputs.soil_temperature_k;
-    return .{ .water_m3 = flux.limited_water_m3, .unenhanced_water_m3 = flux.transport_water_m3, .convective_heat_mj = 4.19 * donor_temperature * flux.limited_water_m3 };
+    return .{ .water_m3 = flux.limited_water_m3, .unenhanced_water_m3 = flux.transport_water_m3, .convective_heat_megajoules = 4.19 * donor_temperature * flux.limited_water_m3 };
 }
 
 pub fn pondToSoilWaterM3(pond_water_m3: f64, surface_area_m2: f64, time_fraction: f64) !f64 {

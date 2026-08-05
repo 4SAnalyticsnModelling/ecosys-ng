@@ -19,7 +19,7 @@ pub fn route(
     columns: usize,
     rows: usize,
     soil_layer_capacity: usize,
-    surface_soil_mass_Mg: []const f64,
+    surface_soil_mass_megagrams: []const f64,
     state: *organic.State,
     sediment: constituents.DirectionalSediment,
     workspace: *constituents.PackedWorkspace,
@@ -29,7 +29,7 @@ pub fn route(
     const component_count = try componentCount(state);
     if (workspace.cell_count != cells or workspace.component_count != component_count) return error.OrganicErosionDimensionMismatch;
     try packSurface(state, cells, soil_layer_capacity, component_count, workspace.pools);
-    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_Mg, sediment);
+    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_megagrams, sediment);
     try unpackSurface(state, cells, soil_layer_capacity, component_count, workspace.pools);
 }
 
@@ -39,15 +39,15 @@ pub fn route(
 pub fn refreshSurfaceOrganicCarbonGPerMg(
     state: *const organic.State,
     soil_layer_capacity: usize,
-    surface_soil_mass_Mg: []const f64,
-    total_organic_carbon_g_per_Mg: []f64,
+    surface_soil_mass_megagrams: []const f64,
+    total_organic_carbon_g_per_megagram: []f64,
 ) !void {
-    const cells = surface_soil_mass_Mg.len;
-    if (soil_layer_capacity == 0 or state.layer_count != try std.math.mul(usize, cells, soil_layer_capacity) or total_organic_carbon_g_per_Mg.len != state.layer_count) return error.OrganicErosionDimensionMismatch;
+    const cells = surface_soil_mass_megagrams.len;
+    if (soil_layer_capacity == 0 or state.layer_count != try std.math.mul(usize, cells, soil_layer_capacity) or total_organic_carbon_g_per_megagram.len != state.layer_count) return error.OrganicErosionDimensionMismatch;
     for (0..cells) |cell| {
         const layer = cell * soil_layer_capacity;
-        const soil_mass_Mg = surface_soil_mass_Mg[cell];
-        if (!std.math.isFinite(soil_mass_Mg) or soil_mass_Mg <= 0) return error.InvalidOrganicErosionState;
+        const soil_mass_megagrams = surface_soil_mass_megagrams[cell];
+        if (!std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0) return error.InvalidOrganicErosionState;
         var carbon_g: f64 = 0;
         inline for (.{ state.microbial, state.residue, state.adsorbed }) |pools| {
             const per_layer = pools.len / state.layer_count;
@@ -58,7 +58,7 @@ pub fn refreshSurfaceOrganicCarbonGPerMg(
         const structural_per_layer = state.structural.len / state.layer_count;
         for (state.structural[layer * structural_per_layer ..][0..structural_per_layer]) |pool| carbon_g += pool.carbon_g_c;
         if (!std.math.isFinite(carbon_g) or carbon_g < 0) return error.InvalidOrganicErosionState;
-        total_organic_carbon_g_per_Mg[layer] = carbon_g / soil_mass_Mg;
+        total_organic_carbon_g_per_megagram[layer] = carbon_g / soil_mass_megagrams;
     }
 }
 
@@ -215,14 +215,14 @@ test "all solid organic families follow sediment conservatively" {
     const count = try componentCount(&state);
     var workspace = try constituents.PackedWorkspace.init(std.testing.allocator, 2, count);
     defer workspace.deinit();
-    try route(2, 1, 1, &.{ 10, 10 }, &state, .{ .east_Mg = &.{ 1, 0 }, .west_Mg = &.{ 0, 0 }, .south_Mg = &.{ 0, 0 }, .north_Mg = &.{ 0, 0 } }, &workspace);
+    try route(2, 1, 1, &.{ 10, 10 }, &state, .{ .east_megagrams = &.{ 1, 0 }, .west_megagrams = &.{ 0, 0 }, .south_megagrams = &.{ 0, 0 }, .north_megagrams = &.{ 0, 0 } }, &workspace);
     try std.testing.expectApproxEqAbs(@as(f64, 9), state.microbial[0].carbon_g_c, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 1), state.microbial[state.microbial.len / 2].carbon_g_c, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 54), state.colonized_structural_carbon_g_c[0], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 6), state.colonized_structural_carbon_g_c[state.colonized_structural_carbon_g_c.len / 2], 1e-14);
-    var total_organic_carbon_g_per_Mg = [_]f64{ 0, 0 };
-    try refreshSurfaceOrganicCarbonGPerMg(&state, 1, &.{ 10, 10 }, &total_organic_carbon_g_per_Mg);
-    try std.testing.expectApproxEqAbs(@as(f64, 9), total_organic_carbon_g_per_Mg[0], 1e-14);
+    var total_organic_carbon_g_per_megagram = [_]f64{ 0, 0 };
+    try refreshSurfaceOrganicCarbonGPerMg(&state, 1, &.{ 10, 10 }, &total_organic_carbon_g_per_megagram);
+    try std.testing.expectApproxEqAbs(@as(f64, 9), total_organic_carbon_g_per_megagram[0], 1e-14);
 }
 
 test "external organic sediment export counts C N P without colonized double count" {
@@ -248,10 +248,10 @@ test "external organic sediment export counts C N P without colonized double cou
     };
     state.colonized_structural_carbon_g_c[0] = 80;
     try route(1, 1, 1, &.{10}, &state, .{
-        .east_Mg = &.{1},
-        .west_Mg = &.{0},
-        .south_Mg = &.{0},
-        .north_Mg = &.{0},
+        .east_megagrams = &.{1},
+        .west_megagrams = &.{0},
+        .south_megagrams = &.{0},
+        .north_megagrams = &.{0},
     }, &workspace);
     const exported = try exportedElements(&state, &workspace);
     try std.testing.expectApproxEqAbs(@as(f64, 10), exported.carbon_g_c, 1e-12);

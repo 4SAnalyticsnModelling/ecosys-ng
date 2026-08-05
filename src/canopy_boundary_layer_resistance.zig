@@ -12,10 +12,10 @@ pub const Inputs = struct {
     biome_isothermal_boundary_resistance_h_per_m: f64,
     biome_below_canopy_aerodynamic_resistance_h_per_m: f64,
     species_below_canopy_aerodynamic_resistance_h_per_m: f64,
-    biome_sensible_boundary_conductance_mj_per_m_k_step: f64,
+    biome_sensible_boundary_conductance_megajoules_per_m_k_step: f64,
     biome_latent_boundary_conductance_m2_per_step: f64,
     total_canopy_radiation_fraction: f64,
-    species_sensible_boundary_conductance_mj_per_m_k_step: f64,
+    species_sensible_boundary_conductance_megajoules_per_m_k_step: f64,
     species_latent_boundary_conductance_m2_per_step: f64,
     sensible_surface_resistance_h_per_m: f64,
     latent_surface_resistance_h_per_m: f64,
@@ -29,13 +29,13 @@ pub const Result = struct {
     canopy_boundary_layer_resistance_h_per_m: f64,
     above_species_aerodynamic_resistance_h_per_m: f64,
     total_canopy_aerodynamic_resistance_h_per_m: f64,
-    ground_sensible_conductance_mj_per_m_k_step: f64,
+    ground_sensible_conductance_megajoules_per_m_k_step: f64,
     ground_latent_conductance_m2_per_step: f64,
     canopy_to_surface_temperature_difference_k: f64,
     surface_richardson_number: f64,
     surface_stability_factor: f64,
     adjusted_sensible_surface_resistance_h_per_m: f64,
-    canopy_sensible_conductance_mj_per_k_step: f64,
+    canopy_sensible_conductance_megajoules_per_k_step: f64,
     canopy_latent_conductance_m3_per_step: f64,
 };
 
@@ -73,7 +73,7 @@ pub fn calculate(inputs: Inputs) !Result {
     const total_resistance =
         boundary_resistance + above_species_resistance;
     const ground_sensible =
-        inputs.biome_sensible_boundary_conductance_mj_per_m_k_step /
+        inputs.biome_sensible_boundary_conductance_megajoules_per_m_k_step /
         inputs.species_below_canopy_aerodynamic_resistance_h_per_m *
         inputs.total_canopy_radiation_fraction;
     const ground_latent =
@@ -103,7 +103,7 @@ pub fn calculate(inputs: Inputs) !Result {
         ),
     );
     const canopy_sensible =
-        inputs.species_sensible_boundary_conductance_mj_per_m_k_step /
+        inputs.species_sensible_boundary_conductance_megajoules_per_m_k_step /
         adjusted_surface_resistance;
     const canopy_latent =
         inputs.species_latent_boundary_conductance_m2_per_step /
@@ -116,13 +116,13 @@ pub fn calculate(inputs: Inputs) !Result {
         .canopy_boundary_layer_resistance_h_per_m = boundary_resistance,
         .above_species_aerodynamic_resistance_h_per_m = above_species_resistance,
         .total_canopy_aerodynamic_resistance_h_per_m = total_resistance,
-        .ground_sensible_conductance_mj_per_m_k_step = ground_sensible,
+        .ground_sensible_conductance_megajoules_per_m_k_step = ground_sensible,
         .ground_latent_conductance_m2_per_step = ground_latent,
         .canopy_to_surface_temperature_difference_k = surface_difference,
         .surface_richardson_number = surface_richardson,
         .surface_stability_factor = surface_stability,
         .adjusted_sensible_surface_resistance_h_per_m = adjusted_surface_resistance,
-        .canopy_sensible_conductance_mj_per_k_step = canopy_sensible,
+        .canopy_sensible_conductance_megajoules_per_k_step = canopy_sensible,
         .canopy_latent_conductance_m3_per_step = canopy_latent,
     };
     inline for (@typeInfo(Result).@"struct".fields) |field|
@@ -161,10 +161,10 @@ fn sourceInputs() Inputs {
         .biome_isothermal_boundary_resistance_h_per_m = 1,
         .biome_below_canopy_aerodynamic_resistance_h_per_m = 3,
         .species_below_canopy_aerodynamic_resistance_h_per_m = 2,
-        .biome_sensible_boundary_conductance_mj_per_m_k_step = 8,
+        .biome_sensible_boundary_conductance_megajoules_per_m_k_step = 8,
         .biome_latent_boundary_conductance_m2_per_step = 6,
         .total_canopy_radiation_fraction = 0.5,
-        .species_sensible_boundary_conductance_mj_per_m_k_step = 4,
+        .species_sensible_boundary_conductance_megajoules_per_m_k_step = 4,
         .species_latent_boundary_conductance_m2_per_step = 5,
         .sensible_surface_resistance_h_per_m = 0.2,
         .latent_surface_resistance_h_per_m = 0.3,
@@ -182,10 +182,10 @@ test "UPTAKE boundary layer resistance preserves source operation order" {
     try std.testing.expectEqual(ambient_ri, result.ambient_richardson_number);
     try std.testing.expectApproxEqAbs(expected_boundary, result.canopy_boundary_layer_resistance_h_per_m, 5e-16);
     try std.testing.expectEqual(@as(f64, 1), result.above_species_aerodynamic_resistance_h_per_m);
-    try std.testing.expectEqual(@as(f64, 2), result.ground_sensible_conductance_mj_per_m_k_step);
+    try std.testing.expectEqual(@as(f64, 2), result.ground_sensible_conductance_megajoules_per_m_k_step);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), result.ground_latent_conductance_m2_per_step, 5e-16);
     try std.testing.expectApproxEqAbs(expected_surface, result.adjusted_sensible_surface_resistance_h_per_m, 5e-16);
-    try std.testing.expectApproxEqAbs(4.0 / expected_surface, result.canopy_sensible_conductance_mj_per_k_step, 1e-14);
+    try std.testing.expectApproxEqAbs(4.0 / expected_surface, result.canopy_sensible_conductance_megajoules_per_k_step, 1e-14);
     try std.testing.expectApproxEqAbs(5.0 / (expected_surface + 0.3), result.canopy_latent_conductance_m3_per_step, 1e-14);
 }
 

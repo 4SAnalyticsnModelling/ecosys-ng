@@ -81,13 +81,16 @@ pub fn equilibrateHostAndSymbiont(
     minimum_infection_carbon_g_c: f64,
     exchange_fraction_per_h: f64,
     timestep_h: f64,
+    host_carbon_presence_threshold_g_c: f64,
+    host_tissue_presence_threshold_g_c: f64,
+    combined_carbon_presence_threshold_g_c: f64,
 ) !HostExchange {
     try validatePool(host);
     try validatePool(symbiont);
-    inline for (.{ host_tissue_carbon_g_c, symbiont_structural_carbon_g_c, minimum_infection_carbon_g_c, exchange_fraction_per_h, timestep_h }) |value|
+    inline for (.{ host_tissue_carbon_g_c, symbiont_structural_carbon_g_c, minimum_infection_carbon_g_c, exchange_fraction_per_h, timestep_h, host_carbon_presence_threshold_g_c, host_tissue_presence_threshold_g_c, combined_carbon_presence_threshold_g_c }) |value|
         if (!std.math.isFinite(value) or value < 0) return error.InvalidSymbioticExchangeInput;
     if (timestep_h <= 0 or exchange_fraction_per_h > 1) return error.InvalidSymbioticExchangeInput;
-    if (host.carbon_g_c <= 0 or host_tissue_carbon_g_c <= 0) return .{ .next_host = host, .next_symbiont = symbiont, .host_to_symbiont = .{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 } };
+    if (host.carbon_g_c <= host_carbon_presence_threshold_g_c or host_tissue_carbon_g_c <= host_tissue_presence_threshold_g_c) return .{ .next_host = host, .next_symbiont = symbiont, .host_to_symbiont = .{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 } };
 
     const effective_symbiont_carbon_g_c = @min(host_tissue_carbon_g_c, @max(minimum_infection_carbon_g_c, symbiont_structural_carbon_g_c));
     const tissue_total_g_c = host_tissue_carbon_g_c + effective_symbiont_carbon_g_c;
@@ -99,7 +102,7 @@ pub fn equilibrateHostAndSymbiont(
     const next_host_carbon_g_c = host.carbon_g_c - transfer.carbon_g_c;
     const next_symbiont_carbon_g_c = symbiont.carbon_g_c + transfer.carbon_g_c;
     const mobile_total_g_c = next_host_carbon_g_c + next_symbiont_carbon_g_c;
-    if (mobile_total_g_c > 0) {
+    if (mobile_total_g_c > combined_carbon_presence_threshold_g_c) {
         transfer.nitrogen_g_n = exchange_fraction_per_h * (host.nitrogen_g_n * next_symbiont_carbon_g_c - symbiont.nitrogen_g_n * next_host_carbon_g_c) / mobile_total_g_c * timestep_h;
         transfer.phosphorus_g_p = exchange_fraction_per_h * (host.phosphorus_g_p * next_symbiont_carbon_g_c - symbiont.phosphorus_g_p * next_host_carbon_g_c) / mobile_total_g_c * timestep_h;
     }
@@ -123,11 +126,16 @@ pub const Inputs = struct {
     maintenance_temperature_response: f64,
     maintenance_water_response: f64,
     timestep_h: f64,
+    structural_presence_threshold_g_c: f64 = 0,
+    ratio_division_threshold: f64 = 0,
+    fixation_respiration_presence_threshold_g_c: f64 = 0,
 };
 
 pub const Parameters = struct {
     target_nitrogen_per_carbon_g_n_per_g_c: f64,
     target_phosphorus_per_carbon_g_p_per_g_c: f64,
+    nitrogen_inhibition_g_n_per_g_c: f64,
+    phosphorus_inhibition_g_p_per_g_c: f64,
     specific_respiration_per_h: f64,
     specific_maintenance_g_c_per_g_n_h: f64,
     nitrogen_fixation_yield_g_n_per_g_c: f64,
@@ -149,6 +157,8 @@ pub const RuntimeParameters = struct {
     specific_respiration_per_h: f64,
     specific_maintenance_g_c_per_g_n_h: f64,
     nitrogen_fixation_yield_g_n_per_g_c: f64,
+    nitrogen_inhibition_g_n_per_g_c: f64,
+    phosphorus_inhibition_g_p_per_g_c: f64,
     nonstructural_nitrogen_half_saturation_g_n_per_g_c: f64,
     nonstructural_phosphorus_half_saturation_g_p_per_g_c: f64,
     excess_nitrogen_inhibition_g_n_per_g_c: f64,
@@ -168,7 +178,7 @@ pub const RuntimeParameters = struct {
         };
         inline for (.{ self.host_exchange_fraction_per_h_by_fixation_type, self.decomposition_control_ratio_by_fixation_type }) |values|
             for (values) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSymbioticRuntimeParameter;
-        if (self.nitrogen_fixation_yield_g_n_per_g_c <= 0 or self.nonstructural_nitrogen_half_saturation_g_n_per_g_c <= 0 or self.nonstructural_phosphorus_half_saturation_g_p_per_g_c <= 0 or self.excess_nitrogen_inhibition_g_n_per_g_c <= 0 or self.excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p <= 0 or self.minimum_carbon_recycling_fraction + self.carbon_recycling_range_fraction > 1 or self.maximum_nitrogen_recycling_fraction > 1 or self.maximum_phosphorus_recycling_fraction > 1) return error.InvalidSymbioticRuntimeParameter;
+        if (self.nitrogen_fixation_yield_g_n_per_g_c <= 0 or self.nitrogen_inhibition_g_n_per_g_c <= 0 or self.phosphorus_inhibition_g_p_per_g_c <= 0 or self.nonstructural_nitrogen_half_saturation_g_n_per_g_c <= 0 or self.nonstructural_phosphorus_half_saturation_g_p_per_g_c <= 0 or self.excess_nitrogen_inhibition_g_n_per_g_c <= 0 or self.excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p <= 0 or self.minimum_carbon_recycling_fraction + self.carbon_recycling_range_fraction > 1 or self.maximum_nitrogen_recycling_fraction > 1 or self.maximum_phosphorus_recycling_fraction > 1) return error.InvalidSymbioticRuntimeParameter;
         for (self.host_exchange_fraction_per_h_by_fixation_type) |value| if (value > 1) return error.InvalidSymbioticRuntimeParameter;
         for (self.decomposition_control_ratio_by_fixation_type) |value| if (value <= 0) return error.InvalidSymbioticRuntimeParameter;
     }
@@ -180,6 +190,8 @@ pub fn sourceRuntimeParameters() RuntimeParameters {
         .specific_respiration_per_h = 0.125,
         .specific_maintenance_g_c_per_g_n_h = 0.010,
         .nitrogen_fixation_yield_g_n_per_g_c = 0.25,
+        .nitrogen_inhibition_g_n_per_g_c = 0.1,
+        .phosphorus_inhibition_g_p_per_g_c = 0.01,
         .nonstructural_nitrogen_half_saturation_g_n_per_g_c = 1.0e-4,
         .nonstructural_phosphorus_half_saturation_g_p_per_g_c = 1.0e-5,
         .excess_nitrogen_inhibition_g_n_per_g_c = 10,
@@ -200,6 +212,8 @@ pub fn metabolicParameters(runtime: RuntimeParameters, fixation_type: u8, target
     return .{
         .target_nitrogen_per_carbon_g_n_per_g_c = target_nitrogen_per_carbon_g_n_per_g_c,
         .target_phosphorus_per_carbon_g_p_per_g_c = target_phosphorus_per_carbon_g_p_per_g_c,
+        .nitrogen_inhibition_g_n_per_g_c = runtime.nitrogen_inhibition_g_n_per_g_c,
+        .phosphorus_inhibition_g_p_per_g_c = runtime.phosphorus_inhibition_g_p_per_g_c,
         .specific_respiration_per_h = runtime.specific_respiration_per_h,
         .specific_maintenance_g_c_per_g_n_h = runtime.specific_maintenance_g_c_per_g_n_h,
         .nitrogen_fixation_yield_g_n_per_g_c = runtime.nitrogen_fixation_yield_g_n_per_g_c,
@@ -236,24 +250,24 @@ pub const Result = struct {
 /// the unconstrained respiration input, leaving one scientific implementation.
 pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
     try validate(inputs, parameters);
-    const carbon_concentration = if (inputs.structural.carbon_g_c > 0) inputs.nonstructural.carbon_g_c / inputs.structural.carbon_g_c else 1;
-    const nitrogen_concentration = if (inputs.structural.carbon_g_c > 0) inputs.nonstructural.nitrogen_g_n / inputs.structural.carbon_g_c else 1;
-    const phosphorus_concentration = if (inputs.structural.carbon_g_c > 0) inputs.nonstructural.phosphorus_g_p / inputs.structural.carbon_g_c else 1;
-    const nitrogen_per_nonstructural_carbon = if (carbon_concentration > 0) nitrogen_concentration / carbon_concentration else 0;
-    const nitrogen_per_nonstructural_phosphorus = if (phosphorus_concentration > 0) nitrogen_concentration / phosphorus_concentration else 0;
+    const carbon_concentration = if (inputs.structural.carbon_g_c > inputs.structural_presence_threshold_g_c) inputs.nonstructural.carbon_g_c / inputs.structural.carbon_g_c else 1;
+    const nitrogen_concentration = if (inputs.structural.carbon_g_c > inputs.structural_presence_threshold_g_c) inputs.nonstructural.nitrogen_g_n / inputs.structural.carbon_g_c else 1;
+    const phosphorus_concentration = if (inputs.structural.carbon_g_c > inputs.structural_presence_threshold_g_c) inputs.nonstructural.phosphorus_g_p / inputs.structural.carbon_g_c else 1;
+    const nitrogen_per_nonstructural_carbon = if (carbon_concentration > inputs.ratio_division_threshold) nitrogen_concentration / carbon_concentration else 0;
+    const nitrogen_per_nonstructural_phosphorus = if (phosphorus_concentration > inputs.ratio_division_threshold) nitrogen_concentration / phosphorus_concentration else 0;
     var carbon_balance: f64 = 1;
     var nitrogen_balance: f64 = 0;
     var phosphorus_balance: f64 = 0;
-    if (carbon_concentration > 0) {
-        carbon_balance = std.math.clamp(@min(nitrogen_concentration / (nitrogen_concentration + carbon_concentration * parameters.target_nitrogen_per_carbon_g_n_per_g_c), phosphorus_concentration / (phosphorus_concentration + carbon_concentration * parameters.target_phosphorus_per_carbon_g_p_per_g_c)), 0, 1);
-        nitrogen_balance = std.math.clamp(carbon_concentration / (carbon_concentration + nitrogen_concentration / parameters.target_nitrogen_per_carbon_g_n_per_g_c), 0, 1);
-        phosphorus_balance = std.math.clamp(carbon_concentration / (carbon_concentration + phosphorus_concentration / parameters.target_phosphorus_per_carbon_g_p_per_g_c), 0, 1);
+    if (carbon_concentration > inputs.ratio_division_threshold) {
+        carbon_balance = std.math.clamp(@min(nitrogen_concentration / (nitrogen_concentration + carbon_concentration * parameters.nitrogen_inhibition_g_n_per_g_c), phosphorus_concentration / (phosphorus_concentration + carbon_concentration * parameters.phosphorus_inhibition_g_p_per_g_c)), 0, 1);
+        nitrogen_balance = std.math.clamp(carbon_concentration / (carbon_concentration + nitrogen_concentration / parameters.nitrogen_inhibition_g_n_per_g_c), 0, 1);
+        phosphorus_balance = std.math.clamp(carbon_concentration / (carbon_concentration + phosphorus_concentration / parameters.phosphorus_inhibition_g_p_per_g_c), 0, 1);
     }
     const recycling_carbon = parameters.minimum_carbon_recycling_fraction + carbon_balance * parameters.carbon_recycling_range_fraction;
     const recycling_nitrogen = nitrogen_balance * parameters.maximum_nitrogen_recycling_fraction;
     const recycling_phosphorus = phosphorus_balance * parameters.maximum_phosphorus_recycling_fraction;
     if (recycling_carbon > 1 or recycling_nitrogen > 1 or recycling_phosphorus > 1) return error.InvalidSymbioticRecyclingFraction;
-    const nutrient_activity = if (inputs.structural.carbon_g_c > 0) @min(1, @sqrt(inputs.structural.nitrogen_g_n / (inputs.structural.carbon_g_c * parameters.target_nitrogen_per_carbon_g_n_per_g_c)), @sqrt(inputs.structural.phosphorus_g_p / (inputs.structural.carbon_g_c * parameters.target_phosphorus_per_carbon_g_p_per_g_c))) else 1;
+    const nutrient_activity = if (inputs.structural.carbon_g_c > inputs.structural_presence_threshold_g_c) @min(1, @sqrt(inputs.structural.nitrogen_g_n / (inputs.structural.carbon_g_c * parameters.target_nitrogen_per_carbon_g_n_per_g_c)), @sqrt(inputs.structural.phosphorus_g_p / (inputs.structural.carbon_g_c * parameters.target_phosphorus_per_carbon_g_p_per_g_c))) else 1;
     const product_inhibition = 1 + @max(nitrogen_per_nonstructural_carbon / parameters.excess_nitrogen_inhibition_g_n_per_g_c, nitrogen_per_nonstructural_phosphorus / parameters.excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p);
     const respiration_oxygen_unlimited = @max(0, @min(inputs.nonstructural.carbon_g_c, parameters.specific_respiration_per_h * inputs.structural.carbon_g_c) * nutrient_activity * inputs.temperature_response * inputs.growth_water_response * inputs.timestep_h) / product_inhibition;
     const respiration = respiration_oxygen_unlimited * inputs.oxygen_constraint_fraction;
@@ -262,7 +276,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
     const growth_respiration_oxygen_unlimited = @max(0, respiration_oxygen_unlimited - maintenance);
     const senescence_respiration = @max(0, maintenance - respiration);
     const fixation_requirement = @max(0, inputs.structural.carbon_g_c * parameters.target_nitrogen_per_carbon_g_n_per_g_c - inputs.structural.nitrogen_g_n) / parameters.nitrogen_fixation_yield_g_n_per_g_c;
-    const fixation_respiration = if (growth_respiration > 0 and fixation_requirement > 0) growth_respiration * fixation_requirement / (growth_respiration + fixation_requirement) else 0;
+    const fixation_respiration = if (growth_respiration > inputs.fixation_respiration_presence_threshold_g_c and fixation_requirement > 0) growth_respiration * fixation_requirement / (growth_respiration + fixation_requirement) else 0;
     const fixed_nitrogen = fixation_respiration * parameters.nitrogen_fixation_yield_g_n_per_g_c;
     const decomposition_fraction = @min(1, parameters.decomposition_rate_per_h * inputs.decomposition_density / parameters.bacteria_to_host_decomposition_ratio) * @sqrt(inputs.temperature_response * inputs.growth_water_response) * inputs.timestep_h;
     if (decomposition_fraction > 1) return error.SymbioticDecompositionExceedsPool;
@@ -279,7 +293,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) !Result {
     const phosphorus_added = @max(0, @min(inputs.nonstructural.phosphorus_g_p, growth * parameters.target_phosphorus_per_carbon_g_p_per_g_c)) * phosphorus_concentration / (phosphorus_concentration + parameters.nonstructural_phosphorus_half_saturation_g_p_per_g_c);
     const structural_carbon_after_decomposition_g_c = inputs.structural.carbon_g_c - decomposition.carbon_g_c;
     if (senescence_respiration > structural_carbon_after_decomposition_g_c) return error.SymbioticSenescenceWouldOverdraw;
-    const senescence = if (senescence_respiration > 0 and inputs.structural.carbon_g_c > 0) Pool{ .carbon_g_c = senescence_respiration, .nitrogen_g_n = 0, .phosphorus_g_p = 0 } else Pool{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 };
+    const senescence = if (senescence_respiration > 0 and inputs.structural.carbon_g_c > inputs.structural_presence_threshold_g_c) Pool{ .carbon_g_c = senescence_respiration, .nitrogen_g_n = 0, .phosphorus_g_p = 0 } else Pool{ .carbon_g_c = 0, .nitrogen_g_n = 0, .phosphorus_g_p = 0 };
     var senescence_loss = senescence;
     if (senescence.carbon_g_c > 0) {
         senescence_loss.nitrogen_g_n = senescence.carbon_g_c * inputs.structural.nitrogen_g_n / inputs.structural.carbon_g_c;
@@ -321,12 +335,12 @@ fn validate(inputs: Inputs, parameters: Parameters) !void {
     try validatePool(inputs.nonstructural);
     inline for (@typeInfo(Inputs).@"struct".fields) |field| if (field.type == f64 and (!std.math.isFinite(@field(inputs, field.name)) or @field(inputs, field.name) < 0)) return error.InvalidSymbioticFixationInput;
     inline for (@typeInfo(Parameters).@"struct".fields) |field| if (!std.math.isFinite(@field(parameters, field.name)) or @field(parameters, field.name) < 0) return error.InvalidSymbioticFixationParameter;
-    if (inputs.timestep_h <= 0 or inputs.oxygen_constraint_fraction > 1 or parameters.target_nitrogen_per_carbon_g_n_per_g_c <= 0 or parameters.target_phosphorus_per_carbon_g_p_per_g_c <= 0 or parameters.nitrogen_fixation_yield_g_n_per_g_c <= 0 or parameters.growth_yield_g_c_per_g_c < 0 or parameters.growth_yield_g_c_per_g_c >= 1 or parameters.nonstructural_nitrogen_half_saturation_g_n_per_g_c <= 0 or parameters.nonstructural_phosphorus_half_saturation_g_p_per_g_c <= 0 or parameters.excess_nitrogen_inhibition_g_n_per_g_c <= 0 or parameters.excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p <= 0 or parameters.bacteria_to_host_decomposition_ratio <= 0) return error.InvalidSymbioticFixationParameter;
+    if (inputs.timestep_h <= 0 or inputs.oxygen_constraint_fraction > 1 or parameters.target_nitrogen_per_carbon_g_n_per_g_c <= 0 or parameters.target_phosphorus_per_carbon_g_p_per_g_c <= 0 or parameters.nitrogen_inhibition_g_n_per_g_c <= 0 or parameters.phosphorus_inhibition_g_p_per_g_c <= 0 or parameters.nitrogen_fixation_yield_g_n_per_g_c <= 0 or parameters.growth_yield_g_c_per_g_c < 0 or parameters.growth_yield_g_c_per_g_c >= 1 or parameters.nonstructural_nitrogen_half_saturation_g_n_per_g_c <= 0 or parameters.nonstructural_phosphorus_half_saturation_g_p_per_g_c <= 0 or parameters.excess_nitrogen_inhibition_g_n_per_g_c <= 0 or parameters.excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p <= 0 or parameters.bacteria_to_host_decomposition_ratio <= 0) return error.InvalidSymbioticFixationParameter;
 }
 
 test "symbiotic fixation conserves C and adds only fixed atmospheric N" {
     const inputs: Inputs = .{ .structural = .{ .carbon_g_c = 10, .nitrogen_g_n = 0.5, .phosphorus_g_p = 0.1 }, .nonstructural = .{ .carbon_g_c = 5, .nitrogen_g_n = 0.2, .phosphorus_g_p = 0.1 }, .decomposition_density = 0.1, .temperature_response = 1, .growth_water_response = 1, .maintenance_temperature_response = 1, .maintenance_water_response = 1, .timestep_h = 1 };
-    const result = try calculate(inputs, .{ .target_nitrogen_per_carbon_g_n_per_g_c = 0.1, .target_phosphorus_per_carbon_g_p_per_g_c = 0.02, .specific_respiration_per_h = 0.2, .specific_maintenance_g_c_per_g_n_h = 0.01, .nitrogen_fixation_yield_g_n_per_g_c = 0.05, .growth_yield_g_c_per_g_c = 0.4, .nonstructural_nitrogen_half_saturation_g_n_per_g_c = 0.01, .nonstructural_phosphorus_half_saturation_g_p_per_g_c = 0.005, .excess_nitrogen_inhibition_g_n_per_g_c = 1, .excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p = 10, .decomposition_rate_per_h = 0.01, .bacteria_to_host_decomposition_ratio = 0.1, .minimum_carbon_recycling_fraction = 0.1, .carbon_recycling_range_fraction = 0.5, .maximum_nitrogen_recycling_fraction = 0.8, .maximum_phosphorus_recycling_fraction = 0.8 });
+    const result = try calculate(inputs, .{ .target_nitrogen_per_carbon_g_n_per_g_c = 0.1, .target_phosphorus_per_carbon_g_p_per_g_c = 0.02, .nitrogen_inhibition_g_n_per_g_c = 0.1, .phosphorus_inhibition_g_p_per_g_c = 0.01, .specific_respiration_per_h = 0.2, .specific_maintenance_g_c_per_g_n_h = 0.01, .nitrogen_fixation_yield_g_n_per_g_c = 0.05, .growth_yield_g_c_per_g_c = 0.4, .nonstructural_nitrogen_half_saturation_g_n_per_g_c = 0.01, .nonstructural_phosphorus_half_saturation_g_p_per_g_c = 0.005, .excess_nitrogen_inhibition_g_n_per_g_c = 1, .excess_nitrogen_to_phosphorus_inhibition_g_n_per_g_p = 10, .decomposition_rate_per_h = 0.01, .bacteria_to_host_decomposition_ratio = 0.1, .minimum_carbon_recycling_fraction = 0.1, .carbon_recycling_range_fraction = 0.5, .maximum_nitrogen_recycling_fraction = 0.8, .maximum_phosphorus_recycling_fraction = 0.8 });
     const before_c = inputs.structural.carbon_g_c + inputs.nonstructural.carbon_g_c;
     const after_c = result.next_structural.carbon_g_c + result.next_nonstructural.carbon_g_c + result.litterfall.carbon_g_c + result.total_respiration_g_c;
     try std.testing.expectApproxEqAbs(before_c, after_c, 1e-12);
@@ -349,6 +363,8 @@ test "GROSUB canopy symbiont senescence fails instead of silently capping an ove
     const parameters: Parameters = .{
         .target_nitrogen_per_carbon_g_n_per_g_c = 0.1,
         .target_phosphorus_per_carbon_g_p_per_g_c = 0.02,
+        .nitrogen_inhibition_g_n_per_g_c = 0.1,
+        .phosphorus_inhibition_g_p_per_g_c = 0.01,
         .specific_respiration_per_h = 0,
         .specific_maintenance_g_c_per_g_n_h = 2,
         .nitrogen_fixation_yield_g_n_per_g_c = 0.05,
@@ -414,7 +430,7 @@ test "GROSUB root infection accepts only rhizobial fixation types" {
 test "GROSUB host nodule exchange conserves mobile C N P" {
     const host: Pool = .{ .carbon_g_c = 10, .nitrogen_g_n = 1, .phosphorus_g_p = 0.1 };
     const symbiont: Pool = .{ .carbon_g_c = 0.2, .nitrogen_g_n = 0.002, .phosphorus_g_p = 0.0002 };
-    const result = try equilibrateHostAndSymbiont(host, symbiont, 20, 2, 0.5, 0.05, 1);
+    const result = try equilibrateHostAndSymbiont(host, symbiont, 20, 2, 0.5, 0.05, 1, 0, 0, 0);
     try std.testing.expect(result.host_to_symbiont.carbon_g_c > 0);
     try std.testing.expect(result.host_to_symbiont.nitrogen_g_n > 0);
     try std.testing.expect(result.host_to_symbiont.phosphorus_g_p > 0);
@@ -426,9 +442,40 @@ test "GROSUB host nodule exchange conserves mobile C N P" {
 test "GROSUB symbiotic source constants are runtime validated by fixation type" {
     const runtime = sourceRuntimeParameters();
     try runtime.validate();
+    try std.testing.expectEqual(@as(f64, 0.1), runtime.nitrogen_inhibition_g_n_per_g_c);
+    try std.testing.expectEqual(@as(f64, 0.01), runtime.phosphorus_inhibition_g_p_per_g_c);
     const canopy_slow = try metabolicParameters(runtime, 6, 0.1, 0.02, 0.4);
     try std.testing.expectEqual(@as(f64, 0.0125), canopy_slow.bacteria_to_host_decomposition_ratio);
     try std.testing.expectEqual(@as(f64, 0.05), runtime.host_exchange_fraction_per_h_by_fixation_type[5]);
     try std.testing.expectEqual(@as(f64, 0.25), canopy_slow.nitrogen_fixation_yield_g_n_per_g_c);
     try std.testing.expectError(error.InvalidSymbioticFixationType, metabolicParameters(runtime, 0, 0.1, 0.02, 0.4));
+}
+
+test "GROSUB canopy fixation and exchange use distinct strict runtime thresholds" {
+    var runtime = sourceRuntimeParameters();
+    runtime.specific_maintenance_g_c_per_g_n_h = 0;
+    const parameters = try metabolicParameters(runtime, 4, 0.1, 0.02, 0.4);
+    const base: Inputs = .{
+        .structural = .{ .carbon_g_c = 1, .nitrogen_g_n = 0.001, .phosphorus_g_p = 0.01 },
+        .nonstructural = .{ .carbon_g_c = 1, .nitrogen_g_n = 0.1, .phosphorus_g_p = 0.02 },
+        .decomposition_density = 0,
+        .temperature_response = 1,
+        .growth_water_response = 1,
+        .maintenance_temperature_response = 1,
+        .maintenance_water_response = 1,
+        .timestep_h = 1,
+    };
+    const admitted = try calculate(base, parameters);
+    var blocked_inputs = base;
+    blocked_inputs.fixation_respiration_presence_threshold_g_c = 2;
+    const blocked = try calculate(blocked_inputs, parameters);
+    try std.testing.expect(admitted.fixed_nitrogen_g_n > 0);
+    try std.testing.expectEqual(@as(f64, 0), blocked.fixed_nitrogen_g_n);
+
+    const host: Pool = .{ .carbon_g_c = 1, .nitrogen_g_n = 0.1, .phosphorus_g_p = 0.01 };
+    const symbiont: Pool = .{ .carbon_g_c = 0.1, .nitrogen_g_n = 0.001, .phosphorus_g_p = 0.0001 };
+    const blocked_exchange = try equilibrateHostAndSymbiont(host, symbiont, 0.5, 0.1, 0.01, 0.1, 1, 1, 0.01, 0.01);
+    try std.testing.expectEqual(@as(f64, 0), blocked_exchange.host_to_symbiont.carbon_g_c);
+    const admitted_exchange = try equilibrateHostAndSymbiont(host, symbiont, 0.5, 0.1, 0.01, 0.1, 1, 0.99, 0.01, 0.01);
+    try std.testing.expect(admitted_exchange.host_to_symbiont.carbon_g_c > 0);
 }

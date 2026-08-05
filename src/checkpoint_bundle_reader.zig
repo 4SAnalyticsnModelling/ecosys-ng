@@ -137,10 +137,10 @@ pub fn swapIntoLive(bundle: *OwnedBundle, targets: LiveTargets) !void {
     std.mem.swap(@TypeOf(bundle.soil_geometry_and_hydrology.erosion), &bundle.soil_geometry_and_hydrology.erosion, @constCast(targets.soil_geometry_and_hydrology.erosion));
     std.mem.swap(@TypeOf(bundle.soil_geometry_and_hydrology.climate), &bundle.soil_geometry_and_hydrology.climate, @constCast(targets.soil_geometry_and_hydrology.climate));
     std.mem.swap(@TypeOf(bundle.soil_geometry_and_hydrology.eroded_minerals), &bundle.soil_geometry_and_hydrology.eroded_minerals, @constCast(targets.soil_geometry_and_hydrology.eroded_minerals));
-    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_mj), bundle.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_mj);
-    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_mj), bundle.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_mj);
-    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_mj), bundle.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_mj);
-    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_surface_combustion_heat_mj), bundle.soil_geometry_and_hydrology.delayed_surface_combustion_heat_mj);
+    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_megajoules), bundle.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_megajoules);
+    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_megajoules), bundle.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_megajoules);
+    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_megajoules), bundle.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_megajoules);
+    @memcpy(@constCast(targets.soil_geometry_and_hydrology.delayed_surface_combustion_heat_megajoules), bundle.soil_geometry_and_hydrology.delayed_surface_combustion_heat_megajoules);
     @memcpy(@constCast(targets.soil_geometry_and_hydrology.surface_litter_ice_m3), bundle.soil_geometry_and_hydrology.surface_litter_ice_m3);
     targets.landscape_mass_balance.* = bundle.landscape_mass_balance;
 }
@@ -261,7 +261,7 @@ fn readMassBalance(
 }
 
 fn validateConfigShape(config: config_module.SimulationConfig, shape: manifest_module.RuntimeShape) !void {
-    if (config.grid_columns != shape.columns or config.grid_rows != shape.rows or config.soil_layers != shape.soil_layers or config.plant_populations != shape.plant_species_per_cell) return error.CheckpointRuntimeConfigMismatch;
+    if (config.lon_count != shape.columns or config.lat_count != shape.rows or config.soil_layers != shape.soil_layers or config.plant_populations != shape.plant_species_per_cell) return error.CheckpointRuntimeConfigMismatch;
 }
 
 fn validateOwnedShape(shape: manifest_module.RuntimeShape, grid: GridState, plants: PlantState, development: development_checkpoint.Owned, roots: RootState, canopy: canopy_checkpoint.Owned, biogeochemistry: biogeochemistry_checkpoint.Owned, organic: organic_checkpoint.Owned, transport: transport_checkpoint.Owned, geometry: geometry_checkpoint.Owned) !void {
@@ -296,7 +296,7 @@ fn validateSwapTargets(bundle: OwnedBundle, targets: LiveTargets) !void {
         targets.transport.micropore.cell_count != layer_cells or targets.transport.mineral_nitrogen.cell_count != layer_cells or targets.transport.organic.layer_count != layer_cells or targets.transport.litter_gas.cell_count != cells or targets.transport.snow.cell_count != cells or targets.transport.snow.layer_capacity != shape.snow_layers or
         targets.transport.surface.columns != shape.columns or targets.transport.surface.rows != shape.rows or
         targets.soil_geometry_and_hydrology.geometry.cell_count != cells or targets.soil_geometry_and_hydrology.geometry.layer_capacity != shape.soil_layers or
-        targets.soil_geometry_and_hydrology.hydrology.columns != shape.columns or targets.soil_geometry_and_hydrology.hydrology.rows != shape.rows or targets.soil_geometry_and_hydrology.hydrology.snow_layer_capacity != shape.snow_layers or targets.soil_geometry_and_hydrology.surface.cell_count != cells or targets.soil_geometry_and_hydrology.surface_litter_geometry.cell_count != cells or targets.soil_geometry_and_hydrology.erosion.cell_count != cells or targets.soil_geometry_and_hydrology.eroded_minerals.workspace.cell_count != cells or targets.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_mj.len != plants or targets.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_mj.len != plants or targets.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_mj.len != layer_cells or targets.soil_geometry_and_hydrology.delayed_surface_combustion_heat_mj.len != cells or targets.soil_geometry_and_hydrology.surface_litter_ice_m3.len != cells) return error.CheckpointLiveSwapShapeMismatch;
+        targets.soil_geometry_and_hydrology.hydrology.columns != shape.columns or targets.soil_geometry_and_hydrology.hydrology.rows != shape.rows or targets.soil_geometry_and_hydrology.hydrology.snow_layer_capacity != shape.snow_layers or targets.soil_geometry_and_hydrology.surface.cell_count != cells or targets.soil_geometry_and_hydrology.surface_litter_geometry.cell_count != cells or targets.soil_geometry_and_hydrology.erosion.cell_count != cells or targets.soil_geometry_and_hydrology.eroded_minerals.workspace.cell_count != cells or targets.soil_geometry_and_hydrology.delayed_live_canopy_combustion_heat_megajoules.len != plants or targets.soil_geometry_and_hydrology.delayed_standing_dead_combustion_heat_megajoules.len != plants or targets.soil_geometry_and_hydrology.delayed_subsurface_combustion_heat_megajoules.len != layer_cells or targets.soil_geometry_and_hydrology.delayed_surface_combustion_heat_megajoules.len != cells or targets.soil_geometry_and_hydrology.surface_litter_ice_m3.len != cells) return error.CheckpointLiveSwapShapeMismatch;
     const runtime = targets.soil_geometry_and_hydrology.runtime orelse
         return error.MissingSoilRuntimeCheckpointTarget;
     try @import("soil_runtime_checkpoint.zig").validateView(runtime);
@@ -311,14 +311,14 @@ fn validateSwapTargets(bundle: OwnedBundle, targets: LiveTargets) !void {
 }
 
 test "bundle reader rejects runtime configuration before model owner allocation" {
-    const config = try config_module.SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 3 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try config_module.SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 3 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     try std.testing.expectError(error.CheckpointRuntimeConfigMismatch, validateConfigShape(config, .{ .columns = 1, .rows = 1, .soil_layers = 2, .snow_layers = 2, .plant_species_per_cell = 4, .root_axes_per_plant = 10 }));
 }
 
 test "bundle reader requires an atomic manifest before any restore" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
-    const config = try config_module.SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try config_module.SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     const manifest_limits: manifest_module.Limits = .{ .maximum_columns = 1, .maximum_rows = 1, .maximum_soil_layers = 1, .maximum_snow_layers = 1, .maximum_plant_species_per_cell = 1, .maximum_root_axes_per_plant = 1 };
     const limits: Limits = .{
         .manifest = manifest_limits,

@@ -26,9 +26,28 @@ pub const Inputs = struct {
     heat_properties: heat_solver.Properties,
     heat_options: heat_solver.Options,
     heat_workspace: ?*heat_solver.Workspace = null,
+    /// Extensive dry-solid capacity for diagnostic reconstruction, MJ K-1.
+    /// Empty disables stage diagnostics for isolated callers.
+    dry_solid_heat_capacity_megajoules_per_k: []const f64 = &.{},
 };
 
-pub const Result = struct { water: water_solver.Result, vapor: vapor_solver.Result, phase: phase_solver.Result, heat: heat_solver.Result };
+pub const EnergyDiagnostics = struct {
+    richards_sensible_change_megajoules: f64,
+    vapor_transport_sensible_change_megajoules: f64,
+    phase_sensible_change_megajoules: f64,
+    phase_absolute_sensible_change_megajoules: f64,
+    spatial_heat_sensible_change_megajoules: f64,
+    phase_latent_heat_megajoules: f64,
+    heat_solver_freeze_thaw_latent_megajoules: f64,
+};
+
+pub const Result = struct {
+    water: water_solver.Result,
+    vapor: vapor_solver.Result,
+    phase: phase_solver.Result,
+    heat: heat_solver.Result,
+    energy: ?EnergyDiagnostics = null,
+};
 
 pub const deferred_grid_carrier_count: usize = 12;
 
@@ -118,8 +137,8 @@ pub const MappedOptions = struct {
     mean_annual_temperature_k_by_cell: []const f64 = &.{},
     geothermal_minimum_source_depth_m: f64 = 10,
     geothermal_source_depth_below_profile_m: f64 = 1,
-    geothermal_conductivity_m_mj_per_h_k: f64 = 8.1e-3,
-    geothermal_flux_mj_per_m2_h: f64 = 2.052e-4,
+    geothermal_conductivity_m_megajoules_per_h_k: f64 = 8.1e-3,
+    geothermal_flux_megajoules_per_m2_h: f64 = 2.052e-4,
     water_table_air_fraction_threshold: f64 = 1.0e-3,
     active_layer_ice_fraction_threshold: f64 = 1.0e-6,
     dense_newton_max_components: usize,
@@ -144,6 +163,13 @@ pub fn advanceMapped(
     if (options.max_iterations == 0 or !std.math.isFinite(options.picard_relaxation) or options.picard_relaxation <= 0 or options.picard_relaxation > 1 or !std.math.isFinite(options.vapor_pore_tortuosity) or options.vapor_pore_tortuosity < 0 or !std.math.isFinite(options.osmotic_reflection_coefficient) or !std.math.isFinite(options.absolute_tolerance) or options.absolute_tolerance <= 0 or !std.math.isFinite(options.relative_tolerance) or options.relative_tolerance <= 0) return error.InvalidMappedSoilStepOptions;
     try science_module.validate(science);
     if (options.boundary_topology) |topology| try topology.refreshInternalWaterTable(grid, properties.matrix_bulk_volume_m3, properties.porosity_fraction, properties.matrix_air_entry_water_fraction, properties.layer_thickness_m, properties.layer_midpoint_depth_m, properties.layer_bottom_depth_m, options.water_table_air_fraction_threshold, options.active_layer_ice_fraction_threshold);
+    const dry_capacity = try allocator.alloc(f64, grid.layer_count);
+    defer allocator.free(dry_capacity);
+    for (dry_capacity, thermal.dry_solid_heat_capacity_megajoules_per_m3_k, properties.layer_volume_m3) |*capacity, density, volume| {
+        capacity.* = density * volume;
+        if (!std.math.isFinite(capacity.*) or capacity.* < 0)
+            return error.InvalidSoilDryHeatCapacity;
+    }
     return advance(allocator, grid, hydrology, faces, .{
         .water_geometry = .{ .source_path_length_m = geometry.source_path_length_m, .destination_path_length_m = geometry.destination_path_length_m, .face_area_m2 = geometry.face_area_m2, .wetting_depth_factor = geometry.wetting_depth_factor, .macropore_hydraulic_conductance_m_per_h_mpa = geometry.macropore_hydraulic_conductance_m_per_h_mpa },
         .water_properties = .{ .matrix_bulk_volume_m3 = properties.matrix_bulk_volume_m3, .matrix_air_entry_water_fraction = properties.matrix_air_entry_water_fraction, .retention_curve = properties.retention_curve, .mualem_van_genuchten_parameters = properties.mualem_van_genuchten_parameters, .macropore_mualem_van_genuchten_parameters = workspace.macropore_mualem_van_genuchten_parameters, .macropore_spacing_m = workspace.macropore_spacing_m, .macropore_radius_m = workspace.macropore_radius_m, .dual_domain_exchange_enabled = workspace.macropore_exchange_enabled, .dual_domain_geometry_factor = workspace.dual_domain_geometry_factor, .dual_domain_scaling_coefficient = workspace.dual_domain_scaling_coefficient, .frozen_hydraulic_impedance_exponent = workspace.frozen_hydraulic_impedance_exponent, .gravitational_water_potential_mpa_per_m = workspace.gravitational_water_potential_mpa_per_m, .gravitational_potential_mpa = workspace.gravitational_potential_mpa, .osmotic_potential_mpa = workspace.osmotic_potential_mpa, .matrix_hydraulic_conductivity_m2_per_h_mpa = properties.matrix_hydraulic_conductivity_m2_per_h_mpa, .rainfall_conductivity_multiplier = properties.rainfall_conductivity_multiplier, .matrix_external_source_m3_per_step = options.matrix_external_water_source_m3_per_step, .hydraulic_conductivity_class_count = properties.hydraulic_conductivity_class_count, .vertical_thickness_m = properties.layer_thickness_m, .osmotic_potential_multiplier = options.osmotic_reflection_coefficient, .boundary_topology = options.boundary_topology, .boundary_face_area_m2 = workspace.horizontal_face_area_m2, .boundary_macropore_hydraulic_conductivity_m2_per_h_mpa = workspace.macropore_hydraulic_conductivity_m2_per_h_mpa, .boundary_layer_volume_m3 = properties.layer_volume_m3, .boundary_layer_midpoint_depth_m = properties.layer_midpoint_depth_m, .boundary_layer_bottom_depth_m = properties.layer_bottom_depth_m },
@@ -151,12 +177,13 @@ pub fn advanceMapped(
         .vapor_geometry = .{ .source_path_length_m = geometry.source_path_length_m, .destination_path_length_m = geometry.destination_path_length_m, .face_area_m2 = geometry.face_area_m2 },
         .vapor_properties = .{ .vapor_diffusivity_m2_per_h = workspace.vapor_diffusivity_m2_per_h, .air_fraction = workspace.air_fraction, .porosity_fraction = properties.porosity_fraction, .tortuosity = options.vapor_pore_tortuosity },
         .vapor_options = .{ .max_iterations = options.max_iterations, .absolute_tolerance_m3 = options.absolute_tolerance, .relative_tolerance = options.relative_tolerance, .picard_relaxation = options.picard_relaxation },
-        .phase_properties = .{ .matrix_bulk_volume_m3 = properties.matrix_bulk_volume_m3, .retention_curve = properties.retention_curve, .mualem_van_genuchten_parameters = properties.mualem_van_genuchten_parameters, .macropore_mualem_van_genuchten_parameters = workspace.macropore_mualem_van_genuchten_parameters, .osmotic_potential_mpa = workspace.osmotic_potential_mpa, .saturation_water_potential_mpa = properties.saturation_water_potential_mpa, .heat_capacity_mj_per_k = workspace.heat_capacity_mj_per_k, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = workspace.saturated_lateral_matrix_conductivity_m2_per_h_mpa, .face_area_m2 = workspace.horizontal_face_area_m2, .macropore_spacing_m = workspace.macropore_spacing_m, .macropore_radius_m = workspace.macropore_radius_m, .pore_exchange_enabled = &.{}, .vapor = science.vapor_equilibrium, .freeze_thaw = science.freeze_thaw, .gravitational_water_potential_mpa_per_m = workspace.gravitational_water_potential_mpa_per_m, .liquid_water_heat_capacity_mj_per_m3_k = science.liquid_water_heat_capacity_mj_per_m3_k, .ice_heat_capacity_mj_per_m3_k = science.ice_heat_capacity_mj_per_m3_k },
-        .phase_options = .{ .max_iterations = options.max_iterations, .absolute_tolerance_m3 = options.absolute_tolerance, .relative_tolerance = options.relative_tolerance, .picard_relaxation = options.picard_relaxation },
+        .phase_properties = .{ .matrix_bulk_volume_m3 = properties.matrix_bulk_volume_m3, .retention_curve = properties.retention_curve, .mualem_van_genuchten_parameters = properties.mualem_van_genuchten_parameters, .macropore_mualem_van_genuchten_parameters = workspace.macropore_mualem_van_genuchten_parameters, .osmotic_potential_mpa = workspace.osmotic_potential_mpa, .saturation_water_potential_mpa = properties.saturation_water_potential_mpa, .heat_capacity_megajoules_per_k = workspace.heat_capacity_megajoules_per_k, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = workspace.saturated_lateral_matrix_conductivity_m2_per_h_mpa, .face_area_m2 = workspace.horizontal_face_area_m2, .macropore_spacing_m = workspace.macropore_spacing_m, .macropore_radius_m = workspace.macropore_radius_m, .pore_exchange_enabled = &.{}, .vapor = science.vapor_equilibrium, .freeze_thaw = science.freeze_thaw, .gravitational_water_potential_mpa_per_m = workspace.gravitational_water_potential_mpa_per_m, .liquid_water_heat_capacity_megajoules_per_m3_k = science.liquid_water_heat_capacity_megajoules_per_m3_k, .ice_heat_capacity_megajoules_per_m3_k = science.ice_heat_capacity_megajoules_per_m3_k },
+        .phase_options = .{ .max_iterations = options.max_iterations, .absolute_tolerance_m3 = options.absolute_tolerance, .absolute_temperature_tolerance_k = options.absolute_tolerance, .relative_tolerance = options.relative_tolerance, .picard_relaxation = options.picard_relaxation },
         .heat_geometry = .{ .source_path_length_m = geometry.source_path_length_m, .destination_path_length_m = geometry.destination_path_length_m, .face_area_m2 = geometry.face_area_m2 },
-        .heat_properties = .{ .heat_capacity_mj_per_k = workspace.heat_capacity_mj_per_k, .minimum_heat_capacity_mj_per_k = workspace.minimum_heat_capacity_mj_per_k, .bulk_density_megagrams_per_m3 = properties.bulk_density_megagrams_per_m3, .liquid_water_fraction = workspace.liquid_water_fraction, .ice_fraction = workspace.ice_fraction, .air_fraction = workspace.air_fraction, .fraction_of_pore_volume_air_filled = workspace.fraction_of_pore_volume_air_filled, .solid_conductivity_numerator_m_mj_per_h_k = thermal.solid_thermal_conductivity_numerator_m_mj_per_h_k, .solid_conductivity_denominator = thermal.solid_thermal_conductivity_denominator, .is_top_soil_layer = workspace.is_top_soil_layer, .top_snow_heat_capacity_mj_per_k = workspace.top_snow_heat_capacity_mj_per_k, .maximum_negligible_snow_heat_capacity_mj_per_k = workspace.maximum_negligible_snow_heat_capacity_mj_per_k, .snow_storage_heat_flux_mj = workspace.snow_storage_heat_flux_mj, .cell_heat_source_mj = workspace.cell_heat_source_mj, .liquid_water_heat_capacity_mj_per_m3_k = science.liquid_water_heat_capacity_mj_per_m3_k, .turbulence = science.heat_turbulence, .geothermal_boundary = if (options.geothermal_enabled_by_cell) |enabled_by_cell| .{ .topology = options.boundary_topology orelse return error.MissingGeothermalBoundaryTopology, .layer_bottom_depth_m = properties.layer_bottom_depth_m, .lower_face_area_m2 = workspace.horizontal_face_area_m2, .enabled_by_cell = enabled_by_cell, .mean_annual_temperature_k_by_cell = options.mean_annual_temperature_k_by_cell, .minimum_source_depth_m = options.geothermal_minimum_source_depth_m, .source_depth_below_profile_m = options.geothermal_source_depth_below_profile_m, .conductivity_m_mj_per_h_k = options.geothermal_conductivity_m_mj_per_h_k, .geothermal_flux_mj_per_m2_h = options.geothermal_flux_mj_per_m2_h } else null, .enthalpy_coupling = .{ .matrix_liquid_water_m3 = grid.matrix_liquid_water_m3, .matrix_ice_water_equivalent_m3 = grid.matrix_ice_water_m3, .porous_medium_volume_m3 = properties.matrix_bulk_volume_m3, .matrix_pore_capacity_m3 = grid.matrix_pore_capacity_m3, .mualem_van_genuchten = properties.mualem_van_genuchten_parameters, .gravitational_water_potential_mpa_per_m = workspace.gravitational_water_potential_mpa_per_m, .pure_water_melting_temperature_k = science.freeze_thaw.pure_water_freezing_temperature_k, .ice_water_equivalent_heat_capacity_mj_per_m3_k = science.ice_heat_capacity_mj_per_m3_k, .latent_heat_of_fusion_mj_per_m3 = science.freeze_thaw.latent_heat_of_fusion_mj_per_m3, .solver_options = .{ .max_iterations = options.max_iterations, .absolute_enthalpy_tolerance_mj = options.absolute_tolerance, .relative_enthalpy_tolerance = options.relative_tolerance }, .macropore_liquid_water_m3 = grid.macropore_liquid_water_m3, .macropore_ice_water_equivalent_m3 = grid.macropore_ice_water_m3, .macropore_porous_medium_volume_m3 = grid.macropore_pore_capacity_m3, .macropore_mualem_van_genuchten = workspace.macropore_mualem_van_genuchten_parameters } },
+        .heat_properties = .{ .heat_capacity_megajoules_per_k = workspace.heat_capacity_megajoules_per_k, .minimum_heat_capacity_megajoules_per_k = workspace.minimum_heat_capacity_megajoules_per_k, .bulk_density_megagrams_per_m3 = properties.bulk_density_megagrams_per_m3, .liquid_water_fraction = workspace.liquid_water_fraction, .ice_fraction = workspace.ice_fraction, .air_fraction = workspace.air_fraction, .fraction_of_pore_volume_air_filled = workspace.fraction_of_pore_volume_air_filled, .solid_conductivity_numerator_m_megajoules_per_h_k = thermal.solid_thermal_conductivity_numerator_m_megajoules_per_h_k, .solid_conductivity_denominator = thermal.solid_thermal_conductivity_denominator, .is_top_soil_layer = workspace.is_top_soil_layer, .top_snow_heat_capacity_megajoules_per_k = workspace.top_snow_heat_capacity_megajoules_per_k, .maximum_negligible_snow_heat_capacity_megajoules_per_k = workspace.maximum_negligible_snow_heat_capacity_megajoules_per_k, .snow_storage_heat_flux_megajoules = workspace.snow_storage_heat_flux_megajoules, .cell_heat_source_megajoules = workspace.cell_heat_source_megajoules, .liquid_water_heat_capacity_megajoules_per_m3_k = science.liquid_water_heat_capacity_megajoules_per_m3_k, .turbulence = science.heat_turbulence, .geothermal_boundary = if (options.geothermal_enabled_by_cell) |enabled_by_cell| .{ .topology = options.boundary_topology orelse return error.MissingGeothermalBoundaryTopology, .layer_bottom_depth_m = properties.layer_bottom_depth_m, .lower_face_area_m2 = workspace.horizontal_face_area_m2, .enabled_by_cell = enabled_by_cell, .mean_annual_temperature_k_by_cell = options.mean_annual_temperature_k_by_cell, .minimum_source_depth_m = options.geothermal_minimum_source_depth_m, .source_depth_below_profile_m = options.geothermal_source_depth_below_profile_m, .conductivity_m_megajoules_per_h_k = options.geothermal_conductivity_m_megajoules_per_h_k, .geothermal_flux_megajoules_per_m2_h = options.geothermal_flux_megajoules_per_m2_h } else null, .enthalpy_coupling = .{ .matrix_liquid_water_m3 = grid.matrix_liquid_water_m3, .matrix_ice_water_equivalent_m3 = grid.matrix_ice_water_m3, .porous_medium_volume_m3 = properties.matrix_bulk_volume_m3, .matrix_pore_capacity_m3 = grid.matrix_pore_capacity_m3, .mualem_van_genuchten = properties.mualem_van_genuchten_parameters, .gravitational_water_potential_mpa_per_m = workspace.gravitational_water_potential_mpa_per_m, .pure_water_melting_temperature_k = science.freeze_thaw.pure_water_freezing_temperature_k, .ice_water_equivalent_heat_capacity_megajoules_per_m3_k = science.ice_heat_capacity_megajoules_per_m3_k, .latent_heat_of_fusion_megajoules_per_m3 = science.freeze_thaw.latent_heat_of_fusion_megajoules_per_m3, .solver_options = .{ .max_iterations = options.max_iterations, .absolute_enthalpy_tolerance_megajoules = options.absolute_tolerance, .relative_enthalpy_tolerance = options.relative_tolerance }, .macropore_liquid_water_m3 = grid.macropore_liquid_water_m3, .macropore_ice_water_equivalent_m3 = grid.macropore_ice_water_m3, .macropore_porous_medium_volume_m3 = grid.macropore_pore_capacity_m3, .macropore_mualem_van_genuchten = workspace.macropore_mualem_van_genuchten_parameters } },
         .heat_options = .{ .max_iterations = options.max_iterations, .absolute_tolerance_k = options.absolute_tolerance, .relative_tolerance = options.relative_tolerance, .picard_relaxation = options.picard_relaxation, .maximum_newton_fraction = 8.0, .dense_newton_max_components = options.dense_newton_max_components },
         .heat_workspace = heat_workspace,
+        .dry_solid_heat_capacity_megajoules_per_k = dry_capacity,
     });
 }
 
@@ -166,14 +193,44 @@ pub fn advance(allocator: std.mem.Allocator, grid: *grid_module.GridState, hydro
     var snapshot = try Snapshot.capture(allocator, grid, hydrology, faces);
     defer snapshot.deinit();
     errdefer snapshot.restore(grid, hydrology, faces);
+    const diagnostics_enabled = inputs.dry_solid_heat_capacity_megajoules_per_k.len != 0;
+    if (diagnostics_enabled and inputs.dry_solid_heat_capacity_megajoules_per_k.len != grid.layer_count)
+        return error.SoilEnergyDiagnosticDimensionMismatch;
+    const stage_sensible_megajoules_by_cell = try allocator.alloc(f64, if (diagnostics_enabled) grid.layer_count else 0);
+    defer allocator.free(stage_sensible_megajoules_by_cell);
+    const ice_before_heat_m3 = try allocator.alloc(f64, if (diagnostics_enabled) grid.layer_count else 0);
+    defer allocator.free(ice_before_heat_m3);
+    if (diagnostics_enabled) try fillSensibleHeatByCell(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k);
     const water = try water_solver.solveAndBindTransportFaces(allocator, grid, hydrology, faces, inputs.water_geometry, inputs.water_properties, inputs.water_options);
+    const richards_energy_change = if (diagnostics_enabled)
+        try sensibleHeatChangeFromSnapshot(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k)
+    else
+        EnergyChange{};
     try deriveExternalWaterFluxes(grid, hydrology, faces, snapshot.grid_matrix_water, snapshot.grid_macro_water);
+    try validateAcceptedWaterBoundaryBalance(
+        grid,
+        hydrology,
+        snapshot.grid_matrix_water,
+        snapshot.grid_macro_water,
+        inputs.water_options.absolute_tolerance_m3,
+        inputs.water_options.relative_tolerance,
+    );
+    if (diagnostics_enabled) try fillSensibleHeatByCell(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k);
     const vapor = try vapor_solver.solveAndBindTransportFaces(allocator, grid, hydrology, faces, inputs.vapor_geometry, inputs.vapor_properties, inputs.vapor_options);
-    const latent_heat_mj = try allocator.alloc(f64, grid.layer_count);
-    defer allocator.free(latent_heat_mj);
+    const vapor_energy_change = if (diagnostics_enabled)
+        try sensibleHeatChangeFromSnapshot(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k)
+    else
+        EnergyChange{};
+    const latent_heat_megajoules = try allocator.alloc(f64, grid.layer_count);
+    defer allocator.free(latent_heat_megajoules);
     const pore_exchange_m3 = try allocator.alloc(f64, grid.layer_count);
     defer allocator.free(pore_exchange_m3);
-    const phase_result = try phase_solver.solve(allocator, grid, inputs.phase_properties, .{ .latent_heat_mj = latent_heat_mj, .macropore_to_matrix_water_m3 = pore_exchange_m3 }, inputs.phase_options);
+    if (diagnostics_enabled) try fillSensibleHeatByCell(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k);
+    const phase_result = try phase_solver.solve(allocator, grid, inputs.phase_properties, .{ .latent_heat_megajoules = latent_heat_megajoules, .macropore_to_matrix_water_m3 = pore_exchange_m3 }, inputs.phase_options);
+    const phase_energy_change = if (diagnostics_enabled)
+        try sensibleHeatChangeFromSnapshot(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k)
+    else
+        EnergyChange{};
     @memcpy(hydrology.micropore_water_volume_m3, grid.matrix_liquid_water_m3);
     @memcpy(hydrology.macropore_water_volume_m3, grid.macropore_liquid_water_m3);
     @memcpy(hydrology.matrix_air_volume_m3, grid.matrix_air_volume_m3);
@@ -182,10 +239,15 @@ pub fn advance(allocator: std.mem.Allocator, grid: *grid_module.GridState, hydro
     @memcpy(hydrology.water_vapor_volume_m3, grid.water_vapor_volume_m3);
     // The phase solver's sixth coordinate is already the WATSUB ENGY1/VHCP1
     // endpoint temperature and therefore already contains condensation and
-    // fusion enthalpy. Passing `latent_heat_mj` again as a heat source would
+    // fusion enthalpy. Passing `latent_heat_megajoules` again as a heat source would
     // apply both latent terms twice. The spatial heat solve starts from that
     // phase-consistent temperature and adds only non-phase sources,
     // conduction, and convective carrier heat.
+    if (diagnostics_enabled) try fillSensibleHeatByCell(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k);
+    if (diagnostics_enabled) {
+        for (ice_before_heat_m3, grid.matrix_ice_water_m3, grid.macropore_ice_water_m3) |*before, matrix, macropore|
+            before.* = matrix + macropore;
+    }
     const heat_result = if (inputs.heat_workspace) |heat_workspace|
         try heat_solver.solveAndBindTransportFacesWithWorkspace(
             heat_workspace,
@@ -206,6 +268,15 @@ pub fn advance(allocator: std.mem.Allocator, grid: *grid_module.GridState, hydro
             inputs.heat_properties,
             inputs.heat_options,
         );
+    const spatial_heat_energy_change = if (diagnostics_enabled)
+        try sensibleHeatChangeFromSnapshot(stage_sensible_megajoules_by_cell, grid, inputs.dry_solid_heat_capacity_megajoules_per_k, inputs.phase_properties.liquid_water_heat_capacity_megajoules_per_m3_k, inputs.phase_properties.ice_heat_capacity_megajoules_per_m3_k)
+    else
+        EnergyChange{};
+    var heat_solver_ice_change_m3: f64 = 0;
+    if (diagnostics_enabled) {
+        for (ice_before_heat_m3, grid.matrix_ice_water_m3, grid.macropore_ice_water_m3) |before, matrix, macropore|
+            heat_solver_ice_change_m3 += matrix + macropore - before;
+    }
     // The mapped heat residual performs the final Dall'Amico enthalpy
     // repartition at its accepted temperature. Publish that atomic phase
     // state instead of retaining the pre-conduction phase snapshot.
@@ -215,7 +286,66 @@ pub fn advance(allocator: std.mem.Allocator, grid: *grid_module.GridState, hydro
     @memcpy(hydrology.macropore_air_volume_m3, grid.macropore_air_volume_m3);
     @memcpy(hydrology.air_volume_m3, grid.air_volume_m3);
     try publishAcceptedIceVolumeChanges(hydrology, snapshot.grid_matrix_ice, snapshot.grid_macro_ice, grid.matrix_ice_water_m3, grid.macropore_ice_water_m3);
-    return .{ .water = water, .vapor = vapor, .phase = phase_result, .heat = heat_result };
+    var phase_latent_heat_megajoules: f64 = 0;
+    for (latent_heat_megajoules) |value| phase_latent_heat_megajoules += value;
+    return .{
+        .water = water,
+        .vapor = vapor,
+        .phase = phase_result,
+        .heat = heat_result,
+        .energy = if (diagnostics_enabled) .{
+            .richards_sensible_change_megajoules = richards_energy_change.signed_megajoules,
+            .vapor_transport_sensible_change_megajoules = vapor_energy_change.signed_megajoules,
+            .phase_sensible_change_megajoules = phase_energy_change.signed_megajoules,
+            .phase_absolute_sensible_change_megajoules = phase_energy_change.absolute_megajoules,
+            .spatial_heat_sensible_change_megajoules = spatial_heat_energy_change.signed_megajoules,
+            .phase_latent_heat_megajoules = phase_latent_heat_megajoules,
+            .heat_solver_freeze_thaw_latent_megajoules = inputs.phase_properties.freeze_thaw.latent_heat_of_fusion_megajoules_per_m3 * heat_solver_ice_change_m3,
+        } else null,
+    };
+}
+
+fn fillSensibleHeatByCell(
+    result_megajoules: []f64,
+    grid: *const grid_module.GridState,
+    dry_solid_heat_capacity_megajoules_per_k: []const f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+) !void {
+    if (result_megajoules.len != grid.layer_count) return error.SoilEnergyDiagnosticDimensionMismatch;
+    for (0..grid.layer_count) |cell| {
+        const capacity_megajoules_per_k = dry_solid_heat_capacity_megajoules_per_k[cell] +
+            liquid_water_heat_capacity_megajoules_per_m3_k *
+                (grid.matrix_liquid_water_m3[cell] + grid.macropore_liquid_water_m3[cell] + grid.water_vapor_volume_m3[cell]) +
+            ice_heat_capacity_megajoules_per_m3_k *
+                (grid.matrix_ice_water_m3[cell] + grid.macropore_ice_water_m3[cell]);
+        result_megajoules[cell] = capacity_megajoules_per_k * grid.soil_temperature_k[cell];
+        if (!std.math.isFinite(result_megajoules[cell])) return error.NonFiniteSoilEnergyDiagnostic;
+    }
+}
+
+const EnergyChange = struct { signed_megajoules: f64 = 0, absolute_megajoules: f64 = 0 };
+
+fn sensibleHeatChangeFromSnapshot(
+    before_megajoules_by_cell: []const f64,
+    grid: *const grid_module.GridState,
+    dry_solid_heat_capacity_megajoules_per_k: []const f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+) !EnergyChange {
+    var result: EnergyChange = .{};
+    for (0..grid.layer_count) |cell| {
+        const capacity_megajoules_per_k = dry_solid_heat_capacity_megajoules_per_k[cell] +
+            liquid_water_heat_capacity_megajoules_per_m3_k *
+                (grid.matrix_liquid_water_m3[cell] + grid.macropore_liquid_water_m3[cell] + grid.water_vapor_volume_m3[cell]) +
+            ice_heat_capacity_megajoules_per_m3_k *
+                (grid.matrix_ice_water_m3[cell] + grid.macropore_ice_water_m3[cell]);
+        const change_megajoules = capacity_megajoules_per_k * grid.soil_temperature_k[cell] - before_megajoules_by_cell[cell];
+        result.signed_megajoules += change_megajoules;
+        result.absolute_megajoules += @abs(change_megajoules);
+    }
+    if (!std.math.isFinite(result.signed_megajoules) or !std.math.isFinite(result.absolute_megajoules)) return error.NonFiniteSoilEnergyDiagnostic;
+    return result;
 }
 
 fn publishAcceptedIceVolumeChanges(hydrology: *hydrology_module.State, initial_matrix_m3: []const f64, initial_macropore_m3: []const f64, final_matrix_m3: []const f64, final_macropore_m3: []const f64) !void {
@@ -311,7 +441,7 @@ const Snapshot = struct {
         @memcpy(hydrology.micropore_face_flux_m3_per_step, self.hydrology_matrix_flux);
         @memcpy(hydrology.macropore_face_flux_m3_per_step, self.hydrology_macro_flux);
         @memcpy(hydrology.vapor_face_flux_m3_per_step, self.hydrology_vapor_flux);
-        @memcpy(hydrology.heat_face_flux_mj_per_step, self.hydrology_heat_flux);
+        @memcpy(hydrology.heat_face_flux_megajoules_per_step, self.hydrology_heat_flux);
         @memcpy(hydrology.micropore_external_water_flux_m3_per_step, self.hydrology_matrix_external_flux);
         @memcpy(hydrology.macropore_external_water_flux_m3_per_step, self.hydrology_macro_external_flux);
         @memcpy(hydrology.matrix_ice_volume_change_m3_per_step, self.hydrology_matrix_ice_change);
@@ -320,7 +450,7 @@ const Snapshot = struct {
         @memcpy(faces.micropore_water_flux_m3_per_step, self.face_matrix_flux);
         @memcpy(faces.macropore_water_flux_m3_per_step, self.face_macro_flux);
         @memcpy(faces.vapor_flux_m3_per_step, self.face_vapor_flux);
-        @memcpy(faces.heat_flux_mj_per_step, self.face_heat_flux);
+        @memcpy(faces.heat_flux_megajoules_per_step, self.face_heat_flux);
         @memcpy(faces.micropore_faces, self.micropore_faces);
         @memcpy(faces.macropore_faces, self.macropore_faces);
     }
@@ -333,7 +463,7 @@ const Snapshot = struct {
         @memcpy(hydrology.micropore_face_flux_m3_per_step, self.hydrology_matrix_flux);
         @memcpy(hydrology.macropore_face_flux_m3_per_step, self.hydrology_macro_flux);
         @memcpy(hydrology.vapor_face_flux_m3_per_step, self.hydrology_vapor_flux);
-        @memcpy(hydrology.heat_face_flux_mj_per_step, self.hydrology_heat_flux);
+        @memcpy(hydrology.heat_face_flux_megajoules_per_step, self.hydrology_heat_flux);
         @memcpy(hydrology.micropore_external_water_flux_m3_per_step, self.hydrology_matrix_external_flux);
         @memcpy(hydrology.macropore_external_water_flux_m3_per_step, self.hydrology_macro_external_flux);
         @memcpy(hydrology.matrix_ice_volume_change_m3_per_step, self.hydrology_matrix_ice_change);
@@ -342,7 +472,7 @@ const Snapshot = struct {
         @memcpy(faces.micropore_water_flux_m3_per_step, self.face_matrix_flux);
         @memcpy(faces.macropore_water_flux_m3_per_step, self.face_macro_flux);
         @memcpy(faces.vapor_flux_m3_per_step, self.face_vapor_flux);
-        @memcpy(faces.heat_flux_mj_per_step, self.face_heat_flux);
+        @memcpy(faces.heat_flux_megajoules_per_step, self.face_heat_flux);
         @memcpy(faces.micropore_faces, self.micropore_faces);
         @memcpy(faces.macropore_faces, self.macropore_faces);
     }
@@ -404,7 +534,7 @@ fn snapshotF64Source(comptime name: []const u8, grid: *const grid_module.GridSta
     if (comptime std.mem.eql(u8, name, "hydrology_matrix_flux")) return hydrology.micropore_face_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "hydrology_macro_flux")) return hydrology.macropore_face_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "hydrology_vapor_flux")) return hydrology.vapor_face_flux_m3_per_step;
-    if (comptime std.mem.eql(u8, name, "hydrology_heat_flux")) return hydrology.heat_face_flux_mj_per_step;
+    if (comptime std.mem.eql(u8, name, "hydrology_heat_flux")) return hydrology.heat_face_flux_megajoules_per_step;
     if (comptime std.mem.eql(u8, name, "hydrology_matrix_external_flux")) return hydrology.micropore_external_water_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "hydrology_macro_external_flux")) return hydrology.macropore_external_water_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "hydrology_matrix_ice_change")) return hydrology.matrix_ice_volume_change_m3_per_step;
@@ -413,7 +543,7 @@ fn snapshotF64Source(comptime name: []const u8, grid: *const grid_module.GridSta
     if (comptime std.mem.eql(u8, name, "face_matrix_flux")) return faces.micropore_water_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "face_macro_flux")) return faces.macropore_water_flux_m3_per_step;
     if (comptime std.mem.eql(u8, name, "face_vapor_flux")) return faces.vapor_flux_m3_per_step;
-    if (comptime std.mem.eql(u8, name, "face_heat_flux")) return faces.heat_flux_mj_per_step;
+    if (comptime std.mem.eql(u8, name, "face_heat_flux")) return faces.heat_flux_megajoules_per_step;
     unreachable;
 }
 
@@ -441,8 +571,26 @@ fn deriveExternalWaterFluxes(grid: *const grid_module.GridState, hydrology: *hyd
     }
 }
 
+fn validateAcceptedWaterBoundaryBalance(grid: *const grid_module.GridState, hydrology: *const hydrology_module.State, initial_matrix_water_m3: []const f64, initial_macropore_water_m3: []const f64, absolute_tolerance_m3: f64, relative_tolerance: f64) !void {
+    var storage_change_m3: f64 = 0;
+    var outward_boundary_m3: f64 = 0;
+    for (0..grid.cell_count) |cell| for (0..grid.active_soil_layer_count[cell]) |layer| {
+        const index = try grid.layerIndex(cell, layer);
+        storage_change_m3 += grid.matrix_liquid_water_m3[index] - initial_matrix_water_m3[index] +
+            grid.macropore_liquid_water_m3[index] - initial_macropore_water_m3[index];
+        outward_boundary_m3 += hydrology.micropore_external_water_flux_m3_per_step[index] +
+            hydrology.macropore_external_water_flux_m3_per_step[index];
+    };
+    const residual_m3 = storage_change_m3 + outward_boundary_m3;
+    const scale_m3 = @max(1, @abs(storage_change_m3) + @abs(outward_boundary_m3));
+    if (!std.math.isFinite(residual_m3) or @abs(residual_m3) > absolute_tolerance_m3 + relative_tolerance * scale_m3) {
+        std.log.err("accepted Richards water boundary imbalance: storage_change_m3={e} outward_boundary_m3={e} residual_m3={e}", .{ storage_change_m3, outward_boundary_m3, residual_m3 });
+        return error.AcceptedRichardsWaterBoundaryImbalance;
+    }
+}
+
 test "external water flux is separated from conservative internal movement" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     @memset(grid.active_soil_layer_count, 1);
@@ -465,6 +613,26 @@ test "external water flux is separated from conservative internal movement" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.01), hydrology.macropore_external_water_flux_m3_per_step[1], 1e-14);
 }
 
+test "soil stage diagnostic reconstructs live sensible energy" {
+    const cfg = try @import("config.zig").SimulationConfig.init(
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 },
+        .{ .worker_threads = 1, .tile_cells = 1 },
+        .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 4 },
+    );
+    var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
+    defer grid.deinit();
+    grid.matrix_liquid_water_m3[0] = 2;
+    grid.macropore_liquid_water_m3[0] = 3;
+    grid.water_vapor_volume_m3[0] = 0.5;
+    grid.matrix_ice_water_m3[0] = 4;
+    grid.macropore_ice_water_m3[0] = 1;
+    grid.soil_temperature_k[0] = 280;
+    const expected = (10 + 4.19 * 5.5 + 1.9274 * 5) * 280;
+    var actual = [_]f64{0};
+    try fillSensibleHeatByCell(&actual, &grid, &.{10}, 4.19, 1.9274);
+    try std.testing.expectApproxEqAbs(expected, actual[0], 1e-10);
+}
+
 test "accepted WATSUB ice ledger publishes REDIST DVOLI atomically" {
     var hydrology = try hydrology_module.State.init(std.testing.allocator, 1, 1, 2, 1);
     defer hydrology.deinit();
@@ -482,7 +650,7 @@ test "accepted WATSUB ice ledger publishes REDIST DVOLI atomically" {
 
 test "late WATSUB failure rolls back water vapor heat and shared faces" {
     const retention = @import("soil_water_retention.zig");
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.35;
@@ -533,10 +701,10 @@ test "late WATSUB failure rolls back water vapor heat and shared faces" {
         .vapor_geometry = .{ .source_path_length_m = &one_face, .destination_path_length_m = &one_face, .face_area_m2 = &one_face },
         .vapor_properties = .{ .vapor_diffusivity_m2_per_h = &one_cell, .air_fraction = &half_cell, .porosity_fraction = &half_cell, .tortuosity = 1 },
         .vapor_options = .{ .max_iterations = 20 },
-        .phase_properties = .{ .matrix_bulk_volume_m3 = &one_cell, .retention_curve = &curves, .mualem_van_genuchten_parameters = &matrix_parameters, .macropore_mualem_van_genuchten_parameters = &macropore_parameters, .osmotic_potential_mpa = &zero_cell, .saturation_water_potential_mpa = &saturation_potential, .heat_capacity_mj_per_k = &phase_heat_capacity, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = &one_cell, .face_area_m2 = &one_cell, .macropore_spacing_m = &one_cell, .macropore_radius_m = &one_cell, .pore_exchange_enabled = &pore_exchange_disabled, .vapor = .{ .vapor_density_temperature_coefficient = 2.173e-3, .molecular_weight_ratio = 0.61, .clausius_clapeyron_coefficient_k = 5360, .reference_inverse_temperature_per_k = 3.661e-3, .water_molar_mass_g_per_mol = 18, .gas_constant_j_per_mol_k = 8.3143, .latent_heat_of_vaporization_mj_per_m3 = 2450 }, .freeze_thaw = .{ .freezing_potential_numerator_k_mpa = 9.0959e4, .latent_heat_of_fusion_mj_per_m3 = 333, .ice_density_megagrams_per_m3 = 0.917, .heat_capacity_temperature_feedback_per_k = 6.2913e-3, .pure_water_freezing_temperature_k = 273.15 }, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .ice_heat_capacity_mj_per_m3_k = 1.9274 },
+        .phase_properties = .{ .matrix_bulk_volume_m3 = &one_cell, .retention_curve = &curves, .mualem_van_genuchten_parameters = &matrix_parameters, .macropore_mualem_van_genuchten_parameters = &macropore_parameters, .osmotic_potential_mpa = &zero_cell, .saturation_water_potential_mpa = &saturation_potential, .heat_capacity_megajoules_per_k = &phase_heat_capacity, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = &one_cell, .face_area_m2 = &one_cell, .macropore_spacing_m = &one_cell, .macropore_radius_m = &one_cell, .pore_exchange_enabled = &pore_exchange_disabled, .vapor = .{ .vapor_density_temperature_coefficient = 2.173e-3, .molecular_weight_ratio = 0.61, .clausius_clapeyron_coefficient_k = 5360, .reference_inverse_temperature_per_k = 3.661e-3, .water_molar_mass_g_per_mol = 18, .gas_constant_j_per_mol_k = 8.3143, .latent_heat_of_vaporization_megajoules_per_m3 = 2450 }, .freeze_thaw = .{ .freezing_potential_numerator_k_mpa = 9.0959e4, .latent_heat_of_fusion_megajoules_per_m3 = 333, .ice_density_megagrams_per_m3 = 0.917, .heat_capacity_temperature_feedback_per_k = 6.2913e-3, .pure_water_freezing_temperature_k = 273.15 }, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .ice_heat_capacity_megajoules_per_m3_k = 1.9274 },
         .phase_options = .{ .max_iterations = 20 },
         .heat_geometry = .{ .source_path_length_m = &one_face, .destination_path_length_m = &one_face, .face_area_m2 = &one_face },
-        .heat_properties = .{ .heat_capacity_mj_per_k = &bad_capacity, .minimum_heat_capacity_mj_per_k = &zero_cell, .bulk_density_megagrams_per_m3 = &one_cell, .liquid_water_fraction = &half_cell, .ice_fraction = &zero_cell, .air_fraction = &half_cell, .fraction_of_pore_volume_air_filled = &half_cell, .solid_conductivity_numerator_m_mj_per_h_k = &one_cell, .solid_conductivity_denominator = &one_cell, .is_top_soil_layer = &bools, .top_snow_heat_capacity_mj_per_k = &zero_cell, .maximum_negligible_snow_heat_capacity_mj_per_k = &zero_cell, .snow_storage_heat_flux_mj = &zero_cell, .cell_heat_source_mj = &zero_cell, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .turbulence = .{ .water_fraction_threshold = 1, .air_fraction_threshold = 1, .water_rayleigh_coefficient = 0, .air_rayleigh_coefficient = 0, .water_nusselt_denominator = 1, .air_nusselt_denominator = 1 } },
+        .heat_properties = .{ .heat_capacity_megajoules_per_k = &bad_capacity, .minimum_heat_capacity_megajoules_per_k = &zero_cell, .bulk_density_megagrams_per_m3 = &one_cell, .liquid_water_fraction = &half_cell, .ice_fraction = &zero_cell, .air_fraction = &half_cell, .fraction_of_pore_volume_air_filled = &half_cell, .solid_conductivity_numerator_m_megajoules_per_h_k = &one_cell, .solid_conductivity_denominator = &one_cell, .is_top_soil_layer = &bools, .top_snow_heat_capacity_megajoules_per_k = &zero_cell, .maximum_negligible_snow_heat_capacity_megajoules_per_k = &zero_cell, .snow_storage_heat_flux_megajoules = &zero_cell, .cell_heat_source_megajoules = &zero_cell, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .turbulence = .{ .water_fraction_threshold = 1, .air_fraction_threshold = 1, .water_rayleigh_coefficient = 0, .air_rayleigh_coefficient = 0, .water_nusselt_denominator = 1, .air_nusselt_denominator = 1 } },
         .heat_options = .{ .max_iterations = 20 },
     }));
     try std.testing.expectEqual(before_water, grid.matrix_liquid_water_m3[0]);

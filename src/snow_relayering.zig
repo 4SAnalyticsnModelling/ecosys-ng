@@ -21,7 +21,7 @@ pub fn apply(allocator: std.mem.Allocator, state: *snow.State, negligible_volume
     defer allocator.free(ice);
     const temperature = try allocator.dupe(f64, state.temperature_k);
     defer allocator.free(temperature);
-    const heat_capacity = try allocator.dupe(f64, state.heat_capacity_mj_per_k);
+    const heat_capacity = try allocator.dupe(f64, state.heat_capacity_megajoules_per_k);
     defer allocator.free(heat_capacity);
     const amount_g = try allocator.dupe(f64, state.amount_g);
     defer allocator.free(amount_g);
@@ -31,8 +31,8 @@ pub fn apply(allocator: std.mem.Allocator, state: *snow.State, negligible_volume
         for (0..state.layer_capacity -| 1) |layer| {
             const current = cell * state.layer_capacity + layer;
             const lower = current + 1;
-            const density = state.snow_density_Mg_per_m3[current];
-            const lower_density = state.snow_density_Mg_per_m3[lower];
+            const density = state.snow_density_megagrams_per_m3[current];
+            const lower_density = state.snow_density_megagrams_per_m3[lower];
             inline for (.{ density, lower_density, state.target_layer_volume_m3[current], solid[current], liquid[current], vapor[current], ice[current], temperature[current], temperature[lower], heat_capacity[current], heat_capacity[lower] }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSnowRelayeringState;
             if (density <= 0 or lower_density <= 0 or state.target_layer_volume_m3[current] < 0 or solid[current] < 0 or liquid[current] < 0 or vapor[current] < 0 or ice[current] < 0 or temperature[current] <= 0 or temperature[lower] <= 0 or heat_capacity[current] < 0 or heat_capacity[lower] < 0) return error.InvalidSnowRelayeringState;
             const current_volume_m3 = solid[current] / density + liquid[current] + ice[current];
@@ -53,8 +53,8 @@ pub fn apply(allocator: std.mem.Allocator, state: *snow.State, negligible_volume
             } else continue;
             if (!std.math.isFinite(fraction) or fraction <= 0 or fraction > 1) return error.InvalidSnowRelayeringFraction;
             const retained = 1 - fraction;
-            const source_energy_mj = heat_capacity[source] * temperature[source];
-            const destination_energy_mj = heat_capacity[destination] * temperature[destination];
+            const source_energy_megajoules = heat_capacity[source] * temperature[source];
+            const destination_energy_megajoules = heat_capacity[destination] * temperature[destination];
             solid[destination] += fraction * solid[source];
             liquid[destination] += fraction * liquid[source];
             vapor[destination] += fraction * vapor[source];
@@ -65,8 +65,8 @@ pub fn apply(allocator: std.mem.Allocator, state: *snow.State, negligible_volume
             ice[source] *= retained;
             heat_capacity[destination] = 2.095 * solid[destination] + 4.19 * (liquid[destination] + vapor[destination]) + 1.9274 * ice[destination];
             heat_capacity[source] = 2.095 * solid[source] + 4.19 * (liquid[source] + vapor[source]) + 1.9274 * ice[source];
-            if (heat_capacity[destination] > negligible_volume_m3) temperature[destination] = (destination_energy_mj + fraction * source_energy_mj) / heat_capacity[destination] else temperature[destination] = temperature[source];
-            if (heat_capacity[source] > negligible_volume_m3) temperature[source] = retained * source_energy_mj / heat_capacity[source] else temperature[source] = temperature[destination];
+            if (heat_capacity[destination] > negligible_volume_m3) temperature[destination] = (destination_energy_megajoules + fraction * source_energy_megajoules) / heat_capacity[destination] else temperature[destination] = temperature[source];
+            if (heat_capacity[source] > negligible_volume_m3) temperature[source] = retained * source_energy_megajoules / heat_capacity[source] else temperature[source] = temperature[destination];
             for (0..snow.species_count) |species| {
                 const source_amount = source * snow.species_count + species;
                 const destination_amount = destination * snow.species_count + species;
@@ -83,7 +83,7 @@ pub fn apply(allocator: std.mem.Allocator, state: *snow.State, negligible_volume
     @memcpy(state.vapor_water_equivalent_m3, vapor);
     @memcpy(state.ice_volume_m3, ice);
     @memcpy(state.temperature_k, temperature);
-    @memcpy(state.heat_capacity_mj_per_k, heat_capacity);
+    @memcpy(state.heat_capacity_megajoules_per_k, heat_capacity);
     @memcpy(state.amount_g, amount_g);
     for (state.active, solid, liquid, vapor, ice) |*active, solid_m3, liquid_m3, vapor_m3, ice_m3| active.* = solid_m3 + liquid_m3 + vapor_m3 + ice_m3 > negligible_volume_m3;
     state.refreshAllGeometry();
@@ -101,14 +101,14 @@ test "runtime relayering conserves physical content solutes and energy" {
     state.refreshAllGeometry();
     var water_before: f64 = 0;
     var energy_before: f64 = 0;
-    for (state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.heat_capacity_mj_per_k, state.temperature_k) |solid_m3, liquid_m3, vapor_m3, ice_m3, capacity, temperature_k| {
+    for (state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.heat_capacity_megajoules_per_k, state.temperature_k) |solid_m3, liquid_m3, vapor_m3, ice_m3, capacity, temperature_k| {
         water_before += solid_m3 + liquid_m3 + vapor_m3 + ice_m3;
         energy_before += capacity * temperature_k;
     }
     const report = try apply(std.testing.allocator, &state, 1e-15);
     var water_after: f64 = 0;
     var energy_after: f64 = 0;
-    for (state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.heat_capacity_mj_per_k, state.temperature_k) |solid_m3, liquid_m3, vapor_m3, ice_m3, capacity, temperature_k| {
+    for (state.solid_snow_water_equivalent_m3, state.liquid_water_volume_m3, state.vapor_water_equivalent_m3, state.ice_volume_m3, state.heat_capacity_megajoules_per_k, state.temperature_k) |solid_m3, liquid_m3, vapor_m3, ice_m3, capacity, temperature_k| {
         water_after += solid_m3 + liquid_m3 + vapor_m3 + ice_m3;
         energy_after += capacity * temperature_k;
     }

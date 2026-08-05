@@ -10,8 +10,8 @@ pub const LayerState = struct {
     dissolved_organic_nitrogen_g: []f64, // XOQNS
     dissolved_organic_phosphorus_g: []f64, // XOQPS
     dissolved_acetate_g: []f64, // XOQAS
-    previous_combustion_heat_mj_timestep: f64, // HCBFX
-    current_combustion_heat_mj_timestep: f64, // HCBFL
+    previous_combustion_heat_megajoules_timestep: f64, // HCBFX
+    current_combustion_heat_megajoules_timestep: f64, // HCBFL
     root_combustion_g_c_timestep: f64, // RCGSK
     oxygen_consumption_g_o_timestep: f64, // ROGOX
     carbon_dioxide_g_c_timestep: f64, // RCGOX
@@ -44,8 +44,8 @@ pub const Dimensions = struct {
 };
 
 pub const GridCombustionHeat = struct {
-    previous_mj_timestep: f64, // HCBFH
-    current_mj_timestep: f64, // HCBFG
+    previous_megajoules_timestep: f64, // HCBFH
+    current_megajoules_timestep: f64, // HCBFG
 };
 
 pub const ResetError = error{
@@ -61,7 +61,7 @@ pub fn reset(
     grid_combustion_heat: *GridCombustionHeat,
     layers: []LayerState,
 ) ResetError!void {
-    if (!std.math.isFinite(grid_combustion_heat.current_mj_timestep)) {
+    if (!std.math.isFinite(grid_combustion_heat.current_megajoules_timestep)) {
         return error.NonFiniteCombustionHeat;
     }
     for (layers, 0..) |layer, layer_index| {
@@ -82,13 +82,13 @@ pub fn reset(
         {
             return error.DimensionMismatch;
         }
-        if (!std.math.isFinite(layer.current_combustion_heat_mj_timestep)) {
+        if (!std.math.isFinite(layer.current_combustion_heat_megajoules_timestep)) {
             return error.NonFiniteCombustionHeat;
         }
     }
 
-    grid_combustion_heat.previous_mj_timestep = grid_combustion_heat.current_mj_timestep;
-    grid_combustion_heat.current_mj_timestep = 0.0;
+    grid_combustion_heat.previous_megajoules_timestep = grid_combustion_heat.current_megajoules_timestep;
+    grid_combustion_heat.current_megajoules_timestep = 0.0;
     for (layers, 0..) |*layer, layer_index| {
         @memset(layer.carbon_transfer_g, 0.0);
         @memset(layer.nitrogen_transfer_g, 0.0);
@@ -97,8 +97,8 @@ pub fn reset(
         @memset(layer.dissolved_organic_nitrogen_g, 0.0);
         @memset(layer.dissolved_organic_phosphorus_g, 0.0);
         @memset(layer.dissolved_acetate_g, 0.0);
-        layer.previous_combustion_heat_mj_timestep = layer.current_combustion_heat_mj_timestep;
-        layer.current_combustion_heat_mj_timestep = 0.0;
+        layer.previous_combustion_heat_megajoules_timestep = layer.current_combustion_heat_megajoules_timestep;
+        layer.current_combustion_heat_megajoules_timestep = 0.0;
         inline for (std.meta.fields(LayerState)[9..24]) |field| {
             @field(layer, field.name) = 0.0;
         }
@@ -147,15 +147,15 @@ test "runtime transfer pools layers and solver iterations are reset" {
     defer for (layers) |layer| inline for (std.meta.fields(LayerState)) |field| {
         if (field.type == []f64) allocator.free(@field(layer, field.name));
     };
-    var heat = GridCombustionHeat{ .previous_mj_timestep = 1.0, .current_mj_timestep = 7.0 };
+    var heat = GridCombustionHeat{ .previous_megajoules_timestep = 1.0, .current_megajoules_timestep = 7.0 };
 
     try reset(.dynamic_transport, dimensions, &heat, layers);
 
-    try std.testing.expectEqual(@as(f64, 7.0), heat.previous_mj_timestep);
-    try std.testing.expectEqual(@as(f64, 0.0), heat.current_mj_timestep);
+    try std.testing.expectEqual(@as(f64, 7.0), heat.previous_megajoules_timestep);
+    try std.testing.expectEqual(@as(f64, 0.0), heat.current_megajoules_timestep);
     for (layers) |layer| {
-        try std.testing.expectEqual(@as(f64, 5.0), layer.previous_combustion_heat_mj_timestep);
-        try std.testing.expectEqual(@as(f64, 0.0), layer.current_combustion_heat_mj_timestep);
+        try std.testing.expectEqual(@as(f64, 5.0), layer.previous_combustion_heat_megajoules_timestep);
+        try std.testing.expectEqual(@as(f64, 0.0), layer.current_combustion_heat_megajoules_timestep);
         for (layer.respiration_iteration_workspace) |value| {
             try std.testing.expectEqual(@as(f64, 0.0), value);
         }

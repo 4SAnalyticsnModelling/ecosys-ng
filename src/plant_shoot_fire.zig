@@ -49,15 +49,15 @@ pub fn apply(
     oxygen_concentration_umol_per_mol: f64,
     methane_concentration_umol_per_mol: f64,
     oxygen_concentration_g_per_m3: f64,
-    delayed_live_combustion_heat_mj: []f64,
-    delayed_standing_dead_combustion_heat_mj: []f64,
+    delayed_live_combustion_heat_megajoules: []f64,
+    delayed_standing_dead_combustion_heat_megajoules: []f64,
     surface_organic: *SoilOrganic.State,
 ) !void {
     try parameters.validate();
     const plant_count = canopy.cell_count * canopy.species_count;
     if (controls.biomass_turnover_type.len != plant_count or controls.root_profile_type.len != plant_count or roots.plant_count != plant_count) return error.ShootFirePlantDimensionMismatch;
     if (cell_area_m2.len != canopy.cell_count or fire_active_this_hour.len != canopy.cell_count or canopy_air_temperature_k.len != canopy.cell_count or canopy_air_volume_m3.len != canopy.cell_count) return error.ShootFireCellDimensionMismatch;
-    if (delayed_live_combustion_heat_mj.len != plant_count or delayed_standing_dead_combustion_heat_mj.len != plant_count) return error.ShootFirePlantDimensionMismatch;
+    if (delayed_live_combustion_heat_megajoules.len != plant_count or delayed_standing_dead_combustion_heat_megajoules.len != plant_count) return error.ShootFirePlantDimensionMismatch;
     if (surface_organic.layer_count != canopy.cell_count) return error.ShootFireSurfaceOrganicDimensionMismatch;
     if (!std.math.isFinite(timestep_h) or timestep_h <= 0) return error.InvalidShootFireInput;
     inline for (.{ oxygen_concentration_umol_per_mol, methane_concentration_umol_per_mol, oxygen_concentration_g_per_m3 }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidShootFireInput;
@@ -71,7 +71,7 @@ pub fn apply(
     @memset(canopy.plant_fire_methane_emission_g_c_per_h, 0);
     @memset(canopy.plant_fire_oxygen_consumption_g_o_per_h, 0);
     @memset(canopy.plant_fire_charcoal_production_g_c_per_h, 0);
-    @memset(canopy.plant_fire_heat_release_mj_per_h, 0);
+    @memset(canopy.plant_fire_heat_release_megajoules_per_h, 0);
     for (0..canopy.cell_count) |cell| {
         if (!fire_active_this_hour[cell]) continue;
         const totals = try cellTotals(canopy, cell);
@@ -95,14 +95,14 @@ pub fn apply(
             oxygen_concentration_umol_per_mol,
             methane_concentration_umol_per_mol,
             parameters,
-            delayed_live_combustion_heat_mj,
-            delayed_standing_dead_combustion_heat_mj,
+            delayed_live_combustion_heat_megajoules,
+            delayed_standing_dead_combustion_heat_megajoules,
             surface_organic,
         );
     }
 }
 
-fn partitionCellProducts(canopy: *Canopy.State, cell: usize, temperature_k: f64, oxygen_content_g: f64, oxygen_umol_per_mol: f64, methane_umol_per_mol: f64, parameters: FireScience.CombustionParameters, delayed_live_heat_mj: []f64, delayed_dead_heat_mj: []f64, surface_organic: *SoilOrganic.State) !void {
+fn partitionCellProducts(canopy: *Canopy.State, cell: usize, temperature_k: f64, oxygen_content_g: f64, oxygen_umol_per_mol: f64, methane_umol_per_mol: f64, parameters: FireScience.CombustionParameters, delayed_live_heat_megajoules: []f64, delayed_dead_heat_megajoules: []f64, surface_organic: *SoilOrganic.State) !void {
     var total_combusted_c: f64 = 0;
     for (0..canopy.species_count) |species| total_combusted_c -= canopy.plant_combustion_carbon_loss_g_c_per_h[try canopy.plantIndex(cell, species)];
     if (total_combusted_c == 0) return;
@@ -122,9 +122,9 @@ fn partitionCellProducts(canopy: *Canopy.State, cell: usize, temperature_k: f64,
             .maximum_anaerobic_charcoal_fraction = parameters.maximum_anaerobic_charcoal_fraction,
             .oxygen_half_saturation_umol_per_mol = parameters.oxygen_half_saturation_umol_per_mol,
             .methane_half_saturation_umol_per_mol = parameters.methane_half_saturation_umol_per_mol,
-            .aerobic_combustion_energy_mj_per_g_carbon = parameters.aerobic_combustion_energy_mj_per_g_c,
-            .anaerobic_combustion_energy_mj_per_g_carbon = parameters.anaerobic_combustion_energy_mj_per_g_c,
-            .methane_combustion_energy_mj_per_g_carbon = parameters.methane_combustion_energy_mj_per_g_c,
+            .aerobic_combustion_energy_megajoules_per_g_carbon = parameters.aerobic_combustion_energy_megajoules_per_g_c,
+            .anaerobic_combustion_energy_megajoules_per_g_carbon = parameters.anaerobic_combustion_energy_megajoules_per_g_c,
+            .methane_combustion_energy_megajoules_per_g_carbon = parameters.methane_combustion_energy_megajoules_per_g_c,
         },
     );
     for (0..canopy.species_count) |species| {
@@ -134,16 +134,16 @@ fn partitionCellProducts(canopy: *Canopy.State, cell: usize, temperature_k: f64,
         canopy.plant_fire_methane_emission_g_c_per_h[plant] = share * products.methane_emitted_g_carbon;
         canopy.plant_fire_oxygen_consumption_g_o_per_h[plant] = share * products.oxygen_consumed_g;
         canopy.plant_fire_charcoal_production_g_c_per_h[plant] = share * products.charcoal_produced_g_carbon;
-        canopy.plant_fire_heat_release_mj_per_h[plant] = share * products.heat_released_mj;
+        canopy.plant_fire_heat_release_megajoules_per_h[plant] = share * products.heat_released_megajoules;
         const plant_combusted_c = canopy.plant_live_combustion_g_c_per_h[plant] + canopy.plant_standing_dead_combustion_g_c_per_h[plant];
         const live_fraction = if (plant_combusted_c > 0) canopy.plant_live_combustion_g_c_per_h[plant] / plant_combusted_c else 0;
-        const live_heat = canopy.plant_fire_heat_release_mj_per_h[plant] * live_fraction;
-        const dead_heat = canopy.plant_fire_heat_release_mj_per_h[plant] - live_heat;
-        const next_live_heat = delayed_live_heat_mj[plant] + live_heat;
-        const next_dead_heat = delayed_dead_heat_mj[plant] + dead_heat;
+        const live_heat = canopy.plant_fire_heat_release_megajoules_per_h[plant] * live_fraction;
+        const dead_heat = canopy.plant_fire_heat_release_megajoules_per_h[plant] - live_heat;
+        const next_live_heat = delayed_live_heat_megajoules[plant] + live_heat;
+        const next_dead_heat = delayed_dead_heat_megajoules[plant] + dead_heat;
         if (!std.math.isFinite(next_live_heat) or !std.math.isFinite(next_dead_heat)) return error.NonFiniteShootFireHeat;
-        delayed_live_heat_mj[plant] = next_live_heat;
-        delayed_dead_heat_mj[plant] = next_dead_heat;
+        delayed_live_heat_megajoules[plant] = next_live_heat;
+        delayed_dead_heat_megajoules[plant] = next_dead_heat;
     }
     // EXTRACT routes canopy-fire charcoal to OSC(5,1,0): the most
     // resistant structural fraction of the first surface substrate.
@@ -414,4 +414,85 @@ test "GROSUB shoot fire conserves arbitrary-species C N P and scales topology mi
     try std.testing.expect(delayed_live_heat[0] > 0);
     try std.testing.expect(delayed_dead_heat[0] > 0);
     try std.testing.expect(try surface_organic.charcoalCarbon_g_c(0) > 0);
+
+    // EXTRACT-004 characterization. The three closures above are NOT symmetric,
+    // and the asymmetry is the defect. Carbon closes against a real sink,
+    // because line 410 adds back the charcoal that `apply` actually committed to
+    // surface organic matter. Nitrogen and phosphorus close against
+    // `roots.combustion_*_loss_g_*_per_h`, which is the loss ledger `apply`
+    // wrote at :294--295 -- the same number, moved to the other side of the
+    // equation. A budget closed against its own loss term is satisfied by
+    // construction and cannot detect a missing sink.
+    //
+    // `extract.f:276--277` credits the mineral halves of the combusted N and P
+    // back to the litter layer as NH4 and H2PO4. `combustPlantPools` already
+    // computes that split with the exact source fractions from `extract.f:45`
+    // and 256--259. `apply` never consumes it. The mass below is therefore
+    // computed by production, discarded by production, and invisible to the
+    // three assertions above.
+    //
+    // This test asserts the CURRENT behaviour so the gap has a number. When A1
+    // binds the mineral return (`docs/binding_requests/A2_grosub_extract_batch4.md`
+    // section 5), this block must be replaced by an assertion that the litter
+    // ammonium and phosphate owners received exactly these quantities, and the
+    // N and P closures above must be rewritten to balance against that sink
+    // rather than against the loss ledger.
+    {
+        // Source-order fractions at the combustion temperature response the
+        // fire above resolved to. Both plants share a cell, so one response
+        // governs the whole cell partition.
+        const fire_products = try PlantSoilExchange.canopyFireCombustion(
+            emitted_c,
+            0,
+            600,
+            0,
+            2,
+            0,
+            .{
+                .gas_constant_j_per_mol_k = fire_parameters.gas_constant_j_per_mol_k,
+                .combustion_activation_energy_j_per_mol = fire_parameters.activation_energy_j_per_mol,
+                .combustion_temperature_intercept = fire_parameters.arrhenius_intercept,
+                .oxygen_g_per_g_carbon = fire_parameters.oxygen_g_per_g_combusted_carbon,
+                .maximum_aerobic_charcoal_fraction = fire_parameters.maximum_aerobic_charcoal_fraction,
+                .maximum_anaerobic_charcoal_fraction = fire_parameters.maximum_anaerobic_charcoal_fraction,
+                .oxygen_half_saturation_umol_per_mol = fire_parameters.oxygen_half_saturation_umol_per_mol,
+                .methane_half_saturation_umol_per_mol = fire_parameters.methane_half_saturation_umol_per_mol,
+                .aerobic_combustion_energy_megajoules_per_g_carbon = fire_parameters.aerobic_combustion_energy_megajoules_per_g_c,
+                .anaerobic_combustion_energy_megajoules_per_g_carbon = fire_parameters.anaerobic_combustion_energy_megajoules_per_g_c,
+                .methane_combustion_energy_megajoules_per_g_carbon = fire_parameters.methane_combustion_energy_megajoules_per_g_c,
+            },
+        );
+        const temperature_response = fire_products.combustion_temperature_response;
+        // `extract.f:45` FCOMNY=0.1 FCOMNX=0.5 FCOMPY=0.7 FCOMPX=0.9, applied by
+        // `extract.f:256` and `:258`.
+        const ammonium_fraction = 0.1 + (0.5 - 0.1) * (1 - temperature_response);
+        const phosphate_fraction = 0.7 + (0.9 - 0.7) * (1 - temperature_response);
+        try std.testing.expect(ammonium_fraction >= 0.1 and ammonium_fraction <= 0.5);
+        try std.testing.expect(phosphate_fraction >= 0.7 and phosphate_fraction <= 0.9);
+
+        // What the reference returns to litter, and production does not.
+        const discarded_ammonium_g_n = emitted_n * ammonium_fraction;
+        const discarded_phosphate_g_p = emitted_p * phosphate_fraction;
+        try std.testing.expect(discarded_ammonium_g_n > 0);
+        try std.testing.expect(discarded_phosphate_g_p > 0);
+
+        // The mineral share is a majority of the phosphorus and a large
+        // minority of the nitrogen, so this is not a rounding term.
+        try std.testing.expect(discarded_phosphate_g_p > 0.7 * emitted_p);
+        try std.testing.expect(discarded_ammonium_g_n > 0.1 * emitted_n);
+
+        // No litter mineral sink exists to receive it. Surface organic matter
+        // gained only charcoal carbon: `apply` writes exactly one surface field
+        // (`:150--154`) and it is carbon. There is no shoot-fire writer of any
+        // litter ammonium or phosphate owner, which is what makes the mass above
+        // lost rather than merely relocated.
+        try std.testing.expectEqual(
+            @as(f64, 0),
+            surface_organic.structural[SoilOrganic.structural_fraction_count - 1].nitrogen_g_n,
+        );
+        try std.testing.expectEqual(
+            @as(f64, 0),
+            surface_organic.structural[SoilOrganic.structural_fraction_count - 1].phosphorus_g_p,
+        );
+    }
 }

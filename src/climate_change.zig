@@ -65,9 +65,9 @@ pub const State = struct {
             .precipitation_m = forcing.precipitation_m * modifier.precipitation,
             .rainfall_m = forcing.rainfall_m * modifier.precipitation,
             .snowfall_water_equivalent_m = forcing.snowfall_water_equivalent_m * modifier.precipitation,
-            .shortwave_radiation_mj_per_m2 = forcing.shortwave_radiation_mj_per_m2 * modifier.radiation,
+            .shortwave_radiation_megajoules_per_m2 = forcing.shortwave_radiation_megajoules_per_m2 * modifier.radiation,
             .wind_speed_m_per_h = forcing.wind_speed_m_per_h * modifier.wind_speed,
-            .longwave_radiation_mj_per_m2 = forcing.longwave_radiation_mj_per_m2,
+            .longwave_radiation_megajoules_per_m2 = forcing.longwave_radiation_megajoules_per_m2,
         };
         try validateForcing(result);
         return result;
@@ -126,7 +126,7 @@ fn saturationVaporPressureKpa(temperature_c: f64, altitude_m: f64) f64 {
 }
 fn validateForcing(forcing: HourlyForcing) !void {
     inline for (@typeInfo(HourlyForcing).@"struct".fields) |field| if (field.type == f64 and !std.math.isFinite(@field(forcing, field.name))) return error.NonFiniteClimateForcing;
-    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_mj_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidClimateForcing;
+    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.rainfall_m < 0 or forcing.snowfall_water_equivalent_m < 0 or @abs(forcing.precipitation_m - forcing.rainfall_m - forcing.snowfall_water_equivalent_m) > 1.0e-12 or forcing.shortwave_radiation_megajoules_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidClimateForcing;
 }
 
 test "step climate change follows seasonal Fortran modifiers" {
@@ -177,10 +177,10 @@ test "step climate change follows seasonal Fortran modifiers" {
         .precipitation_ammonium_fraction = 1,
         .precipitation_nitrate_fraction = 1,
     } };
-    const forcing: HourlyForcing = .{ .air_temperature_c = 10, .vapor_pressure_kpa = 0.5, .precipitation_m = 0.01, .rainfall_m = 0.01, .shortwave_radiation_mj_per_m2 = 1, .wind_speed_m_per_h = 100, .longwave_radiation_mj_per_m2 = null };
+    const forcing: HourlyForcing = .{ .air_temperature_c = 10, .vapor_pressure_kpa = 0.5, .precipitation_m = 0.01, .rainfall_m = 0.01, .shortwave_radiation_megajoules_per_m2 = 1, .wind_speed_m_per_h = 100, .longwave_radiation_megajoules_per_m2 = null };
     const changed = try (State{}).apply(forcing, options, .{ .year = 2024, .day_of_year = 20, .month = null, .day_of_month = null, .hour = 12, .minute = 0 }, 12, 0);
     try std.testing.expectApproxEqAbs(@as(f64, 0.012), changed.precipitation_m, 1.0e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.1), changed.shortwave_radiation_mj_per_m2, 1.0e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.1), changed.shortwave_radiation_megajoules_per_m2, 1.0e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 50), changed.wind_speed_m_per_h, 1.0e-12);
 }
 

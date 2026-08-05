@@ -238,7 +238,7 @@ test "soil organic checkpoint round trips every runtime organic pool" {
     source.colonized_structural_carbon_g_c[source.colonized_structural_carbon_g_c.len - 1] = 5;
     surface.dissolved[surface.dissolved.len - 1] = .{ .carbon_g_c = 6, .nitrogen_g_n = 0.6, .phosphorus_g_p = 0.12 };
     surface_chemistry.cells[2].ammonium_mol_per_m3 = 0.75;
-    surface_chemistry.cells[2].exchange.calcium_mol_per_Mg = 2.5;
+    surface_chemistry.cells[2].exchange.calcium_mol_per_megagram = 2.5;
     surface_fertilizer.cells[2].urea_mol_n = 8.5;
     surface_fertilizer.formulation[2] = 4;
     respiration_state.previous_doc_respiration_g_c[respiration_state.previous_doc_respiration_g_c.len - 1] = 9.5;

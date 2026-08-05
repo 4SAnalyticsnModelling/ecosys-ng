@@ -1,3 +1,27 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 4658--4678. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: diagnostic-only. This kernel resets legacy running totals that no
+//! production module accumulates and no production module reads. Production
+//! reconstructs the equivalent totals on demand in
+//! `landscape_mass_balance_runtime.reconstruct`, which cannot drift from the
+//! state it summarizes. Binding a reset for an accumulator that nothing
+//! accumulates would add cost and no behaviour.
+//!
+//! Superseded by: the litter-side uptake owners, which carry their own previous-step demand.
+//!
+//! Field census: 11 fields, 2 shared, and both shared names
+//! (`current_organic`, `previous_organic`) belong to
+//! `substrate_uptake_state_rollover`, the other class D module. Nothing in
+//! production reads a stored litter substrate demand.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const MineralAndGasDemands = struct {

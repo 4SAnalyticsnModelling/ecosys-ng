@@ -9,8 +9,8 @@ pub const SpeciesGeometry = struct {
 };
 
 pub const SpeciesRadiation = struct {
-    live_canopy_radiation_mj_h: f64,
-    standing_dead_radiation_mj_h: f64,
+    live_canopy_radiation_megajoules_h: f64,
+    standing_dead_radiation_megajoules_h: f64,
 };
 
 pub const SpeciesThermodynamics = struct {
@@ -29,8 +29,8 @@ pub const Inputs = struct {
     height_tolerance_m: f64,
     sine_solar_elevation: f64,
     daylight_threshold: f64,
-    total_canopy_radiation_mj_h: f64,
-    ground_radiation_mj_h: f64,
+    total_canopy_radiation_megajoules_h: f64,
+    ground_radiation_megajoules_h: f64,
     cell_surface_area_m2: f64,
     division_threshold: f64,
     species_geometry: []const SpeciesGeometry,
@@ -122,34 +122,34 @@ pub fn calculate(inputs: Inputs, outputs: SpeciesOutputs) CalculationError!Resul
         }
     }
 
-    var total_radiation_mj_h: f64 = undefined;
+    var total_radiation_megajoules_h: f64 = undefined;
     var canopy_fraction: f64 = 0.0;
     var ground_fraction: f64 = 1.0;
     if (inputs.sine_solar_elevation > inputs.daylight_threshold) {
-        total_radiation_mj_h =
-            inputs.total_canopy_radiation_mj_h + inputs.ground_radiation_mj_h;
-        if (total_radiation_mj_h > inputs.division_threshold) {
+        total_radiation_megajoules_h =
+            inputs.total_canopy_radiation_megajoules_h + inputs.ground_radiation_megajoules_h;
+        if (total_radiation_megajoules_h > inputs.division_threshold) {
             for (inputs.species_radiation, 0..) |radiation, species_index| {
                 outputs.live_radiation_fraction[species_index] =
-                    radiation.live_canopy_radiation_mj_h / total_radiation_mj_h;
+                    radiation.live_canopy_radiation_megajoules_h / total_radiation_megajoules_h;
                 outputs.standing_dead_radiation_fraction[species_index] =
-                    radiation.standing_dead_radiation_mj_h / total_radiation_mj_h;
+                    radiation.standing_dead_radiation_megajoules_h / total_radiation_megajoules_h;
                 canopy_fraction += outputs.live_radiation_fraction[species_index] +
                     outputs.standing_dead_radiation_fraction[species_index];
                 ground_fraction -= outputs.live_radiation_fraction[species_index] +
                     outputs.standing_dead_radiation_fraction[species_index];
             }
         } else {
-            total_radiation_mj_h = 0.0;
+            total_radiation_megajoules_h = 0.0;
             zeroRadiationFractions(outputs);
         }
     } else if (total_exposed_area_m2 > inputs.division_threshold) {
-        total_radiation_mj_h =
+        total_radiation_megajoules_h =
             1.0 - @exp(-0.65 * total_exposed_area_m2 / inputs.cell_surface_area_m2);
         for (0..species_count) |species_index| {
-            outputs.live_radiation_fraction[species_index] = total_radiation_mj_h *
+            outputs.live_radiation_fraction[species_index] = total_radiation_megajoules_h *
                 outputs.exposed_live_area_m2[species_index] / total_exposed_area_m2;
-            outputs.standing_dead_radiation_fraction[species_index] = total_radiation_mj_h *
+            outputs.standing_dead_radiation_fraction[species_index] = total_radiation_megajoules_h *
                 outputs.exposed_standing_dead_area_m2[species_index] / total_exposed_area_m2;
             canopy_fraction += outputs.live_radiation_fraction[species_index] +
                 outputs.standing_dead_radiation_fraction[species_index];
@@ -157,7 +157,7 @@ pub fn calculate(inputs: Inputs, outputs: SpeciesOutputs) CalculationError!Resul
                 outputs.standing_dead_radiation_fraction[species_index];
         }
     } else {
-        total_radiation_mj_h = 0.0;
+        total_radiation_megajoules_h = 0.0;
         zeroRadiationFractions(outputs);
     }
 
@@ -209,8 +209,8 @@ fn validateInputs(inputs: Inputs) CalculationError!void {
         inputs.height_tolerance_m,
         inputs.sine_solar_elevation,
         inputs.daylight_threshold,
-        inputs.total_canopy_radiation_mj_h,
-        inputs.ground_radiation_mj_h,
+        inputs.total_canopy_radiation_megajoules_h,
+        inputs.ground_radiation_megajoules_h,
         inputs.cell_surface_area_m2,
         inputs.division_threshold,
         inputs.initial_bulk_surface_temperature_k,
@@ -300,14 +300,14 @@ test "daylight fractions use radiation and aggregate canopy thermodynamics" {
         .height_tolerance_m = 1.0e-12,
         .sine_solar_elevation = 0.5,
         .daylight_threshold = 0.05,
-        .total_canopy_radiation_mj_h = 7.0,
-        .ground_radiation_mj_h = 3.0,
+        .total_canopy_radiation_megajoules_h = 7.0,
+        .ground_radiation_megajoules_h = 3.0,
         .cell_surface_area_m2 = 10.0,
         .division_threshold = 1.0e-12,
         .species_geometry = &geometry,
         .species_radiation = &.{.{
-            .live_canopy_radiation_mj_h = 4.0,
-            .standing_dead_radiation_mj_h = 2.0,
+            .live_canopy_radiation_megajoules_h = 4.0,
+            .standing_dead_radiation_megajoules_h = 2.0,
         }},
         .species_thermodynamics = &.{.{
             .live_surface_temperature_k = 300.0,
@@ -372,8 +372,8 @@ test "night fractions use exposed area with runtime species count" {
         .height_tolerance_m = 0.0,
         .sine_solar_elevation = 0.0,
         .daylight_threshold = 0.05,
-        .total_canopy_radiation_mj_h = 0.0,
-        .ground_radiation_mj_h = 0.0,
+        .total_canopy_radiation_megajoules_h = 0.0,
+        .ground_radiation_megajoules_h = 0.0,
         .cell_surface_area_m2 = 20.0,
         .division_threshold = 0.0,
         .species_geometry = &geometry,

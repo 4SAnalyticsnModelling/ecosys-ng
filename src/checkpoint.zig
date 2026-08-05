@@ -164,7 +164,7 @@ fn readF64Slice(reader: *std.Io.Reader, comptime field_name: []const u8, values:
 
 test "checkpoint serialization is versioned" {
     const cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 2, .grid_rows = 3, .soil_layers = 4, .plant_populations = 7 },
+        .{ .lon_count = 2, .lat_count = 3, .soil_layers = 4, .plant_populations = 7 },
         .{ .worker_threads = 1, .tile_cells = 8 },
         .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 40 },
     );
@@ -178,7 +178,7 @@ test "checkpoint serialization is versioned" {
 
 test "checkpoint round trip streams into preallocated state" {
     const cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 3, .grid_rows = 2, .soil_layers = 4, .plant_populations = 9 },
+        .{ .lon_count = 3, .lat_count = 2, .soil_layers = 4, .plant_populations = 9 },
         .{ .worker_threads = 2, .tile_cells = 3 },
         .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 40 },
     );
@@ -200,7 +200,7 @@ test "checkpoint round trip streams into preallocated state" {
 
 test "checkpoint dimension mismatch fails before field data" {
     const small_cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 40 },
     );
@@ -219,7 +219,7 @@ test "checkpoint dimension mismatch fails before field data" {
 }
 
 test "coupled checkpoint round trip includes arbitrary runtime plant species" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 2, .soil_layers = 3, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 4 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 2, .soil_layers = 3, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 4 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var source_grid = try GridState.init(std.testing.allocator, cfg);
     defer source_grid.deinit();
     var source_plants = try PlantState.init(std.testing.allocator, cfg);
@@ -242,7 +242,7 @@ test "coupled checkpoint round trip includes arbitrary runtime plant species" {
 }
 
 test "coupled checkpoint rejects species dimension mismatch before state arrays" {
-    const base = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const base = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 7 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var grid = try GridState.init(std.testing.allocator, base);
     defer grid.deinit();
     var plants = try PlantState.init(std.testing.allocator, base);

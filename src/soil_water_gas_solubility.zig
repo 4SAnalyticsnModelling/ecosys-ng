@@ -1,3 +1,25 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 4092--4106. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: architecturally superseded. Production stores the same physics in a
+//! different representation, deliberately, with the deviation recorded in
+//! `docs/model_changes.md`. Binding this kernel would reintroduce the
+//! formulation the project chose to leave behind, as a second writer.
+//!
+//! Superseded by: `gas_transport.surfaceSolubilityWaterToAir`, called at `ecosys_ng.zig:3574` and `:7733`.
+//!
+//! Production computes the water-to-air solubility ratio at the point of
+//! exchange rather than storing a per-layer solubility field, so the stored
+//! field would be a second copy that can go stale between the temperature
+//! update and the exchange.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const SolubilitiesAt25C = struct {

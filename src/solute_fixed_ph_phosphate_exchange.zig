@@ -18,10 +18,10 @@ pub const AqueousPhosphate = struct {
 };
 
 pub const SurfaceSites = struct {
-    hydroxyl_site_mol_per_Mg: f64,
-    protonated_site_mol_per_Mg: f64,
-    adsorbed_hpo4_mol_p_per_Mg: f64,
-    adsorbed_h2po4_mol_p_per_Mg: f64,
+    hydroxyl_site_mol_per_megagram: f64,
+    protonated_site_mol_per_megagram: f64,
+    adsorbed_hpo4_mol_p_per_megagram: f64,
+    adsorbed_h2po4_mol_p_per_megagram: f64,
 };
 
 pub const SharedActivities = struct {
@@ -122,11 +122,11 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
 
         // H2PO4 with protonated site: SOLUTE.F 3080--3085.
         const adsorbed_h2po4_limit =
-            fraction * s.adsorbed_h2po4_mol_p_per_Mg;
+            fraction * s.adsorbed_h2po4_mol_p_per_megagram;
         const protonated_site_limit =
             fraction * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.protonated_site_mol_per_Mg,
+                s.protonated_site_mol_per_megagram,
             );
         equilibrium.h2po4_protonated_site_product =
             p.h2po4_exchange_constant *
@@ -134,8 +134,8 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
             shared.hydroxide_mol_per_m3;
         equilibrium.h2po4_at_protonated_site_mol_p_per_m3 =
             equilibrium.h2po4_protonated_site_product *
-            s.adsorbed_h2po4_mol_p_per_Mg /
-            s.protonated_site_mol_per_Mg;
+            s.adsorbed_h2po4_mol_p_per_megagram /
+            s.protonated_site_mol_per_megagram;
         extents.h2po4_with_protonated_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.h2po4_activity_mol_p_per_m3,
@@ -150,15 +150,15 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         const hydroxyl_site_h2po4_limit =
             fraction * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             );
         equilibrium.h2po4_hydroxyl_site_product =
             p.h2po4_exchange_constant *
             shared.hydroxide_mol_per_m3;
         equilibrium.h2po4_at_hydroxyl_site_mol_p_per_m3 =
             equilibrium.h2po4_hydroxyl_site_product *
-            s.adsorbed_h2po4_mol_p_per_Mg /
-            s.hydroxyl_site_mol_per_Mg;
+            s.adsorbed_h2po4_mol_p_per_megagram /
+            s.hydroxyl_site_mol_per_megagram;
         extents.h2po4_with_hydroxyl_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.h2po4_activity_mol_p_per_m3,
@@ -171,11 +171,11 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
 
         // HPO4 with hydroxyl site: SOLUTE.F 3111--3116.
         const adsorbed_hpo4_limit =
-            fraction * s.adsorbed_hpo4_mol_p_per_Mg;
+            fraction * s.adsorbed_hpo4_mol_p_per_megagram;
         const hydroxyl_site_hpo4_limit =
             fraction * @min(
                 a.hpo4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             );
         equilibrium.hpo4_hydroxyl_site_product =
             p.hpo4_exchange_constant *
@@ -183,8 +183,8 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
             p.h2po4_dissociation_constant_mol_per_m3;
         equilibrium.hpo4_at_hydroxyl_site_mol_p_per_m3 =
             equilibrium.hpo4_hydroxyl_site_product *
-            s.adsorbed_hpo4_mol_p_per_Mg /
-            s.hydroxyl_site_mol_per_Mg;
+            s.adsorbed_hpo4_mol_p_per_megagram /
+            s.hydroxyl_site_mol_per_megagram;
         extents.hpo4_with_hydroxyl_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.hpo4_activity_mol_p_per_m3,
@@ -298,8 +298,8 @@ fn validate(inputs: Inputs) !void {
 }
 
 fn validateActiveSites(sites: SurfaceSites) !void {
-    if (sites.hydroxyl_site_mol_per_Mg <= 0 or
-        sites.protonated_site_mol_per_Mg <= 0)
+    if (sites.hydroxyl_site_mol_per_megagram <= 0 or
+        sites.protonated_site_mol_per_megagram <= 0)
         return error.InvalidActivePhosphateExchangeSite;
 }
 
@@ -329,10 +329,10 @@ fn validInputs() Inputs {
             .h2po4_activity_mol_p_per_m3 = 0.16,
         },
         .sites = .{
-            .hydroxyl_site_mol_per_Mg = 0.4,
-            .protonated_site_mol_per_Mg = 0.3,
-            .adsorbed_hpo4_mol_p_per_Mg = 0.04,
-            .adsorbed_h2po4_mol_p_per_Mg = 0.05,
+            .hydroxyl_site_mol_per_megagram = 0.4,
+            .protonated_site_mol_per_megagram = 0.3,
+            .adsorbed_hpo4_mol_p_per_megagram = 0.04,
+            .adsorbed_h2po4_mol_p_per_megagram = 0.05,
         },
         .shared_activities = .{
             .hydrogen_mol_per_m3 = 0.08,
@@ -373,20 +373,20 @@ test "fixed-pH non-band exchange matches every source equation exactly" {
         shared.hydrogen_mol_per_m3 *
         shared.hydroxide_mol_per_m3;
     const protonated_equilibrium =
-        protonated_product * s.adsorbed_h2po4_mol_p_per_Mg /
-        s.protonated_site_mol_per_Mg;
+        protonated_product * s.adsorbed_h2po4_mol_p_per_megagram /
+        s.protonated_site_mol_per_megagram;
     const hydroxyl_product =
         p.h2po4_exchange_constant * shared.hydroxide_mol_per_m3;
     const hydroxyl_equilibrium =
-        hydroxyl_product * s.adsorbed_h2po4_mol_p_per_Mg /
-        s.hydroxyl_site_mol_per_Mg;
+        hydroxyl_product * s.adsorbed_h2po4_mol_p_per_megagram /
+        s.hydroxyl_site_mol_per_megagram;
     const hpo4_product =
         p.hpo4_exchange_constant *
         p.water_activity_product_mol2_per_m6 /
         p.h2po4_dissociation_constant_mol_per_m3;
     const hpo4_equilibrium =
-        hpo4_product * s.adsorbed_hpo4_mol_p_per_Mg /
-        s.hydroxyl_site_mol_per_Mg;
+        hpo4_product * s.adsorbed_hpo4_mol_p_per_megagram /
+        s.hydroxyl_site_mol_per_megagram;
     const dissociation_equilibrium =
         p.h2po4_dissociation_constant_mol_per_m3 *
         a.h2po4_activity_mol_p_per_m3 /
@@ -426,10 +426,10 @@ test "fixed-pH non-band exchange matches every source equation exactly" {
             a.h2po4_activity_mol_p_per_m3,
             protonated_equilibrium,
             inputs.coefficients.monovalent,
-            fraction * s.adsorbed_h2po4_mol_p_per_Mg,
+            fraction * s.adsorbed_h2po4_mol_p_per_megagram,
             fraction * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.protonated_site_mol_per_Mg,
+                s.protonated_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -440,10 +440,10 @@ test "fixed-pH non-band exchange matches every source equation exactly" {
             a.h2po4_activity_mol_p_per_m3,
             hydroxyl_equilibrium,
             inputs.coefficients.monovalent,
-            fraction * s.adsorbed_h2po4_mol_p_per_Mg,
+            fraction * s.adsorbed_h2po4_mol_p_per_megagram,
             fraction * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -454,10 +454,10 @@ test "fixed-pH non-band exchange matches every source equation exactly" {
             a.hpo4_activity_mol_p_per_m3,
             hpo4_equilibrium,
             inputs.coefficients.divalent,
-            fraction * s.adsorbed_hpo4_mol_p_per_Mg,
+            fraction * s.adsorbed_hpo4_mol_p_per_megagram,
             fraction * @min(
                 a.hpo4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -522,15 +522,15 @@ test "fixed-pH exchange preserves independent source desorption bounds" {
     inputs.products.hpo4_exchange_constant = 1.0e8;
     const result = try calculateSourceOrder(inputs);
     try std.testing.expectEqual(
-        -inputs.sites.adsorbed_h2po4_mol_p_per_Mg,
+        -inputs.sites.adsorbed_h2po4_mol_p_per_megagram,
         result.extents.h2po4_with_protonated_site_source_extent_per_step,
     );
     try std.testing.expectEqual(
-        -inputs.sites.adsorbed_h2po4_mol_p_per_Mg,
+        -inputs.sites.adsorbed_h2po4_mol_p_per_megagram,
         result.extents.h2po4_with_hydroxyl_site_source_extent_per_step,
     );
     try std.testing.expectEqual(
-        -inputs.sites.adsorbed_hpo4_mol_p_per_Mg,
+        -inputs.sites.adsorbed_hpo4_mol_p_per_megagram,
         result.extents.hpo4_with_hydroxyl_site_source_extent_per_step,
     );
     try std.testing.expectEqual(
@@ -541,7 +541,7 @@ test "fixed-pH exchange preserves independent source desorption bounds" {
 
 test "fixed-pH exchange rejects invalid active denominators" {
     var inputs = validInputs();
-    inputs.sites.hydroxyl_site_mol_per_Mg = 0;
+    inputs.sites.hydroxyl_site_mol_per_megagram = 0;
     try std.testing.expectError(
         error.InvalidActivePhosphateExchangeSite,
         calculateSourceOrder(inputs),

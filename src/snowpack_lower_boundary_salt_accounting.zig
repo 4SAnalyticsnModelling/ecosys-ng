@@ -75,9 +75,9 @@ pub const five_path_count: usize = @typeInfo(FivePath).@"enum".fields.len;
 
 pub const Inputs = struct {
     /// Current snow heat capacity [snow_layer], MJ K^-1.
-    heat_capacity_mj_per_k_by_layer: []const f64,
+    heat_capacity_megajoules_per_k_by_layer: []const f64,
     /// Snow-layer presence threshold, MJ K^-1.
-    minimum_heat_capacity_mj_per_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     /// `X*BLS(LS)` [snow_layer][salt_species], mol per model step.
     upper_face_mol_per_step_by_layer_species: []const f64,
     /// Non-phosphorus exits [snow_layer][33 species][ThreePath], mol/step.
@@ -121,8 +121,8 @@ pub fn account(
 
     for (0..layer_count) |layer| {
         if (!isTerminalActiveLayer(
-            inputs.heat_capacity_mj_per_k_by_layer,
-            inputs.minimum_heat_capacity_mj_per_k,
+            inputs.heat_capacity_megajoules_per_k_by_layer,
+            inputs.minimum_heat_capacity_megajoules_per_k,
             layer,
         )) continue;
         try updateTerminalLayer(inputs, workspace, layer);
@@ -194,7 +194,7 @@ fn updateTerminalLayer(
 }
 
 fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !usize {
-    const layer_count = inputs.heat_capacity_mj_per_k_by_layer.len;
+    const layer_count = inputs.heat_capacity_megajoules_per_k_by_layer.len;
     if (layer_count == 0)
         return error.InvalidSnowpackBoundarySaltDimensions;
     const salt_value_count = try checkedExtent(layer_count, salt_species_count);
@@ -225,11 +225,11 @@ fn checkedExtent(left: usize, right: usize) !usize {
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.minimum_heat_capacity_mj_per_k))
+    if (!std.math.isFinite(inputs.minimum_heat_capacity_megajoules_per_k))
         return error.NonFiniteSnowpackBoundarySaltInput;
-    if (inputs.minimum_heat_capacity_mj_per_k < 0)
+    if (inputs.minimum_heat_capacity_megajoules_per_k < 0)
         return error.InvalidSnowpackHeatCapacity;
-    for (inputs.heat_capacity_mj_per_k_by_layer) |capacity| {
+    for (inputs.heat_capacity_megajoules_per_k_by_layer) |capacity| {
         if (!std.math.isFinite(capacity))
             return error.NonFiniteSnowpackBoundarySaltInput;
         if (capacity < 0) return error.InvalidSnowpackHeatCapacity;
@@ -327,8 +327,8 @@ test "dynamic terminal salt accounting retains exact path groups" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try account(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &upper,
         .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
         .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -360,8 +360,8 @@ test "snow change plus explicit ground paths conserves every salt exactly" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try account(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &upper,
         .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
         .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -399,8 +399,8 @@ test "species path layouts and runtime terminal layers are explicit" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try account(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &upper,
         .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
         .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -418,8 +418,8 @@ test "static mode bypasses dynamic dimensions and mutation" {
     var scratch = [_]f64{13};
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
     try account(.static, .{
-        .heat_capacity_mj_per_k_by_layer = &.{},
-        .minimum_heat_capacity_mj_per_k = std.math.nan(f64),
+        .heat_capacity_megajoules_per_k_by_layer = &.{},
+        .minimum_heat_capacity_megajoules_per_k = std.math.nan(f64),
         .upper_face_mol_per_step_by_layer_species = &.{},
         .three_path_ground_mol_per_step_by_layer_species_path = &.{},
         .five_path_ground_mol_per_step_by_layer_species_path = &.{},
@@ -445,8 +445,8 @@ test "source association and atomic failures are retained" {
     const workspace = Workspace{ .net_mol_per_step_by_layer_species = &scratch };
 
     try account(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &upper,
         .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
         .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -458,8 +458,8 @@ test "source association and atomic failures are retained" {
     try std.testing.expectError(
         error.NonFiniteSnowpackBoundarySaltInput,
         account(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &upper,
             .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
             .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -474,8 +474,8 @@ test "source association and atomic failures are retained" {
     try std.testing.expectError(
         error.NonFiniteSnowpackBoundarySaltResult,
         account(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &overflowing_upper,
             .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
             .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -502,8 +502,8 @@ test "dimension and workspace alias failures precede mutation" {
     try std.testing.expectError(
         error.SnowpackBoundarySaltWorkspaceOverlap,
         account(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &upper,
             .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
             .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,
@@ -515,8 +515,8 @@ test "dimension and workspace alias failures precede mutation" {
     try std.testing.expectError(
         error.SnowpackBoundarySaltDimensionMismatch,
         account(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &upper,
             .three_path_ground_mol_per_step_by_layer_species_path = &three_path_ground,
             .five_path_ground_mol_per_step_by_layer_species_path = &five_path_ground,

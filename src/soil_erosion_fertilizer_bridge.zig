@@ -13,7 +13,7 @@ pub const Exported = struct {
 pub fn route(
     columns: usize,
     rows: usize,
-    surface_soil_mass_Mg: []const f64,
+    surface_soil_mass_megagrams: []const f64,
     inventory: *inventory_module.State,
     sediment: constituents.DirectionalSediment,
     workspace: *constituents.PackedWorkspace,
@@ -28,7 +28,7 @@ pub fn route(
             workspace.pools[cell * component_count + component] = value;
         }
     }
-    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_Mg, sediment);
+    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_megagrams, sediment);
     for (workspace.pools) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidFertilizerErosionCandidate;
     for (0..cells) |cell| {
         const top = try inventory.index(cell, 0);
@@ -72,7 +72,7 @@ test "broadcast and banded fertilizer amounts follow sediment faces" {
     inventory.soil[0].banded_nitrate_mol_n = 20;
     var workspace = try constituents.PackedWorkspace.init(std.testing.allocator, 2, component_count);
     defer workspace.deinit();
-    try route(2, 1, &.{ 10, 10 }, &inventory, .{ .east_Mg = &.{ 1, 0 }, .west_Mg = &.{ 0, 0 }, .south_Mg = &.{ 0, 0 }, .north_Mg = &.{ 0, 0 } }, &workspace);
+    try route(2, 1, &.{ 10, 10 }, &inventory, .{ .east_megagrams = &.{ 1, 0 }, .west_megagrams = &.{ 0, 0 }, .south_megagrams = &.{ 0, 0 }, .north_megagrams = &.{ 0, 0 } }, &workspace);
     try std.testing.expectApproxEqAbs(@as(f64, 9), inventory.soil[0].broadcast_ammonium_mol_n, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 1), inventory.soil[1].broadcast_ammonium_mol_n, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 18), inventory.soil[0].banded_nitrate_mol_n, 1e-14);
@@ -91,10 +91,10 @@ test "external fertilizer sediment export retains REDIST N and ion stoichiometry
     );
     defer workspace.deinit();
     try route(1, 1, &.{10}, &inventory, .{
-        .east_Mg = &.{1},
-        .west_Mg = &.{0},
-        .south_Mg = &.{0},
-        .north_Mg = &.{0},
+        .east_megagrams = &.{1},
+        .west_megagrams = &.{0},
+        .south_megagrams = &.{0},
+        .north_megagrams = &.{0},
     }, &workspace);
     const loss = try exported(&workspace, 14);
     try std.testing.expectApproxEqAbs(@as(f64, 42), loss.nitrogen_g_n, 1e-12);

@@ -45,15 +45,15 @@ pub const Workspace = struct {
 pub const Inputs = struct {
     total_ice_volume_change_m3: []const f64,
     soil_matrix_fraction: []const f64,
-    net_sediment_Mg_by_cell: []const f64,
-    snow_deposited_sediment_Mg_by_cell: []const f64,
+    net_sediment_megagrams_by_cell: []const f64,
+    snow_deposited_sediment_megagrams_by_cell: []const f64,
     horizontal_area_m2_by_cell: []const f64,
-    surface_soil_mass_Mg_by_cell: []const f64,
+    surface_soil_mass_megagrams_by_cell: []const f64,
     surface_soil_volume_m3_by_cell: []const f64,
-    receiving_soil_bulk_density_Mg_per_m3_by_cell: []const f64,
+    receiving_soil_bulk_density_megagrams_per_m3_by_cell: []const f64,
     organic_carbon_change_g_c: []const f64,
     macropore_fraction: []const f64,
-    reference_bulk_density_Mg_per_m3: []const f64,
+    reference_bulk_density_megagrams_per_m3: []const f64,
     initial_layer_thickness_m: []const f64,
     current_layer_thickness_m: []const f64,
     reset_organic_accumulation_by_layer: []const bool,
@@ -63,7 +63,7 @@ pub const Inputs = struct {
     erosion_enabled: bool,
     organic_carbon_enabled: bool,
     negligible_ice_volume_change_m3: f64,
-    negligible_sediment_Mg: f64,
+    negligible_sediment_megagrams: f64,
     negligible_carbon_change_g_c: f64,
 };
 
@@ -79,8 +79,8 @@ pub fn stage(workspace: *Workspace, geometry: *const Geometry.State, inputs: Inp
     } else {
         @memset(workspace.freeze_thaw_boundary_change_m, 0);
     }
-    try Assembly.assembleErosionBoundaryChangeM(workspace.erosion_boundary_change_m, geometry, inputs.net_sediment_Mg_by_cell, inputs.snow_deposited_sediment_Mg_by_cell, inputs.horizontal_area_m2_by_cell, inputs.surface_soil_mass_Mg_by_cell, inputs.surface_soil_volume_m3_by_cell, inputs.receiving_soil_bulk_density_Mg_per_m3_by_cell, inputs.erosion_enabled, inputs.negligible_sediment_Mg);
-    try Assembly.assembleOrganicCarbonBoundaryChangeM(workspace.organic_carbon_boundary_change_m, geometry, inputs.organic_carbon_change_g_c, inputs.macropore_fraction, inputs.reference_bulk_density_Mg_per_m3, inputs.initial_layer_thickness_m, inputs.current_layer_thickness_m, inputs.reset_organic_accumulation_by_layer, inputs.horizontal_area_m2_by_cell, inputs.organic_carbon_specific_volume_m3_per_g, inputs.organic_carbon_enabled, inputs.negligible_carbon_change_g_c);
+    try Assembly.assembleErosionBoundaryChangeM(workspace.erosion_boundary_change_m, geometry, inputs.net_sediment_megagrams_by_cell, inputs.snow_deposited_sediment_megagrams_by_cell, inputs.horizontal_area_m2_by_cell, inputs.surface_soil_mass_megagrams_by_cell, inputs.surface_soil_volume_m3_by_cell, inputs.receiving_soil_bulk_density_megagrams_per_m3_by_cell, inputs.erosion_enabled, inputs.negligible_sediment_megagrams);
+    try Assembly.assembleOrganicCarbonBoundaryChangeM(workspace.organic_carbon_boundary_change_m, geometry, inputs.organic_carbon_change_g_c, inputs.macropore_fraction, inputs.reference_bulk_density_megagrams_per_m3, inputs.initial_layer_thickness_m, inputs.current_layer_thickness_m, inputs.reset_organic_accumulation_by_layer, inputs.horizontal_area_m2_by_cell, inputs.organic_carbon_specific_volume_m3_per_g, inputs.organic_carbon_enabled, inputs.negligible_carbon_change_g_c);
 }
 
 fn zeroes(allocator: std.mem.Allocator, count: usize) ![]f64 {
@@ -98,15 +98,15 @@ test "combined REDIST geometry drivers stage before one atomic geometry commit" 
     try stage(&workspace, &geometry, .{
         .total_ice_volume_change_m3 = &.{ 0.1, 0 },
         .soil_matrix_fraction = &.{ 1, 1 },
-        .net_sediment_Mg_by_cell = &.{1},
-        .snow_deposited_sediment_Mg_by_cell = &.{0},
+        .net_sediment_megagrams_by_cell = &.{1},
+        .snow_deposited_sediment_megagrams_by_cell = &.{0},
         .horizontal_area_m2_by_cell = &.{10},
-        .surface_soil_mass_Mg_by_cell = &.{20},
+        .surface_soil_mass_megagrams_by_cell = &.{20},
         .surface_soil_volume_m3_by_cell = &.{10},
-        .receiving_soil_bulk_density_Mg_per_m3_by_cell = &.{2},
+        .receiving_soil_bulk_density_megagrams_per_m3_by_cell = &.{2},
         .organic_carbon_change_g_c = &.{ -100, 0 },
         .macropore_fraction = &.{ 0, 0 },
-        .reference_bulk_density_Mg_per_m3 = &.{ 1, 1 },
+        .reference_bulk_density_megagrams_per_m3 = &.{ 1, 1 },
         .initial_layer_thickness_m = &.{ 0.2, 0.3 },
         .current_layer_thickness_m = &.{ 0.2, 0.3 },
         .reset_organic_accumulation_by_layer = &.{ false, true },
@@ -116,7 +116,7 @@ test "combined REDIST geometry drivers stage before one atomic geometry commit" 
         .erosion_enabled = true,
         .organic_carbon_enabled = true,
         .negligible_ice_volume_change_m3 = 0,
-        .negligible_sediment_Mg = 0,
+        .negligible_sediment_megagrams = 0,
         .negligible_carbon_change_g_c = 0,
     });
     const old_bottom = geometry.boundary_depth_m[2];

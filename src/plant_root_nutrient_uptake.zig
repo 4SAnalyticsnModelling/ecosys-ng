@@ -1,4 +1,6 @@
 const std = @import("std");
+const rooted_layer_admission = @import("rooted_layer_admission.zig");
+const root_pool_transaction_replay = @import("root_pool_transaction_replay.zig");
 const PlantRootState = @import("plant_root_system.zig").State;
 const NutrientUptakeTraits = @import("plant_traits.zig").NutrientUptake;
 const growth_temperature = @import("plant_growth_temperature.zig");
@@ -142,6 +144,28 @@ pub const Result = struct {
     available_g_element: f64,
 };
 
+pub const TransactionMapping = struct {
+    uptake_g_element: [nutrient_pool_count]f64,
+    respiration_cost: root_pool_transaction_replay.NutrientRespirationCost,
+};
+
+pub fn mapTransactionResult(results: []const Result, respiration_g_c_per_g_element: f64) !TransactionMapping {
+    if (results.len != nutrient_pool_count or !std.math.isFinite(respiration_g_c_per_g_element) or respiration_g_c_per_g_element < 0)
+        return error.InvalidRootNutrientTransactionMapping;
+    var mapping: TransactionMapping = .{ .uptake_g_element = undefined, .respiration_cost = .{} };
+    for (results, 0..) |result, pool| {
+        inline for (.{ result.uptake_g_element, result.oxygen_unlimited_uptake_g_element, result.carbon_unlimited_uptake_g_element }) |value|
+            if (!std.math.isFinite(value) or value < 0) return error.InvalidRootNutrientTransactionMapping;
+        mapping.uptake_g_element[pool] = result.uptake_g_element;
+        mapping.respiration_cost.actual_cost_g_c += respiration_g_c_per_g_element * result.uptake_g_element;
+        mapping.respiration_cost.oxygen_unlimited_g_c += respiration_g_c_per_g_element * result.oxygen_unlimited_uptake_g_element;
+        mapping.respiration_cost.carbon_unlimited_g_c += respiration_g_c_per_g_element * result.carbon_unlimited_uptake_g_element;
+    }
+    inline for (.{ mapping.respiration_cost.actual_cost_g_c, mapping.respiration_cost.oxygen_unlimited_g_c, mapping.respiration_cost.carbon_unlimited_g_c }) |value|
+        if (!std.math.isFinite(value)) return error.NonFiniteRootNutrientTransactionMapping;
+    return mapping;
+}
+
 pub const LayerCompetitor = struct {
     plant: usize,
     domain: usize,
@@ -155,6 +179,7 @@ pub const Workspace = struct {
     input_by_competitor_pool: []Input,
     staged_results: []Result,
     competitors: []LayerCompetitor,
+    admission_index_by_competitor: []usize,
 
     pub fn init(allocator: std.mem.Allocator, competitor_capacity: usize) !Workspace {
         if (competitor_capacity == 0) return error.ZeroRootNutrientCompetitorCapacity;
@@ -164,6 +189,9 @@ pub const Workspace = struct {
         const results = try allocator.alloc(Result, value_count);
         errdefer allocator.free(results);
         const competitors = try allocator.alloc(LayerCompetitor, competitor_capacity);
+        errdefer allocator.free(competitors);
+        const admission_indices = try allocator.alloc(usize, competitor_capacity);
+        errdefer allocator.free(admission_indices);
         for (competitors, 0..) |*competitor, index| competitor.* = .{
             .plant = 0,
             .domain = 0,
@@ -176,10 +204,12 @@ pub const Workspace = struct {
             .input_by_competitor_pool = input_storage,
             .staged_results = results,
             .competitors = competitors,
+            .admission_index_by_competitor = admission_indices,
         };
     }
 
     pub fn deinit(self: *Workspace) void {
+        self.allocator.free(self.admission_index_by_competitor);
         self.allocator.free(self.competitors);
         self.allocator.free(self.staged_results);
         self.allocator.free(self.input_by_competitor_pool);
@@ -204,14 +234,39 @@ pub const Workspace = struct {
         const result_count = try std.math.mul(usize, competitor_count, nutrient_pool_count);
         try advanceCompetingLayerTransaction(roots, soil_pool_g_element, self.competitors[0..competitor_count], self.staged_results[0..result_count], respiration_g_c_per_g_element);
     }
+
+    /// Solve-only production boundary. Results are caller-owned and neither
+    /// root nor shared soil state is mutated.
+    pub fn stage(self: *Workspace, roots: *const PlantRootState, soil_pool_g_element: []const f64, competitor_count: usize) !void {
+        if (competitor_count > self.competitor_capacity) return error.RootNutrientCompetitorOutOfBounds;
+        const result_count = try std.math.mul(usize, competitor_count, nutrient_pool_count);
+        try stageCompetingLayer(roots, soil_pool_g_element, self.competitors[0..competitor_count], self.staged_results[0..result_count]);
+    }
+
+    /// Publishes previously staged nutrient uptake, assimilation, and
+    /// respiration without recalculating any result.
+    pub fn commitStagedAssimilating(self: *Workspace, roots: *PlantRootState, soil_pool_g_element: []f64, competitor_count: usize, respiration_g_c_per_g_element: f64) !void {
+        if (competitor_count > self.competitor_capacity) return error.RootNutrientCompetitorOutOfBounds;
+        const result_count = try std.math.mul(usize, competitor_count, nutrient_pool_count);
+        try commitStagedCompetingLayerTransaction(roots, soil_pool_g_element, self.competitors[0..competitor_count], self.staged_results[0..result_count], respiration_g_c_per_g_element);
+    }
 };
 
 pub const GridWorkspace = struct {
     allocator: std.mem.Allocator,
     per_cell: []Workspace,
+    admission_capacity_per_cell: usize,
+    admission_storage: []rooted_layer_admission.Coordinate,
+    transaction_nutrient_storage: []TransactionMapping,
+    transaction_nutrient_selected: []bool,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize) !GridWorkspace {
+        return initWithAdmissionCapacity(allocator, cell_count, competitor_capacity_per_cell, competitor_capacity_per_cell);
+    }
+
+    pub fn initWithAdmissionCapacity(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize, admission_capacity_per_cell: usize) !GridWorkspace {
         if (cell_count == 0) return error.ZeroRootNutrientGridCells;
+        if (admission_capacity_per_cell == 0) return error.ZeroRootNutrientAdmissionCapacity;
         const workspaces = try allocator.alloc(Workspace, cell_count);
         errdefer allocator.free(workspaces);
         var initialized: usize = 0;
@@ -220,10 +275,36 @@ pub const GridWorkspace = struct {
             workspace.* = try Workspace.init(allocator, competitor_capacity_per_cell);
             initialized += 1;
         }
-        return .{ .allocator = allocator, .per_cell = workspaces };
+        const admission_count = try std.math.mul(usize, cell_count, admission_capacity_per_cell);
+        const admission_storage = try allocator.alloc(rooted_layer_admission.Coordinate, admission_count);
+        errdefer allocator.free(admission_storage);
+        const transaction_nutrient_storage = try allocator.alloc(TransactionMapping, admission_count);
+        errdefer allocator.free(transaction_nutrient_storage);
+        const transaction_nutrient_selected = try allocator.alloc(bool, admission_count);
+        errdefer allocator.free(transaction_nutrient_selected);
+        @memset(transaction_nutrient_selected, false);
+        return .{ .allocator = allocator, .per_cell = workspaces, .admission_capacity_per_cell = admission_capacity_per_cell, .admission_storage = admission_storage, .transaction_nutrient_storage = transaction_nutrient_storage, .transaction_nutrient_selected = transaction_nutrient_selected };
+    }
+
+    pub fn admissionBuffer(self: *GridWorkspace, cell: usize) ![]rooted_layer_admission.Coordinate {
+        if (cell >= self.per_cell.len) return error.RootNutrientGridCellOutOfBounds;
+        return self.admission_storage[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
+    }
+
+    pub fn transactionNutrientBuffer(self: *GridWorkspace, cell: usize) ![]TransactionMapping {
+        if (cell >= self.per_cell.len) return error.RootNutrientGridCellOutOfBounds;
+        return self.transaction_nutrient_storage[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
+    }
+
+    pub fn transactionNutrientSelection(self: *GridWorkspace, cell: usize) ![]bool {
+        if (cell >= self.per_cell.len) return error.RootNutrientGridCellOutOfBounds;
+        return self.transaction_nutrient_selected[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
     }
 
     pub fn deinit(self: *GridWorkspace) void {
+        self.allocator.free(self.admission_storage);
+        self.allocator.free(self.transaction_nutrient_selected);
+        self.allocator.free(self.transaction_nutrient_storage);
         for (self.per_cell) |*workspace| workspace.deinit();
         self.allocator.free(self.per_cell);
         self.* = undefined;
@@ -532,8 +613,19 @@ fn advanceCompetingLayerTransaction(
     staged_results: []Result,
     respiration_coefficient: ?f64,
 ) !void {
+    try stageCompetingLayer(roots, soil_pool_g_element, competitors, staged_results);
+    try commitStagedCompetingLayerTransaction(roots, soil_pool_g_element, competitors, staged_results, respiration_coefficient);
+}
+
+/// Solves all competitors against one immutable shared-layer snapshot and
+/// validates aggregate availability without mutating root or soil state.
+pub fn stageCompetingLayer(
+    roots: *const PlantRootState,
+    soil_pool_g_element: []const f64,
+    competitors: []const LayerCompetitor,
+    staged_results: []Result,
+) !void {
     if (soil_pool_g_element.len != nutrient_pool_count) return error.RootNutrientPoolCountMismatch;
-    if (respiration_coefficient) |coefficient| if (!std.math.isFinite(coefficient) or coefficient < 0) return error.InvalidRootNutrientRespirationCoefficient;
     const result_count = try std.math.mul(usize, competitors.len, nutrient_pool_count);
     if (staged_results.len != result_count) return error.RootNutrientCompetitionWorkspaceSizeMismatch;
 
@@ -553,6 +645,54 @@ fn advanceCompetingLayerTransaction(
         const soil = soil_pool_g_element[pool_index];
         if (!std.math.isFinite(soil) or soil < 0) return error.InvalidRootNutrientCommit;
         if (total_uptake[pool_index] > soil + 1.0e-12) return error.RootNutrientCompetitionOverdraw;
+    }
+}
+
+pub fn commitStagedCompetingLayer(
+    roots: *PlantRootState,
+    soil_pool_g_element: []f64,
+    competitors: []const LayerCompetitor,
+    staged_results: []const Result,
+) !void {
+    try commitStagedCompetingLayerTransaction(roots, soil_pool_g_element, competitors, staged_results, null);
+}
+
+pub fn commitStagedAssimilatingLayer(
+    roots: *PlantRootState,
+    soil_pool_g_element: []f64,
+    competitors: []const LayerCompetitor,
+    staged_results: []const Result,
+    respiration_g_c_per_g_element: f64,
+) !void {
+    try commitStagedCompetingLayerTransaction(roots, soil_pool_g_element, competitors, staged_results, respiration_g_c_per_g_element);
+}
+
+fn commitStagedCompetingLayerTransaction(
+    roots: *PlantRootState,
+    soil_pool_g_element: []f64,
+    competitors: []const LayerCompetitor,
+    staged_results: []const Result,
+    respiration_coefficient: ?f64,
+) !void {
+    if (soil_pool_g_element.len != nutrient_pool_count) return error.RootNutrientPoolCountMismatch;
+    if (respiration_coefficient) |coefficient| if (!std.math.isFinite(coefficient) or coefficient < 0) return error.InvalidRootNutrientRespirationCoefficient;
+    const result_count = try std.math.mul(usize, competitors.len, nutrient_pool_count);
+    if (staged_results.len != result_count) return error.RootNutrientCompetitionWorkspaceSizeMismatch;
+    var total_uptake = [_]f64{0} ** nutrient_pool_count;
+    for (competitors, 0..) |competitor, competitor_index| {
+        _ = try roots.layerIndex(competitor.plant, competitor.domain, competitor.layer);
+        const result_base = competitor_index * nutrient_pool_count;
+        for (0..nutrient_pool_count) |pool_index| {
+            const result = staged_results[result_base + pool_index];
+            inline for (.{ result.uptake_g_element, result.demand_g_element, result.oxygen_unlimited_uptake_g_element, result.carbon_unlimited_uptake_g_element }) |value|
+                if (!std.math.isFinite(value) or value < 0) return error.InvalidRootNutrientCommit;
+            total_uptake[pool_index] += result.uptake_g_element;
+            if (!std.math.isFinite(total_uptake[pool_index])) return error.NonFiniteRootNutrientCompetition;
+        }
+    }
+    for (soil_pool_g_element, total_uptake) |soil, uptake| {
+        if (!std.math.isFinite(soil) or soil < 0) return error.InvalidRootNutrientCommit;
+        if (uptake > soil + 1.0e-12) return error.RootNutrientCompetitionOverdraw;
     }
 
     // Validate every destination before changing either shared soil or roots.
@@ -896,6 +1036,63 @@ test "GROSUB nutrient assimilation atomically couples extraction mobile pools an
     try std.testing.expectEqual(@as(f64, 0), starved_roots.mobile_nitrogen_g[0]);
 }
 
+test "combined nutrient advance is bit-identical to stage then commit for single and shared competitors" {
+    for (1..3) |competitor_count| {
+        var combined_roots = try PlantRootState.init(std.testing.allocator, competitor_count, 1, 1);
+        defer combined_roots.deinit();
+        var staged_roots = try PlantRootState.init(std.testing.allocator, competitor_count, 1, 1);
+        defer staged_roots.deinit();
+        var combined_workspace = try Workspace.init(std.testing.allocator, competitor_count);
+        defer combined_workspace.deinit();
+        var staged_workspace = try Workspace.init(std.testing.allocator, competitor_count);
+        defer staged_workspace.deinit();
+        for (0..competitor_count) |competitor| {
+            const combined_inputs = try combined_workspace.inputs(competitor);
+            const staged_inputs = try staged_workspace.inputs(competitor);
+            for (combined_inputs, staged_inputs) |*combined_input, *staged_input| {
+                combined_input.* = .{ .soil_concentration_g_element_per_m3 = 4, .soil_pool_g_element = 20, .total_soil_water_volume_m3 = 2, .soil_zone_fraction = 1, .water_mass_flow_term = 0.1, .diffusive_conductance_m3_per_step = 0.2, .minimum_residual_concentration_g_element_per_m3 = 0, .michaelis_half_saturation_g_element_per_m3 = 1, .maximum_uptake_g_element_per_plant_step = 0.2, .oxygen_unlimited_maximum_uptake_g_element_per_plant_step = 0.3, .plant_population_count = 1, .population_competition_fraction = 1 / @as(f64, @floatFromInt(competitor_count)), .time_fraction = 1, .carbon_uptake_limitation_fraction = 0.5 };
+                staged_input.* = combined_input.*;
+            }
+            combined_workspace.competitors[competitor] = .{ .plant = competitor, .domain = 0, .layer = 0, .input_by_pool = combined_inputs };
+            staged_workspace.competitors[competitor] = .{ .plant = competitor, .domain = 0, .layer = 0, .input_by_pool = staged_inputs };
+            combined_roots.mobile_carbon_g[try combined_roots.layerIndex(competitor, 0, 0)] = 10;
+            staged_roots.mobile_carbon_g[try staged_roots.layerIndex(competitor, 0, 0)] = 10;
+        }
+        var combined_soil = [_]f64{20} ** nutrient_pool_count;
+        var staged_soil = combined_soil;
+        try combined_workspace.advanceAssimilating(&combined_roots, &combined_soil, competitor_count, 0.86);
+        try staged_workspace.stage(&staged_roots, &staged_soil, competitor_count);
+        try staged_workspace.commitStagedAssimilating(&staged_roots, &staged_soil, competitor_count, 0.86);
+        try std.testing.expectEqualSlices(f64, &combined_soil, &staged_soil);
+        try std.testing.expectEqualSlices(Result, combined_workspace.staged_results[0 .. competitor_count * nutrient_pool_count], staged_workspace.staged_results[0 .. competitor_count * nutrient_pool_count]);
+        inline for (.{ "mobile_carbon_g", "mobile_nitrogen_g", "mobile_phosphorus_g", "actual_respiration_g_c_per_h", "respiration_unlimited_by_oxygen_g_c_per_h", "respiration_unlimited_by_carbon_g_c_per_h", "ammonium_uptake_nonband_g_n_per_h", "nitrate_uptake_nonband_g_n_per_h", "phosphate_h2_uptake_nonband_g_p_per_h" }) |field_name|
+            try std.testing.expectEqualSlices(f64, @field(combined_roots, field_name), @field(staged_roots, field_name));
+    }
+}
+
+test "late staged nutrient commit failure rolls back root and shared soil" {
+    var roots = try PlantRootState.init(std.testing.allocator, 2, 1, 1);
+    defer roots.deinit();
+    var workspace = try Workspace.init(std.testing.allocator, 2);
+    defer workspace.deinit();
+    for (0..2) |competitor| {
+        const inputs = try workspace.inputs(competitor);
+        for (inputs) |*input| input.* = .{ .soil_concentration_g_element_per_m3 = 1, .soil_pool_g_element = 2, .total_soil_water_volume_m3 = 1, .soil_zone_fraction = 1, .water_mass_flow_term = 0, .diffusive_conductance_m3_per_step = 0.1, .minimum_residual_concentration_g_element_per_m3 = 0, .michaelis_half_saturation_g_element_per_m3 = 1, .maximum_uptake_g_element_per_plant_step = 0.1, .oxygen_unlimited_maximum_uptake_g_element_per_plant_step = 0.1, .plant_population_count = 1, .population_competition_fraction = 0.5, .time_fraction = 1, .carbon_uptake_limitation_fraction = 1 };
+        workspace.competitors[competitor] = .{ .plant = competitor, .domain = 0, .layer = 0, .input_by_pool = inputs };
+        roots.mobile_carbon_g[try roots.layerIndex(competitor, 0, 0)] = 10;
+    }
+    var soil = [_]f64{2} ** nutrient_pool_count;
+    try workspace.stage(&roots, &soil, 2);
+    workspace.staged_results[nutrient_pool_count].uptake_g_element = 3;
+    const soil_before = soil;
+    const mobile_before = roots.mobile_carbon_g[0..2].*;
+    try std.testing.expectError(error.RootNutrientCompetitionOverdraw, workspace.commitStagedAssimilating(&roots, &soil, 2, 0.86));
+    try std.testing.expectEqualSlices(f64, &soil_before, &soil);
+    try std.testing.expectEqualSlices(f64, &mobile_before, roots.mobile_carbon_g[0..2]);
+    try std.testing.expectEqual(@as(f64, 0), roots.mobile_nitrogen_g[0]);
+    try std.testing.expectEqual(@as(f64, 0), roots.mobile_nitrogen_g[1]);
+}
+
 test "runtime competitor overdraw leaves shared soil and every root unchanged" {
     var roots = try PlantRootState.init(std.testing.allocator, 2, 1, 1);
     defer roots.deinit();
@@ -946,4 +1143,17 @@ test "root nutrient grid workspace gives every parallel cell independent storage
     try std.testing.expectEqual(@as(usize, 4), workspace.per_cell.len);
     for (workspace.per_cell) |cell| try std.testing.expectEqual(@as(usize, 22), cell.competitor_capacity);
     try std.testing.expect(workspace.per_cell[0].input_by_competitor_pool.ptr != workspace.per_cell[1].input_by_competitor_pool.ptr);
+}
+
+test "root nutrient grid owns independent runtime admission schedules" {
+    var workspace = try GridWorkspace.initWithAdmissionCapacity(std.testing.allocator, 3, 4, 24);
+    defer workspace.deinit();
+    const first = try workspace.admissionBuffer(0);
+    const second = try workspace.admissionBuffer(1);
+    try std.testing.expectEqual(@as(usize, 24), first.len);
+    try std.testing.expect(first.ptr != second.ptr);
+    first[0] = .{ .plant = 7, .biological_domain = 1, .soil_layer = 5 };
+    second[0] = .{ .plant = 8, .biological_domain = 0, .soil_layer = 2 };
+    try std.testing.expect(!std.meta.eql(first[0], second[0]));
+    try std.testing.expectError(error.RootNutrientGridCellOutOfBounds, workspace.admissionBuffer(3));
 }

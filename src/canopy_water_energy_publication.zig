@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const water_heat_capacity_mj_per_m3_k = 4.19;
+const water_heat_capacity_megajoules_per_m3_k = 4.19;
 
 /// Runtime-sized EXTRACT `ENGYC/ENGYX/THFLXC` publication. Plant arrays use
 /// cell-major then species-major ordering; cell arrays are exact plant sums.
@@ -8,10 +8,10 @@ pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     species_count: usize,
-    water_energy_mj_by_plant: []f64,
-    water_energy_change_mj_per_h_by_plant: []f64,
-    water_energy_mj_by_cell: []f64,
-    water_energy_change_mj_per_h_by_cell: []f64,
+    water_energy_megajoules_by_plant: []f64,
+    water_energy_change_megajoules_per_h_by_plant: []f64,
+    water_energy_megajoules_by_cell: []f64,
+    water_energy_change_megajoules_per_h_by_cell: []f64,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -36,18 +36,18 @@ pub const State = struct {
             .allocator = allocator,
             .cell_count = cell_count,
             .species_count = species_count,
-            .water_energy_mj_by_plant = plant_energy,
-            .water_energy_change_mj_per_h_by_plant = plant_change,
-            .water_energy_mj_by_cell = cell_energy,
-            .water_energy_change_mj_per_h_by_cell = cell_change,
+            .water_energy_megajoules_by_plant = plant_energy,
+            .water_energy_change_megajoules_per_h_by_plant = plant_change,
+            .water_energy_megajoules_by_cell = cell_energy,
+            .water_energy_change_megajoules_per_h_by_cell = cell_change,
         };
     }
 
     pub fn deinit(self: *State) void {
-        self.allocator.free(self.water_energy_change_mj_per_h_by_cell);
-        self.allocator.free(self.water_energy_mj_by_cell);
-        self.allocator.free(self.water_energy_change_mj_per_h_by_plant);
-        self.allocator.free(self.water_energy_mj_by_plant);
+        self.allocator.free(self.water_energy_change_megajoules_per_h_by_cell);
+        self.allocator.free(self.water_energy_megajoules_by_cell);
+        self.allocator.free(self.water_energy_change_megajoules_per_h_by_plant);
+        self.allocator.free(self.water_energy_megajoules_by_plant);
         self.* = undefined;
     }
 };
@@ -62,19 +62,19 @@ pub const Inputs = struct {
 };
 
 const Candidate = struct {
-    water_energy_mj: f64,
-    water_energy_change_mj_per_h: f64,
+    water_energy_megajoules: f64,
+    water_energy_change_megajoules_per_h: f64,
 };
 
 /// EXTRACT lines 643–649 under ecosys-ng whole-hour endpoint semantics.
 /// Accepted surface inventories already include retention and vapor exchange,
 /// so only retained precipitation carries incoming atmospheric enthalpy.
 /// Every candidate and cell sum is proven before published or persistent
-/// `previous_water_energy_mj_by_plant` state changes.
+/// `previous_water_energy_megajoules_by_plant` state changes.
 pub fn refresh(
     state: *State,
     inputs: Inputs,
-    previous_water_energy_mj_by_plant: []f64,
+    previous_water_energy_megajoules_by_plant: []f64,
 ) !void {
     const plant_count = try std.math.mul(
         usize,
@@ -82,7 +82,7 @@ pub fn refresh(
         state.species_count,
     );
     if (inputs.air_temperature_k_by_cell.len != state.cell_count or
-        previous_water_energy_mj_by_plant.len != plant_count)
+        previous_water_energy_megajoules_by_plant.len != plant_count)
         return error.InvalidCanopyWaterEnergyPublicationDimensions;
     inline for (@typeInfo(Inputs).@"struct".fields[1..]) |field|
         if (@field(inputs, field.name).len != plant_count)
@@ -91,7 +91,7 @@ pub fn refresh(
     for (0..plant_count) |plant| _ = try candidate(
         state.species_count,
         inputs,
-        previous_water_energy_mj_by_plant,
+        previous_water_energy_megajoules_by_plant,
         plant,
     );
     for (0..state.cell_count) |cell| {
@@ -102,40 +102,40 @@ pub fn refresh(
             const next = candidate(
                 state.species_count,
                 inputs,
-                previous_water_energy_mj_by_plant,
+                previous_water_energy_megajoules_by_plant,
                 plant,
             ) catch unreachable;
-            cell_energy += next.water_energy_mj;
-            cell_change += next.water_energy_change_mj_per_h;
+            cell_energy += next.water_energy_megajoules;
+            cell_change += next.water_energy_change_megajoules_per_h;
         }
         if (!std.math.isFinite(cell_energy) or !std.math.isFinite(cell_change))
             return error.NonFiniteCanopyWaterEnergyPublication;
     }
 
-    @memset(state.water_energy_mj_by_cell, 0);
-    @memset(state.water_energy_change_mj_per_h_by_cell, 0);
+    @memset(state.water_energy_megajoules_by_cell, 0);
+    @memset(state.water_energy_change_megajoules_per_h_by_cell, 0);
     for (0..plant_count) |plant| {
         const next = candidate(
             state.species_count,
             inputs,
-            previous_water_energy_mj_by_plant,
+            previous_water_energy_megajoules_by_plant,
             plant,
         ) catch unreachable;
         const cell = plant / state.species_count;
-        state.water_energy_mj_by_plant[plant] = next.water_energy_mj;
-        state.water_energy_change_mj_per_h_by_plant[plant] =
-            next.water_energy_change_mj_per_h;
-        state.water_energy_mj_by_cell[cell] += next.water_energy_mj;
-        state.water_energy_change_mj_per_h_by_cell[cell] +=
-            next.water_energy_change_mj_per_h;
-        previous_water_energy_mj_by_plant[plant] = next.water_energy_mj;
+        state.water_energy_megajoules_by_plant[plant] = next.water_energy_megajoules;
+        state.water_energy_change_megajoules_per_h_by_plant[plant] =
+            next.water_energy_change_megajoules_per_h;
+        state.water_energy_megajoules_by_cell[cell] += next.water_energy_megajoules;
+        state.water_energy_change_megajoules_per_h_by_cell[cell] +=
+            next.water_energy_change_megajoules_per_h;
+        previous_water_energy_megajoules_by_plant[plant] = next.water_energy_megajoules;
     }
 }
 
 fn candidate(
     species_count: usize,
     inputs: Inputs,
-    previous_water_energy_mj_by_plant: []const f64,
+    previous_water_energy_megajoules_by_plant: []const f64,
     plant: usize,
 ) !Candidate {
     const cell = plant / species_count;
@@ -147,7 +147,7 @@ fn candidate(
         inputs.living_retention_m3_per_h_by_plant[plant];
     const dead_retention =
         inputs.standing_dead_retention_m3_per_h_by_plant[plant];
-    const previous = previous_water_energy_mj_by_plant[plant];
+    const previous = previous_water_energy_megajoules_by_plant[plant];
     inline for (.{
         air_temperature,
         canopy_temperature,
@@ -162,17 +162,17 @@ fn candidate(
         dead_water < 0 or living_retention < 0 or dead_retention < 0 or
         previous < 0)
         return error.InvalidCanopyWaterEnergyPublicationInput;
-    const current = water_heat_capacity_mj_per_m3_k *
+    const current = water_heat_capacity_megajoules_per_m3_k *
         (living_water + dead_water) * canopy_temperature;
-    const incoming = water_heat_capacity_mj_per_m3_k *
+    const incoming = water_heat_capacity_megajoules_per_m3_k *
         (living_retention + dead_retention) * air_temperature;
     const result: Candidate = .{
-        .water_energy_mj = current,
-        .water_energy_change_mj_per_h = current - previous - incoming,
+        .water_energy_megajoules = current,
+        .water_energy_change_megajoules_per_h = current - previous - incoming,
     };
-    if (!std.math.isFinite(result.water_energy_mj) or
-        result.water_energy_mj < 0 or
-        !std.math.isFinite(result.water_energy_change_mj_per_h))
+    if (!std.math.isFinite(result.water_energy_megajoules) or
+        result.water_energy_megajoules < 0 or
+        !std.math.isFinite(result.water_energy_change_megajoules_per_h))
         return error.NonFiniteCanopyWaterEnergyPublication;
     return result;
 }
@@ -193,34 +193,34 @@ test "canopy water energy publication preserves runtime order and cell sums" {
     const expected_last_change = expected_last - 6 - 4.19 * 0.7 * 290;
     try std.testing.expectApproxEqAbs(
         expected_last,
-        state.water_energy_mj_by_plant[5],
+        state.water_energy_megajoules_by_plant[5],
         1e-12,
     );
     try std.testing.expectApproxEqAbs(
         expected_last_change,
-        state.water_energy_change_mj_per_h_by_plant[5],
+        state.water_energy_change_megajoules_per_h_by_plant[5],
         1e-12,
     );
     var second_cell_energy: f64 = 0;
     var second_cell_change: f64 = 0;
     for (3..6) |plant| {
-        second_cell_energy += state.water_energy_mj_by_plant[plant];
+        second_cell_energy += state.water_energy_megajoules_by_plant[plant];
         second_cell_change +=
-            state.water_energy_change_mj_per_h_by_plant[plant];
+            state.water_energy_change_megajoules_per_h_by_plant[plant];
     }
     try std.testing.expectApproxEqAbs(
         second_cell_energy,
-        state.water_energy_mj_by_cell[1],
+        state.water_energy_megajoules_by_cell[1],
         1e-12,
     );
     try std.testing.expectApproxEqAbs(
         second_cell_change,
-        state.water_energy_change_mj_per_h_by_cell[1],
+        state.water_energy_change_megajoules_per_h_by_cell[1],
         1e-12,
     );
     try std.testing.expectEqualSlices(
         f64,
-        state.water_energy_mj_by_plant,
+        state.water_energy_megajoules_by_plant,
         &previous,
     );
 }
@@ -228,10 +228,10 @@ test "canopy water energy publication preserves runtime order and cell sums" {
 test "late invalid energy input preserves publication and previous energy" {
     var state = try State.init(std.testing.allocator, 1, 2);
     defer state.deinit();
-    @memset(state.water_energy_mj_by_plant, 7);
-    @memset(state.water_energy_change_mj_per_h_by_plant, 8);
-    @memset(state.water_energy_mj_by_cell, 9);
-    @memset(state.water_energy_change_mj_per_h_by_cell, 10);
+    @memset(state.water_energy_megajoules_by_plant, 7);
+    @memset(state.water_energy_change_megajoules_per_h_by_plant, 8);
+    @memset(state.water_energy_megajoules_by_cell, 9);
+    @memset(state.water_energy_change_megajoules_per_h_by_cell, 10);
     var previous = [_]f64{ 11, 12 };
     const invalid = [_]f64{ 280, std.math.nan(f64) };
     try std.testing.expectError(
@@ -245,17 +245,17 @@ test "late invalid energy input preserves publication and previous energy" {
             .standing_dead_retention_m3_per_h_by_plant = &.{ 0, 0 },
         }, &previous),
     );
-    try std.testing.expectEqualSlices(f64, &.{ 7, 7 }, state.water_energy_mj_by_plant);
+    try std.testing.expectEqualSlices(f64, &.{ 7, 7 }, state.water_energy_megajoules_by_plant);
     try std.testing.expectEqualSlices(
         f64,
         &.{ 8, 8 },
-        state.water_energy_change_mj_per_h_by_plant,
+        state.water_energy_change_megajoules_per_h_by_plant,
     );
-    try std.testing.expectEqualSlices(f64, &.{9}, state.water_energy_mj_by_cell);
+    try std.testing.expectEqualSlices(f64, &.{9}, state.water_energy_megajoules_by_cell);
     try std.testing.expectEqualSlices(
         f64,
         &.{10},
-        state.water_energy_change_mj_per_h_by_cell,
+        state.water_energy_change_megajoules_per_h_by_cell,
     );
     try std.testing.expectEqualSlices(f64, &.{ 11, 12 }, &previous);
 }

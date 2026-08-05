@@ -85,13 +85,13 @@ test "output stream writes one heading and scheduled rows to bounded file buffer
     };
     var stream = try Stream.create(std.testing.allocator, std.testing.io, temporary.dir, "hourly.txt", 64, &variables, selection.enabled_variables, .comma);
     defer stream.deinit();
-    try std.testing.expect(!try stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 121, .month = 5, .day = 1, .hour = 0 }, .grid_column = 1, .grid_row = 2, .values = &.{ 9, 8, 7 } }));
-    try std.testing.expect(try stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 152, .month = 6, .day = 1, .hour = 3 }, .grid_column = 1, .grid_row = 2, .values = &.{ 1.5, 20, 2.5 } }));
+    try std.testing.expect(!try stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 121, .month = 5, .day = 1, .hour = 0 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{ 9, 8, 7 } }));
+    try std.testing.expect(try stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 152, .month = 6, .day = 1, .hour = 3 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{ 1.5, 20, 2.5 } }));
     try stream.finish();
 
     const contents = try temporary.dir.readFileAlloc(std.testing.io, "hourly.txt", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(contents);
-    try std.testing.expectEqualStrings("year,day_of_year,month,day,hour,grid_column,grid_row,runoff[mm],water_table[m]\n2001,152,6,1,3,1,2,1.5e0,2.5e0\n", contents);
+    try std.testing.expectEqualStrings("year,day_of_year,month,day,hour,longitude,latitude,runoff[mm],water_table[m]\n2001,152,6,1,3,-75.7,45.3,1.5e0,2.5e0\n", contents);
 }
 
 test "closed output stream rejects additional records" {
@@ -106,7 +106,7 @@ test "closed output stream rejects additional records" {
     var stream = try Stream.create(std.testing.allocator, std.testing.io, temporary.dir, "closed.txt", 32, &variables, selection.enabled_variables, .space);
     defer stream.deinit();
     try stream.finish();
-    try std.testing.expectError(error.OutputStreamClosed, stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 0 }, .grid_column = 0, .grid_row = 0, .values = &.{1} }));
+    try std.testing.expectError(error.OutputStreamClosed, stream.writeIfScheduled(selection, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 0 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{1} }));
 }
 
 test "output stream rejects unsafe runtime file names before allocation or I/O" {

@@ -18,11 +18,11 @@ pub const FaceFlux = enum(u8) {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     water_m3_per_step_by_face: [FaceFlux.count][]const f64,
-    heat_mj_per_step_by_face: [FaceFlux.count][]const f64,
+    heat_megajoules_per_step_by_face: [FaceFlux.count][]const f64,
     negligible_water_m3_by_cell: []const f64,
 };
 
@@ -30,7 +30,7 @@ pub const State = struct {
     signed_runoff_water_change_m3_by_cell: []f64,
     cumulative_outward_runoff_m3_by_cell: []f64,
     cumulative_outward_runoff_m3: f64,
-    cumulative_outward_runoff_heat_mj: f64,
+    cumulative_outward_runoff_heat_megajoules: f64,
 };
 
 /// Accounts for surface-runoff water and associated heat at external faces.
@@ -50,7 +50,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (std.meta.tags(FaceFlux)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const face_index = @intFromEnum(face);
@@ -64,23 +64,23 @@ pub fn apply(inputs: Inputs, state: *State) !void {
                 state.cumulative_outward_runoff_m3 -= signed_water_change_m3;
                 state.cumulative_outward_runoff_m3_by_cell[cell] -=
                     signed_water_change_m3;
-                const signed_heat_change_mj =
-                    direction * inputs.heat_mj_per_step_by_face[face_index][cell];
-                state.cumulative_outward_runoff_heat_mj -= signed_heat_change_mj;
+                const signed_heat_change_megajoules =
+                    direction * inputs.heat_megajoules_per_step_by_face[face_index][cell];
+                state.cumulative_outward_runoff_heat_megajoules -= signed_heat_change_megajoules;
             }
         }
     }
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !usize {
-    if (inputs.grid_column_count == 0 or inputs.grid_row_count == 0)
+    if (inputs.lon_count == 0 or inputs.lat_count == 0)
         return error.InvalidRunoffBoundaryDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidRunoffBoundaryDimensions;
-    inline for (inputs.water_m3_per_step_by_face ++ inputs.heat_mj_per_step_by_face) |values|
+    inline for (inputs.water_m3_per_step_by_face ++ inputs.heat_megajoules_per_step_by_face) |values|
         if (values.len != cell_count)
             return error.InvalidRunoffBoundaryDimensions;
     if (inputs.negligible_water_m3_by_cell.len != cell_count or
@@ -90,8 +90,8 @@ fn validateDimensions(inputs: Inputs, state: State) !usize {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidRunoffBoundaryWindow;
     return cell_count;
 }
@@ -101,7 +101,7 @@ fn validateInputsAndState(inputs: Inputs, state: State, cell_count: usize) !void
         for (values) |value|
             if (!std.math.isFinite(value))
                 return error.InvalidRunoffBoundaryInput;
-    inline for (inputs.heat_mj_per_step_by_face) |values|
+    inline for (inputs.heat_megajoules_per_step_by_face) |values|
         for (values) |value|
             if (!std.math.isFinite(value))
                 return error.InvalidRunoffBoundaryInput;
@@ -112,18 +112,18 @@ fn validateInputsAndState(inputs: Inputs, state: State, cell_count: usize) !void
             return error.InvalidRunoffBoundaryState;
     }
     if (!std.math.isFinite(state.cumulative_outward_runoff_m3) or
-        !std.math.isFinite(state.cumulative_outward_runoff_heat_mj))
+        !std.math.isFinite(state.cumulative_outward_runoff_heat_megajoules))
         return error.InvalidRunoffBoundaryState;
 }
 
 fn preflightUpdates(inputs: Inputs, state: State) !void {
     var cumulative_outward_runoff_m3 = state.cumulative_outward_runoff_m3;
-    var cumulative_outward_runoff_heat_mj =
-        state.cumulative_outward_runoff_heat_mj;
+    var cumulative_outward_runoff_heat_megajoules =
+        state.cumulative_outward_runoff_heat_megajoules;
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var signed_runoff_water_change_m3 =
                 state.signed_runoff_water_change_m3_by_cell[cell];
             var cumulative_outward_runoff_m3_for_cell =
@@ -148,11 +148,11 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
                     cumulative_outward_runoff_m3_for_cell,
                     -signed_water_change_m3,
                 );
-                const signed_heat_change_mj =
-                    direction * inputs.heat_mj_per_step_by_face[face_index][cell];
-                cumulative_outward_runoff_heat_mj = try checkedSum(
-                    cumulative_outward_runoff_heat_mj,
-                    -signed_heat_change_mj,
+                const signed_heat_change_megajoules =
+                    direction * inputs.heat_megajoules_per_step_by_face[face_index][cell];
+                cumulative_outward_runoff_heat_megajoules = try checkedSum(
+                    cumulative_outward_runoff_heat_megajoules,
+                    -signed_heat_change_megajoules,
                 );
             }
         }
@@ -206,11 +206,11 @@ test "REDIST runoff boundary water and heat preserve signed conservation" {
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 10,
-        .cumulative_outward_runoff_heat_mj = 100,
+        .cumulative_outward_runoff_heat_megajoules = 100,
     };
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -218,7 +218,7 @@ test "REDIST runoff boundary water and heat preserve signed conservation" {
             .last_row_inclusive = 1,
         },
         .water_m3_per_step_by_face = .{ &east_water, &west_water, &south_water, &north_water },
-        .heat_mj_per_step_by_face = .{ &east_heat, &west_heat, &south_heat, &north_heat },
+        .heat_megajoules_per_step_by_face = .{ &east_heat, &west_heat, &south_heat, &north_heat },
         .negligible_water_m3_by_cell = &.{ 0, 0, 0, 0 },
     }, &state);
 
@@ -231,7 +231,7 @@ test "REDIST runoff boundary water and heat preserve signed conservation" {
     try std.testing.expectEqual(@as(f64, 6), state.cumulative_outward_runoff_m3);
     try std.testing.expectEqual(
         @as(f64, 60),
-        state.cumulative_outward_runoff_heat_mj,
+        state.cumulative_outward_runoff_heat_megajoules,
     );
     var signed_change_m3: f64 = 0;
     var outward_change_m3: f64 = 0;
@@ -255,11 +255,11 @@ test "water threshold retains signed hourly flux but suppresses cumulative ledge
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 8,
-        .cumulative_outward_runoff_heat_mj = 10,
+        .cumulative_outward_runoff_heat_megajoules = 10,
     };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -267,7 +267,7 @@ test "water threshold retains signed hourly flux but suppresses cumulative ledge
             .last_row_inclusive = 0,
         },
         .water_m3_per_step_by_face = .{ &water, &.{0}, &.{0}, &.{0} },
-        .heat_mj_per_step_by_face = .{ &heat, &.{0}, &.{0}, &.{0} },
+        .heat_megajoules_per_step_by_face = .{ &heat, &.{0}, &.{0}, &.{0} },
         .negligible_water_m3_by_cell = &.{0.5},
     }, &state);
     try std.testing.expectEqual(@as(f64, -0.5), signed_water[0]);
@@ -275,7 +275,7 @@ test "water threshold retains signed hourly flux but suppresses cumulative ledge
     try std.testing.expectEqual(@as(f64, 8), state.cumulative_outward_runoff_m3);
     try std.testing.expectEqual(
         @as(f64, 10),
-        state.cumulative_outward_runoff_heat_mj,
+        state.cumulative_outward_runoff_heat_megajoules,
     );
 }
 
@@ -288,11 +288,11 @@ test "signed source face flux retains independent REDIST direction multiplier" {
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 0,
-        .cumulative_outward_runoff_heat_mj = 0,
+        .cumulative_outward_runoff_heat_megajoules = 0,
     };
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -300,7 +300,7 @@ test "signed source face flux retains independent REDIST direction multiplier" {
             .last_row_inclusive = 0,
         },
         .water_m3_per_step_by_face = .{ &.{0}, &west_water, &.{0}, &.{0} },
-        .heat_mj_per_step_by_face = .{ &.{0}, &west_heat, &.{0}, &.{0} },
+        .heat_megajoules_per_step_by_face = .{ &.{0}, &west_heat, &.{0}, &.{0} },
         .negligible_water_m3_by_cell = &.{0},
     }, &state);
     try std.testing.expectEqual(@as(f64, -2), signed_water[0]);
@@ -308,7 +308,7 @@ test "signed source face flux retains independent REDIST direction multiplier" {
     try std.testing.expectEqual(@as(f64, 2), state.cumulative_outward_runoff_m3);
     try std.testing.expectEqual(
         @as(f64, 20),
-        state.cumulative_outward_runoff_heat_mj,
+        state.cumulative_outward_runoff_heat_megajoules,
     );
 }
 
@@ -326,11 +326,11 @@ test "runtime boundary window does not treat outer storage as its edge" {
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 0,
-        .cumulative_outward_runoff_heat_mj = 0,
+        .cumulative_outward_runoff_heat_megajoules = 0,
     };
     try apply(.{
-        .grid_column_count = 4,
-        .grid_row_count = 3,
+        .lon_count = 4,
+        .lat_count = 3,
         .external_boundary_window = .{
             .first_column = 1,
             .last_column_inclusive = 2,
@@ -338,7 +338,7 @@ test "runtime boundary window does not treat outer storage as its edge" {
             .last_row_inclusive = 2,
         },
         .water_m3_per_step_by_face = .{ &east_water, &west_water, &south_water, &north_water },
-        .heat_mj_per_step_by_face = .{ &zero_heat, &zero_heat, &zero_heat, &zero_heat },
+        .heat_megajoules_per_step_by_face = .{ &zero_heat, &zero_heat, &zero_heat, &zero_heat },
         .negligible_water_m3_by_cell = &negligible,
     }, &state);
     try std.testing.expectEqual(@as(f64, 0), signed_water[0]);
@@ -357,11 +357,11 @@ test "late invalid boundary flux leaves all accounting unchanged" {
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 8,
-        .cumulative_outward_runoff_heat_mj = 9,
+        .cumulative_outward_runoff_heat_megajoules = 9,
     };
     try std.testing.expectError(error.InvalidRunoffBoundaryInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -369,7 +369,7 @@ test "late invalid boundary flux leaves all accounting unchanged" {
             .last_row_inclusive = 0,
         },
         .water_m3_per_step_by_face = .{ &valid, &valid, &valid, &invalid },
-        .heat_mj_per_step_by_face = .{ &valid, &valid, &valid, &valid },
+        .heat_megajoules_per_step_by_face = .{ &valid, &valid, &valid, &valid },
         .negligible_water_m3_by_cell = &.{ 0, 0 },
     }, &state));
     try std.testing.expectEqualSlices(f64, &.{ 4, 5 }, &signed_water);
@@ -377,7 +377,7 @@ test "late invalid boundary flux leaves all accounting unchanged" {
     try std.testing.expectEqual(@as(f64, 8), state.cumulative_outward_runoff_m3);
     try std.testing.expectEqual(
         @as(f64, 9),
-        state.cumulative_outward_runoff_heat_mj,
+        state.cumulative_outward_runoff_heat_megajoules,
     );
 }
 
@@ -388,11 +388,11 @@ test "invalid boundary dimensions and window fail explicitly" {
         .signed_runoff_water_change_m3_by_cell = &signed_water,
         .cumulative_outward_runoff_m3_by_cell = &cell_outward_water,
         .cumulative_outward_runoff_m3 = 0,
-        .cumulative_outward_runoff_heat_mj = 0,
+        .cumulative_outward_runoff_heat_megajoules = 0,
     };
     try std.testing.expectError(error.InvalidRunoffBoundaryWindow, apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 1,
             .last_column_inclusive = 0,
@@ -400,7 +400,7 @@ test "invalid boundary dimensions and window fail explicitly" {
             .last_row_inclusive = 0,
         },
         .water_m3_per_step_by_face = .{ &.{0}, &.{0}, &.{0}, &.{0} },
-        .heat_mj_per_step_by_face = .{ &.{0}, &.{0}, &.{0}, &.{0} },
+        .heat_megajoules_per_step_by_face = .{ &.{0}, &.{0}, &.{0}, &.{0} },
         .negligible_water_m3_by_cell = &.{0},
     }, &state));
 }

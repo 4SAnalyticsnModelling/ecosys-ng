@@ -66,6 +66,153 @@ pub fn initializeSurfaceCell(state: *State, cell: usize, air_volume_m3: f64, ini
     @memset(state.band_dissolved_mass_g[first .. first + species_count], 0);
 }
 
+/// STARTE lines 1411--1433 for one soil layer (L>=1). The surface litter cell
+/// L=0 uses `initializeSurfaceCell` instead.
+///
+/// Two source details are easy to lose and are asserted by the tests:
+///  - Dissolved oxygen is suppressed when the layer's upper face lies at or
+///    below the water table (`CDPTH(L-1) < DTBLZ` is the seeding condition).
+///    The suppression is oxygen-only; every other species is seeded at all
+///    depths, because saturated soil is anoxic rather than gas-free.
+///  - Aqueous ammonia is never seeded, matching the surface cell.
+///
+/// `ionic_strength` is the oracle's `CSTR1` for the layer, and
+/// `activity_coefficient` holds `ACO2X`/`ACH4X`/`AOXYX`/`AN2GX`/`AN2OX`/NH3/
+/// `AH2GX` in `Species` order. Each dissolved concentration is divided by
+/// `exp(A * CSTR1)`, which is exactly 1 for non-saline soil where `CSTR1` is 0.
+pub fn initializeSoilLayerCell(
+    state: *State,
+    layer_cell: usize,
+    air_volume_m3: f64,
+    water_volume_m3: f64,
+    layer_top_depth_m: f64,
+    water_table_depth_m: f64,
+    mean_annual_temperature_k: f64,
+    atmospheric_concentration_g_per_m3: [species_count]f64,
+    solubility_parameters: SurfaceSolubilityParameters,
+    ionic_strength: f64,
+    activity_coefficient: [species_count]f64,
+) !void {
+    if (layer_cell >= state.cell_count) return error.SoilGasLayerIndexOutOfBounds;
+    inline for (.{ air_volume_m3, water_volume_m3, layer_top_depth_m, water_table_depth_m, ionic_strength }) |value|
+        if (!std.math.isFinite(value)) return error.NonFiniteSoilGasInitialization;
+    if (air_volume_m3 < 0 or water_volume_m3 < 0 or ionic_strength < 0) return error.InvalidSoilGasInitialization;
+    const solubility = try surfaceSolubilityWaterToAir(mean_annual_temperature_k, solubility_parameters);
+    const above_water_table = layer_top_depth_m < water_table_depth_m;
+    for (0..species_count) |species| {
+        const index = layer_cell * species_count + species;
+        const concentration = atmospheric_concentration_g_per_m3[species];
+        if (!std.math.isFinite(concentration) or concentration < 0) return error.InvalidSoilGasInitialization;
+        const activity = activity_coefficient[species];
+        if (!std.math.isFinite(activity)) return error.InvalidSoilGasInitialization;
+        const ionic_divisor = @exp(activity * ionic_strength);
+        if (!std.math.isFinite(ionic_divisor) or ionic_divisor <= 0) return error.NonFiniteSoilGasInitialization;
+        state.gaseous_mass_g[index] = concentration * air_volume_m3;
+        const suppressed = species == @intFromEnum(Species.ammonia) or
+            (species == @intFromEnum(Species.oxygen) and !above_water_table);
+        state.dissolved_mass_g[index] = if (suppressed)
+            0
+        else
+            concentration * solubility[species] / ionic_divisor * water_volume_m3;
+        inline for (.{ state.gaseous_mass_g[index], state.dissolved_mass_g[index] }) |value|
+            if (!std.math.isFinite(value) or value < 0) return error.NonFiniteSoilGasInitialization;
+    }
+}
+
+/// `starte.f:32--34` PARAMETER activity coefficients in `Species` order. The
+/// ammonia slot is unused because aqueous NH3 is never seeded; it carries the
+/// N2O value so the array stays uniform.
+pub const starte_activity_coefficient = [species_count]f64{ 0.14, 0.14, 0.31, 0.23, 0.23, 0.23, 0.23 };
+
+const test_solubility: SurfaceSolubilityParameters = .{
+    .reference_water_to_air = .{ 0.7391, 0.03156, 0.02925, 0.01510, 0.5241, 285.2, 0.03156 },
+    .log_intercept = .{ 0.843, 0.597, 0.516, 0.456, 0.897, 0.513, 0.597 },
+    .temperature_coefficient_per_c = .{ 0.0281, 0.0199, 0.0172, 0.0152, 0.0299, 0.0171, 0.0199 },
+};
+const test_atmosphere = [species_count]f64{ 0.2144, 0.00096, 300.3, 975, 0.0001, 0.00001, 0.000001 };
+
+test "soil layer above the water table receives dissolved oxygen" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    try initializeSoilLayerCell(&state, 0, 0.15, 0.25, 0.1, 1.5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient);
+    const oxygen = @intFromEnum(Species.oxygen);
+    try std.testing.expectApproxEqRel(@as(f64, 300.3 * 0.15), state.gaseous_mass_g[oxygen], 1e-15);
+    try std.testing.expectApproxEqRel(
+        300.3 * 0.02925 * @exp(0.516 - 0.0172 * 6.5) * 0.25,
+        state.dissolved_mass_g[oxygen],
+        1e-12,
+    );
+}
+
+test "soil layer at or below the water table starts anoxic in the aqueous phase only" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    // Upper face exactly at the water table: the source condition is a strict
+    // `<`, so this layer must be suppressed.
+    try initializeSoilLayerCell(&state, 0, 0.02, 0.4, 1.5, 1.5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient);
+    try std.testing.expectEqual(@as(f64, 0), state.dissolved_mass_g[@intFromEnum(Species.oxygen)]);
+    // Gaseous oxygen is unaffected, and other dissolved species are still seeded.
+    try std.testing.expect(state.gaseous_mass_g[@intFromEnum(Species.oxygen)] > 0);
+    try std.testing.expect(state.dissolved_mass_g[@intFromEnum(Species.carbon_dioxide)] > 0);
+    try std.testing.expect(state.dissolved_mass_g[@intFromEnum(Species.nitrogen)] > 0);
+}
+
+test "aqueous ammonia is never seeded in soil layers" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    try initializeSoilLayerCell(&state, 0, 0.1, 0.3, 0, 5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient);
+    try std.testing.expectEqual(@as(f64, 0), state.dissolved_mass_g[@intFromEnum(Species.ammonia)]);
+    try std.testing.expect(state.gaseous_mass_g[@intFromEnum(Species.ammonia)] > 0);
+}
+
+test "ionic strength divides dissolved mass and is a no-op when zero" {
+    var fresh = try State.init(std.testing.allocator, 1);
+    defer fresh.deinit();
+    var saline = try State.init(std.testing.allocator, 1);
+    defer saline.deinit();
+    try initializeSoilLayerCell(&fresh, 0, 0.15, 0.25, 0.1, 1.5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient);
+    try initializeSoilLayerCell(&saline, 0, 0.15, 0.25, 0.1, 1.5, 279.65, test_atmosphere, test_solubility, 2.0, starte_activity_coefficient);
+    const oxygen = @intFromEnum(Species.oxygen);
+    // Zero ionic strength must leave the plain Henry expression untouched, which
+    // is why this term is invisible in the non-saline Ottawa example.
+    try std.testing.expectApproxEqRel(
+        300.3 * 0.02925 * @exp(0.516 - 0.0172 * 6.5) * 0.25,
+        fresh.dissolved_mass_g[oxygen],
+        1e-12,
+    );
+    // Saline soil divides by exp(AOXYX * CSTR1) with AOXYX = 0.31.
+    try std.testing.expectApproxEqRel(
+        fresh.dissolved_mass_g[oxygen] / @exp(0.31 * 2.0),
+        saline.dissolved_mass_g[oxygen],
+        1e-12,
+    );
+    // The gaseous phase carries no ionic-strength term.
+    try std.testing.expectEqual(fresh.gaseous_mass_g[oxygen], saline.gaseous_mass_g[oxygen]);
+    // Each species uses its own coefficient, so CO2 (0.14) is divided less than
+    // oxygen (0.31) at the same ionic strength.
+    const co2 = @intFromEnum(Species.carbon_dioxide);
+    try std.testing.expectApproxEqRel(
+        fresh.dissolved_mass_g[co2] / @exp(0.14 * 2.0),
+        saline.dissolved_mass_g[co2],
+        1e-12,
+    );
+}
+
+test "negative ionic strength is rejected" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    try std.testing.expectError(error.InvalidSoilGasInitialization, initializeSoilLayerCell(&state, 0, 0.1, 0.3, 0, 5, 279.65, test_atmosphere, test_solubility, -1, starte_activity_coefficient));
+    try std.testing.expectError(error.NonFiniteSoilGasInitialization, initializeSoilLayerCell(&state, 0, 0.1, 0.3, 0, 5, 279.65, test_atmosphere, test_solubility, std.math.nan(f64), starte_activity_coefficient));
+}
+
+test "soil layer gas seeding rejects invalid geometry and layer indices" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    try std.testing.expectError(error.SoilGasLayerIndexOutOfBounds, initializeSoilLayerCell(&state, 1, 0.1, 0.3, 0, 5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient));
+    try std.testing.expectError(error.InvalidSoilGasInitialization, initializeSoilLayerCell(&state, 0, -1, 0.3, 0, 5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient));
+    try std.testing.expectError(error.NonFiniteSoilGasInitialization, initializeSoilLayerCell(&state, 0, 0.1, std.math.nan(f64), 0, 5, 279.65, test_atmosphere, test_solubility, 0, starte_activity_coefficient));
+}
+
 pub const Face = struct {
     first_cell: usize,
     second_cell: usize,

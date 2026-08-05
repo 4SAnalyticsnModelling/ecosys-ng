@@ -6,8 +6,8 @@ pub const State = struct { dissolved: OrganicMatter, adsorbed: OrganicMatter };
 
 pub const Inputs = struct {
     water_volume_m3: f64,
-    soil_mass_Mg: f64,
-    anion_exchange_capacity_mol_per_Mg: f64,
+    soil_mass_megagrams: f64,
+    anion_exchange_capacity_mol_per_megagram: f64,
     adsorption_coefficient: f64,
     substrate_complex_fraction: f64,
     doc_fraction_of_dissolved_carbon: f64,
@@ -25,7 +25,7 @@ pub fn calculate(state: State, inputs: Inputs) !Flux {
     try validateState(state);
     try validateInputs(inputs);
     if (inputs.water_volume_m3 <= inputs.negligible_amount_g or inputs.substrate_complex_fraction == 0) return .{ .doc_g_c = 0, .acetate_g_c = 0, .don_g_n = 0, .dop_g_p = 0 };
-    const adsorption_capacity = inputs.soil_mass_Mg * inputs.anion_exchange_capacity_mol_per_Mg * inputs.adsorption_coefficient * inputs.substrate_complex_fraction;
+    const adsorption_capacity = inputs.soil_mass_megagrams * inputs.anion_exchange_capacity_mol_per_megagram * inputs.adsorption_coefficient * inputs.substrate_complex_fraction;
     const aqueous_capacity = inputs.water_volume_m3 * inputs.substrate_complex_fraction;
     if (adsorption_capacity + aqueous_capacity <= 0) return error.ZeroOrganicSorptionCapacity;
     const dissolved = floorMatter(state.dissolved, inputs.negligible_amount_g);
@@ -75,7 +75,7 @@ fn validateInputs(inputs: Inputs) !void {
 }
 
 fn testInputs() Inputs {
-    return .{ .water_volume_m3 = 2, .soil_mass_Mg = 1, .anion_exchange_capacity_mol_per_Mg = 100, .adsorption_coefficient = 0.1, .substrate_complex_fraction = 0.5, .doc_fraction_of_dissolved_carbon = 0.7, .acetate_fraction_of_dissolved_carbon = 0.3, .sorption_rate_per_h = 0.2, .timestep_h = 1, .negligible_amount_g = 1e-12 };
+    return .{ .water_volume_m3 = 2, .soil_mass_megagrams = 1, .anion_exchange_capacity_mol_per_megagram = 100, .adsorption_coefficient = 0.1, .substrate_complex_fraction = 0.5, .doc_fraction_of_dissolved_carbon = 0.7, .acetate_fraction_of_dissolved_carbon = 0.3, .sorption_rate_per_h = 0.2, .timestep_h = 1, .negligible_amount_g = 1e-12 };
 }
 
 test "organic sorption transaction conserves every dissolved and adsorbed pool" {

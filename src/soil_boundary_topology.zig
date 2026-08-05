@@ -226,7 +226,7 @@ fn appendLateral(faces: []Face, next: *usize, cell_index: usize, layer_index: us
 }
 
 test "runtime boundary topology preserves READI compass order and WATSUB signs" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     var site = try site_module.parse(std.testing.allocator, @import("test_fixtures.zig").site_source_2x1, 2, 1);
@@ -275,7 +275,7 @@ test "runtime boundary topology preserves READI compass order and WATSUB signs" 
 }
 
 test "internal water table refresh interpolates HOUR1 DPTHT from runtime saturation" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     var site = try site_module.parse(std.testing.allocator, @import("test_fixtures.zig").site_source, 1, 1);

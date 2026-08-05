@@ -11,8 +11,8 @@ pub const Inputs = struct {
     latent_surface_resistance_h_per_m: f64,
     stomatal_resistance_h_per_m: f64,
     canopy_water_capacity_change_m3_per_step: f64,
-    latent_heat_of_vaporization_mj_per_m3: f64,
-    sensible_surface_conductance_mj_per_k_step: f64,
+    latent_heat_of_vaporization_megajoules_per_m3: f64,
+    sensible_surface_conductance_megajoules_per_k_step: f64,
     canopy_to_surface_temperature_difference_k: f64,
 };
 
@@ -22,9 +22,9 @@ pub const Result = struct {
     intercepted_evaporation_m3_per_step: f64,
     potential_transpiration_m3_per_step: f64,
     net_transpiration_m3_per_step: f64,
-    latent_heat_flux_mj_per_step: f64,
-    intercepted_water_convective_heat_flux_mj_per_step: f64,
-    sensible_heat_flux_mj_per_step: f64,
+    latent_heat_flux_megajoules_per_step: f64,
+    intercepted_water_convective_heat_flux_megajoules_per_step: f64,
+    sensible_heat_flux_megajoules_per_step: f64,
 };
 
 /// UPTAKE.F 999--1014. Preserves the source evaporation branch and the
@@ -72,12 +72,12 @@ pub fn calculate(inputs: Inputs) !Result {
         inputs.canopy_water_capacity_change_m3_per_step;
     const latent_heat =
         (potential_transpiration + intercepted_evaporation) *
-        inputs.latent_heat_of_vaporization_mj_per_m3;
+        inputs.latent_heat_of_vaporization_megajoules_per_m3;
     const convective_water_heat =
         intercepted_evaporation * 4.19 *
         inputs.canopy_surface_temperature_k;
     const sensible_heat =
-        inputs.sensible_surface_conductance_mj_per_k_step *
+        inputs.sensible_surface_conductance_megajoules_per_k_step *
         inputs.canopy_to_surface_temperature_difference_k;
     const result = Result{
         .surface_vapor_concentration_m3_per_m3 = surface_vapor,
@@ -85,9 +85,9 @@ pub fn calculate(inputs: Inputs) !Result {
         .intercepted_evaporation_m3_per_step = intercepted_evaporation,
         .potential_transpiration_m3_per_step = potential_transpiration,
         .net_transpiration_m3_per_step = net_transpiration,
-        .latent_heat_flux_mj_per_step = latent_heat,
-        .intercepted_water_convective_heat_flux_mj_per_step = convective_water_heat,
-        .sensible_heat_flux_mj_per_step = sensible_heat,
+        .latent_heat_flux_megajoules_per_step = latent_heat,
+        .intercepted_water_convective_heat_flux_megajoules_per_step = convective_water_heat,
+        .sensible_heat_flux_megajoules_per_step = sensible_heat,
     };
     inline for (@typeInfo(Result).@"struct".fields) |field|
         if (!std.math.isFinite(@field(result, field.name)))
@@ -107,8 +107,8 @@ fn validate(inputs: Inputs) !void {
         inputs.adjusted_sensible_surface_resistance_h_per_m < 0 or
         inputs.latent_surface_resistance_h_per_m < 0 or
         inputs.stomatal_resistance_h_per_m < 0 or
-        inputs.latent_heat_of_vaporization_mj_per_m3 <= 0 or
-        inputs.sensible_surface_conductance_mj_per_k_step < 0)
+        inputs.latent_heat_of_vaporization_megajoules_per_m3 <= 0 or
+        inputs.sensible_surface_conductance_megajoules_per_k_step < 0)
         return error.InvalidCanopyVaporHeatFluxInput;
 }
 
@@ -124,8 +124,8 @@ fn sourceInputs() Inputs {
         .latent_surface_resistance_h_per_m = 0.3,
         .stomatal_resistance_h_per_m = 0.8,
         .canopy_water_capacity_change_m3_per_step = 0.001,
-        .latent_heat_of_vaporization_mj_per_m3 = 2450,
-        .sensible_surface_conductance_mj_per_k_step = 3,
+        .latent_heat_of_vaporization_megajoules_per_m3 = 2450,
+        .sensible_surface_conductance_megajoules_per_k_step = 3,
         .canopy_to_surface_temperature_difference_k = 2,
     };
 }
@@ -149,7 +149,7 @@ test "positive vapor flux is entirely intercepted evaporation" {
     try std.testing.expectEqual(@as(f64, 0), result.residual_vapor_flux_m3_per_step);
     try std.testing.expectEqual(@as(f64, 0), result.potential_transpiration_m3_per_step);
     try std.testing.expectEqual(@as(f64, 0.001), result.net_transpiration_m3_per_step);
-    try std.testing.expectEqual(@as(f64, 6), result.sensible_heat_flux_mj_per_step);
+    try std.testing.expectEqual(@as(f64, 6), result.sensible_heat_flux_megajoules_per_step);
 }
 
 test "negative vapor flux limits intercepted loss then passes residual to transpiration" {

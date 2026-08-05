@@ -2,6 +2,17 @@ const std = @import("std");
 const RootState = @import("plant_root_system.zig").State;
 
 pub const species_count: usize = 8;
+pub const TransactionMapping = [species_count]f64;
+
+pub fn mapTransactionResult(staged_exchange_mol: []const f64) !TransactionMapping {
+    if (staged_exchange_mol.len != species_count) return error.RootSaltSpeciesCountMismatch;
+    var mapped: TransactionMapping = undefined;
+    for (staged_exchange_mol, 0..) |exchange, species| {
+        if (!std.math.isFinite(exchange)) return error.NonFiniteRootSaltCompetition;
+        mapped[species] = exchange;
+    }
+    return mapped;
+}
 
 pub const Parameters = struct {
     reference_temperature_k: f64,
@@ -123,6 +134,7 @@ pub const Workspace = struct {
     allocator: std.mem.Allocator,
     competitor_capacity: usize,
     competitors: []LayerCompetitor,
+    admission_index_by_competitor: []usize,
     staged_exchange_mol: []f64,
     candidate_exchange_mol: []f64,
 
@@ -130,17 +142,20 @@ pub const Workspace = struct {
         if (competitor_capacity == 0) return error.ZeroRootSaltCompetitorCapacity;
         const competitors = try allocator.alloc(LayerCompetitor, competitor_capacity);
         errdefer allocator.free(competitors);
+        const admission_indices = try allocator.alloc(usize, competitor_capacity);
+        errdefer allocator.free(admission_indices);
         const staged = try allocator.alloc(f64, try std.math.mul(usize, competitor_capacity, species_count));
         errdefer allocator.free(staged);
         const candidate = try allocator.alloc(f64, try std.math.mul(usize, competitor_capacity, species_count));
         @memset(staged, 0);
         @memset(candidate, 0);
-        return .{ .allocator = allocator, .competitor_capacity = competitor_capacity, .competitors = competitors, .staged_exchange_mol = staged, .candidate_exchange_mol = candidate };
+        return .{ .allocator = allocator, .competitor_capacity = competitor_capacity, .competitors = competitors, .admission_index_by_competitor = admission_indices, .staged_exchange_mol = staged, .candidate_exchange_mol = candidate };
     }
 
     pub fn deinit(self: *Workspace) void {
         self.allocator.free(self.candidate_exchange_mol);
         self.allocator.free(self.staged_exchange_mol);
+        self.allocator.free(self.admission_index_by_competitor);
         self.allocator.free(self.competitors);
         self.* = undefined;
     }
@@ -156,26 +171,44 @@ pub const Workspace = struct {
         options: SolverOptions,
     ) !SolverReport {
         if (competitor_count > self.competitor_capacity) return error.RootSaltCompetitorOutOfBounds;
-        return advanceCompetingLayer(
+        const report = try self.stage(
             roots,
             soil_content_mol,
             soil_water_volume_m3,
             temperature_k,
             parameters,
-            self.competitors[0..competitor_count],
-            self.staged_exchange_mol[0 .. competitor_count * species_count],
-            self.candidate_exchange_mol[0 .. competitor_count * species_count],
+            competitor_count,
             options,
         );
+        try self.commitStaged(roots, soil_content_mol, competitor_count);
+        return report;
+    }
+
+    pub fn stage(self: *Workspace, roots: *const RootState, soil_content_mol: []const f64, soil_water_volume_m3: f64, temperature_k: f64, parameters: Parameters, competitor_count: usize, options: SolverOptions) !SolverReport {
+        if (competitor_count > self.competitor_capacity) return error.RootSaltCompetitorOutOfBounds;
+        return stageCompetingLayer(roots, soil_content_mol, soil_water_volume_m3, temperature_k, parameters, self.competitors[0..competitor_count], self.staged_exchange_mol[0 .. competitor_count * species_count], self.candidate_exchange_mol[0 .. competitor_count * species_count], options);
+    }
+
+    pub fn commitStaged(self: *Workspace, roots: *RootState, soil_content_mol: []f64, competitor_count: usize) !void {
+        if (competitor_count > self.competitor_capacity) return error.RootSaltCompetitorOutOfBounds;
+        try commitStagedCompetingLayer(roots, soil_content_mol, self.competitors[0..competitor_count], self.staged_exchange_mol[0 .. competitor_count * species_count]);
     }
 };
 
 pub const GridWorkspace = struct {
     allocator: std.mem.Allocator,
     per_cell: []Workspace,
+    admission_capacity_per_cell: usize,
+    transaction_salt_storage: []TransactionMapping,
+    transaction_salt_selected: []bool,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize) !GridWorkspace {
+        return initWithAdmissionCapacity(allocator, cell_count, competitor_capacity_per_cell, competitor_capacity_per_cell);
+    }
+
+    pub fn initWithAdmissionCapacity(allocator: std.mem.Allocator, cell_count: usize, competitor_capacity_per_cell: usize, admission_capacity_per_cell: usize) !GridWorkspace {
         if (cell_count == 0) return error.ZeroRootSaltGridCells;
+        if (admission_capacity_per_cell == 0) return error.ZeroRootSaltAdmissionCapacity;
         const cells = try allocator.alloc(Workspace, cell_count);
         errdefer allocator.free(cells);
         var initialized: usize = 0;
@@ -184,11 +217,28 @@ pub const GridWorkspace = struct {
             cell.* = try Workspace.init(allocator, competitor_capacity_per_cell);
             initialized += 1;
         }
-        return .{ .allocator = allocator, .per_cell = cells };
+        const admission_count = try std.math.mul(usize, cell_count, admission_capacity_per_cell);
+        const transaction_salt_storage = try allocator.alloc(TransactionMapping, admission_count);
+        errdefer allocator.free(transaction_salt_storage);
+        const transaction_salt_selected = try allocator.alloc(bool, admission_count);
+        @memset(transaction_salt_selected, false);
+        return .{ .allocator = allocator, .per_cell = cells, .admission_capacity_per_cell = admission_capacity_per_cell, .transaction_salt_storage = transaction_salt_storage, .transaction_salt_selected = transaction_salt_selected };
+    }
+
+    pub fn transactionSaltBuffer(self: *GridWorkspace, cell: usize) ![]TransactionMapping {
+        if (cell >= self.per_cell.len) return error.RootSaltGridCellOutOfBounds;
+        return self.transaction_salt_storage[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
+    }
+
+    pub fn transactionSaltSelection(self: *GridWorkspace, cell: usize) ![]bool {
+        if (cell >= self.per_cell.len) return error.RootSaltGridCellOutOfBounds;
+        return self.transaction_salt_selected[cell * self.admission_capacity_per_cell ..][0..self.admission_capacity_per_cell];
     }
 
     pub fn deinit(self: *GridWorkspace) void {
         for (self.per_cell) |*cell| cell.deinit();
+        self.allocator.free(self.transaction_salt_selected);
+        self.allocator.free(self.transaction_salt_storage);
         self.allocator.free(self.per_cell);
         self.* = undefined;
     }
@@ -197,9 +247,9 @@ pub const GridWorkspace = struct {
 /// Stages every runtime root competitor against one immutable layer snapshot.
 /// This is the allocation-free hourly replacement for traversal-ordered RUPZ*
 /// publication in UPTAKE.
-pub fn advanceCompetingLayer(
-    roots: *RootState,
-    soil_content_mol: []f64,
+pub fn stageCompetingLayer(
+    roots: *const RootState,
+    soil_content_mol: []const f64,
     soil_water_volume_m3: f64,
     temperature_k: f64,
     parameters: Parameters,
@@ -268,21 +318,26 @@ pub fn advanceCompetingLayer(
     // Candidate is the converged Newton/Picard state; the initial zero state
     // can converge without entering the copy at the end of an iteration.
     @memcpy(staged_exchange_mol, candidate_exchange_mol);
+    return .{ .iterations = iterations, .newton_raphson_steps = newton_raphson_steps, .picard_steps = picard_steps };
+}
+
+pub fn commitStagedCompetingLayer(roots: *RootState, soil_content_mol: []f64, competitors: []const LayerCompetitor, staged_exchange_mol: []const f64) !void {
+    if (soil_content_mol.len != species_count or staged_exchange_mol.len != competitors.len * species_count) return error.RootSaltSpeciesCountMismatch;
     var total_exchange = [_]f64{0} ** species_count;
-    for (0..species_count) |species| for (0..competitors.len) |competitor_index| {
-        total_exchange[species] += staged_exchange_mol[competitor_index * species_count + species];
-    };
     for (0..species_count) |species| {
-        if (!std.math.isFinite(soil_content_mol[species]) or soil_content_mol[species] < 0) return error.InvalidRootSaltCommitInput;
+        for (0..competitors.len) |competitor_index| total_exchange[species] += staged_exchange_mol[competitor_index * species_count + species];
+    }
+    for (0..species_count) |species| {
+        if (!std.math.isFinite(soil_content_mol[species]) or soil_content_mol[species] < 0 or !std.math.isFinite(total_exchange[species])) return error.InvalidRootSaltCommitInput;
         if (total_exchange[species] > soil_content_mol[species] + 1.0e-12) return error.RootSaltCompetitionOverdraw;
     }
     for (competitors, 0..) |competitor, competitor_index| {
         const root_layer = try roots.layerIndex(competitor.plant, competitor.domain, competitor.layer);
-        const base = competitor_index * species_count;
         for (0..species_count) |species| {
             const salt_index = root_layer * species_count + species;
-            const next_root = roots.salt_content_mol[salt_index] + staged_exchange_mol[base + species];
-            const next_uptake = roots.salt_uptake_mol_per_h[salt_index] + staged_exchange_mol[base + species];
+            const exchange = staged_exchange_mol[competitor_index * species_count + species];
+            const next_root = roots.salt_content_mol[salt_index] + exchange;
+            const next_uptake = roots.salt_uptake_mol_per_h[salt_index] + exchange;
             if (!std.math.isFinite(next_root) or !std.math.isFinite(next_uptake) or next_root < -1.0e-12) return error.InsufficientSaltForRootExchange;
         }
     }
@@ -296,7 +351,6 @@ pub fn advanceCompetingLayer(
             roots.salt_uptake_mol_per_h[salt_index] += staged_exchange_mol[base + species];
         }
     }
-    return .{ .iterations = iterations, .newton_raphson_steps = newton_raphson_steps, .picard_steps = picard_steps };
 }
 
 fn implicitExchangeProposal(
@@ -446,4 +500,71 @@ test "dynamic salt competitors share one snapshot beyond legacy plant capacity" 
     try std.testing.expectError(error.RootSaltSolverDidNotConverge, workspace.advance(&roots, &soil, 1, 298.15, compatibilityParameters(), 7, .{ .absolute_tolerance_mol = 1.0e-30, .relative_tolerance = 1.0e-30, .picard_relaxation = 0.5, .max_iterations = 1 }));
     try std.testing.expectEqualSlices(f64, &soil_before_failure, &soil);
     try std.testing.expectEqual(root_before_failure, roots.salt_content_mol[0]);
+}
+
+test "dynamic salt advance is bit-identical to stage then commit for single and shared competitors" {
+    const options: SolverOptions = .{ .absolute_tolerance_mol = 1.0e-12, .relative_tolerance = 1.0e-10, .picard_relaxation = 0.5, .max_iterations = 40 };
+    for ([_]usize{ 1, 2 }) |competitor_count| {
+        var combined_roots = try RootState.init(std.testing.allocator, competitor_count, 1, 1);
+        defer combined_roots.deinit();
+        var staged_roots = try RootState.init(std.testing.allocator, competitor_count, 1, 1);
+        defer staged_roots.deinit();
+        var combined = try Workspace.init(std.testing.allocator, competitor_count);
+        defer combined.deinit();
+        var staged = try Workspace.init(std.testing.allocator, competitor_count);
+        defer staged.deinit();
+        for (0..competitor_count) |plant| {
+            const root = try combined_roots.layerIndex(plant, 0, 0);
+            const competitor: LayerCompetitor = .{ .plant = plant, .domain = 0, .layer = 0, .soil_inventory_fraction = 1 / @as(f64, @floatFromInt(competitor_count)), .root_water_volume_m3 = 0.1, .water_advection_m3_per_step = 0.01, .diffusive_geometry_m = 10, .plant_population_count = 1 };
+            combined.competitors[plant] = competitor;
+            staged.competitors[plant] = competitor;
+            for (0..species_count) |species| {
+                combined_roots.salt_content_mol[root * species_count + species] = @as(f64, @floatFromInt(species + plant + 1)) * 0.01;
+                staged_roots.salt_content_mol[root * species_count + species] = combined_roots.salt_content_mol[root * species_count + species];
+            }
+        }
+        var combined_soil = [_]f64{8} ** species_count;
+        var staged_soil = combined_soil;
+        const combined_report = try combined.advance(&combined_roots, &combined_soil, 1, 298.15, compatibilityParameters(), competitor_count, options);
+        const staged_report = try staged.stage(&staged_roots, &staged_soil, 1, 298.15, compatibilityParameters(), competitor_count, options);
+        try staged.commitStaged(&staged_roots, &staged_soil, competitor_count);
+        try std.testing.expectEqual(combined_report, staged_report);
+        try std.testing.expectEqualSlices(f64, &combined_soil, &staged_soil);
+        try std.testing.expectEqualSlices(f64, combined_roots.salt_content_mol, staged_roots.salt_content_mol);
+        try std.testing.expectEqualSlices(f64, combined_roots.salt_uptake_mol_per_h, staged_roots.salt_uptake_mol_per_h);
+        for (0..species_count) |species| {
+            var combined_total = combined_soil[species];
+            var staged_total = staged_soil[species];
+            for (0..competitor_count) |plant| {
+                combined_total += combined_roots.salt_content_mol[(try combined_roots.layerIndex(plant, 0, 0)) * species_count + species];
+                staged_total += staged_roots.salt_content_mol[(try staged_roots.layerIndex(plant, 0, 0)) * species_count + species];
+            }
+            try std.testing.expectEqual(combined_total, staged_total);
+        }
+    }
+}
+
+test "late staged salt commit failure rolls back every ion and disabled mappings remain unselected" {
+    var roots = try RootState.init(std.testing.allocator, 2, 1, 1);
+    defer roots.deinit();
+    var workspace = try Workspace.init(std.testing.allocator, 2);
+    defer workspace.deinit();
+    for (0..2) |plant| workspace.competitors[plant] = .{ .plant = plant, .domain = 0, .layer = 0, .soil_inventory_fraction = 0.5, .root_water_volume_m3 = 0.1, .water_advection_m3_per_step = 0.01, .diffusive_geometry_m = 10, .plant_population_count = 1 };
+    var soil = [_]f64{8} ** species_count;
+    _ = try workspace.stage(&roots, &soil, 1, 298.15, compatibilityParameters(), 2, .{ .absolute_tolerance_mol = 1.0e-12, .relative_tolerance = 1.0e-10, .picard_relaxation = 0.5, .max_iterations = 40 });
+    workspace.staged_exchange_mol[species_count + 7] = soil[7] + 1;
+    const soil_before = soil;
+    const roots_before = try std.testing.allocator.dupe(f64, roots.salt_content_mol);
+    defer std.testing.allocator.free(roots_before);
+    const uptake_before = try std.testing.allocator.dupe(f64, roots.salt_uptake_mol_per_h);
+    defer std.testing.allocator.free(uptake_before);
+    try std.testing.expectError(error.RootSaltCompetitionOverdraw, workspace.commitStaged(&roots, &soil, 2));
+    try std.testing.expectEqualSlices(f64, &soil_before, &soil);
+    try std.testing.expectEqualSlices(f64, roots_before, roots.salt_content_mol);
+    try std.testing.expectEqualSlices(f64, uptake_before, roots.salt_uptake_mol_per_h);
+
+    var grid = try GridWorkspace.initWithAdmissionCapacity(std.testing.allocator, 1, 2, 4);
+    defer grid.deinit();
+    const selected = try grid.transactionSaltSelection(0);
+    try std.testing.expectEqualSlices(bool, &[_]bool{false} ** 4, selected);
 }

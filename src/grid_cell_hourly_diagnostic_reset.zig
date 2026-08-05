@@ -1,3 +1,26 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 3015--3064. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: diagnostic-only. This kernel resets legacy running totals that no
+//! production module accumulates and no production module reads. Production
+//! reconstructs the equivalent totals on demand in
+//! `landscape_mass_balance_runtime.reconstruct`, which cannot drift from the
+//! state it summarizes. Binding a reset for an accumulator that nothing
+//! accumulates would add cost and no behaviour.
+//!
+//! Superseded by: `landscape_mass_balance_runtime.reconstruct`.
+//!
+//! Field census: 54 declared fields, only 17 of which appear anywhere else
+//! in `src/`, and those 17 are generic timestep-flux names owned by transport
+//! modules rather than by any diagnostic accumulator.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const WaterAndHeat = struct {

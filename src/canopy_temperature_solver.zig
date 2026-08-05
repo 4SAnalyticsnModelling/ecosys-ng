@@ -19,11 +19,11 @@ pub const State = struct {
     cell_count: usize,
     species_count: usize,
     equilibrium_temperature_k: []f64,
-    energy_residual_mj_per_m2: []f64,
-    residual_tolerance_mj_per_m2: []f64,
-    sensible_heat_flux_mj_per_m2: []f64,
-    latent_heat_flux_mj_per_m2: []f64,
-    storage_heat_flux_mj_per_m2: []f64,
+    energy_residual_megajoules_per_m2: []f64,
+    residual_tolerance_megajoules_per_m2: []f64,
+    sensible_heat_flux_megajoules_per_m2: []f64,
+    latent_heat_flux_megajoules_per_m2: []f64,
+    storage_heat_flux_megajoules_per_m2: []f64,
     iteration_count: []u16,
     newton_raphson_step_count: []u16,
     picard_step_count: []u16,
@@ -77,16 +77,16 @@ pub const ApplyContext = struct {
     air_vapor_pressure_kpa: []const f64,
     exposure: *const ExposureState,
     interception: *const InterceptionState,
-    heat_capacity_mj_per_m2_k: []const f64,
-    sensible_heat_conductance_mj_per_m2_h_k: []const f64,
-    latent_heat_conductance_mj_per_m2_h_kpa: []const f64,
+    heat_capacity_megajoules_per_m2_k: []const f64,
+    sensible_heat_conductance_megajoules_per_m2_h_k: []const f64,
+    latent_heat_conductance_megajoules_per_m2_h_kpa: []const f64,
     surface_vapor_activity_fraction: []const f64,
     settings: Settings,
 };
 
 const ResidualContext = struct {
-    absorbed_shortwave_mj_per_m2: f64,
-    downward_longwave_mj_per_m2: f64,
+    absorbed_shortwave_megajoules_per_m2: f64,
+    downward_longwave_megajoules_per_m2: f64,
     air_temperature_k: f64,
     atmospheric_vapor_pressure_kpa: f64,
     previous_temperature_k: f64,
@@ -103,18 +103,18 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
     const result = context.result;
     const count = try std.math.mul(usize, result.cell_count, result.species_count);
     if (range.end > result.cell_count or context.plants.cell_count != result.cell_count or context.plants.species_count != result.species_count or context.atmosphere.cell_count != result.cell_count or context.exposure.cell_count != result.cell_count or context.exposure.species_count != result.species_count or context.interception.cell_count != result.cell_count or context.interception.species_count != result.species_count or context.air_temperature_k.len != result.cell_count or context.air_vapor_pressure_kpa.len != result.cell_count) return error.CanopyTemperatureDimensionMismatch;
-    inline for (.{ context.heat_capacity_mj_per_m2_k, context.sensible_heat_conductance_mj_per_m2_h_k, context.latent_heat_conductance_mj_per_m2_h_kpa, context.surface_vapor_activity_fraction }) |values| if (values.len != count) return error.CanopyTemperatureDimensionMismatch;
+    inline for (.{ context.heat_capacity_megajoules_per_m2_k, context.sensible_heat_conductance_megajoules_per_m2_h_k, context.latent_heat_conductance_megajoules_per_m2_h_kpa, context.surface_vapor_activity_fraction }) |values| if (values.len != count) return error.CanopyTemperatureDimensionMismatch;
 
     for (range.first..range.end) |cell| for (0..result.species_count) |species| {
         const index = cell * result.species_count + species;
-        const heat_capacity = context.heat_capacity_mj_per_m2_k[index];
-        const sensible_conductance = context.sensible_heat_conductance_mj_per_m2_h_k[index];
-        const latent_conductance = context.latent_heat_conductance_mj_per_m2_h_kpa[index];
+        const heat_capacity = context.heat_capacity_megajoules_per_m2_k[index];
+        const sensible_conductance = context.sensible_heat_conductance_megajoules_per_m2_h_k[index];
+        const latent_conductance = context.latent_heat_conductance_megajoules_per_m2_h_kpa[index];
         const vapor_activity = context.surface_vapor_activity_fraction[index];
         if (!std.math.isFinite(heat_capacity) or heat_capacity <= 0 or !std.math.isFinite(sensible_conductance) or sensible_conductance < 0 or !std.math.isFinite(latent_conductance) or latent_conductance < 0 or !std.math.isFinite(vapor_activity) or vapor_activity < 0 or vapor_activity > 1) return error.InvalidCanopyTemperatureRuntimeInput;
         const residual_context: ResidualContext = .{
-            .absorbed_shortwave_mj_per_m2 = context.interception.absorbed_shortwave_mj_per_m2[index],
-            .downward_longwave_mj_per_m2 = context.atmosphere.longwave_radiation_mj_per_m2[cell],
+            .absorbed_shortwave_megajoules_per_m2 = context.interception.absorbed_shortwave_megajoules_per_m2[index],
+            .downward_longwave_megajoules_per_m2 = context.atmosphere.longwave_radiation_megajoules_per_m2[cell],
             .air_temperature_k = context.air_temperature_k[cell],
             .atmospheric_vapor_pressure_kpa = context.air_vapor_pressure_kpa[cell],
             .previous_temperature_k = context.plants.canopy_temperature_k[index],
@@ -132,11 +132,11 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
             return err;
         };
         result.equilibrium_temperature_k[index] = solved.root;
-        result.energy_residual_mj_per_m2[index] = solved.residual;
-        result.residual_tolerance_mj_per_m2[index] = options.absolute_tolerance + options.relative_tolerance * options.residual_scale;
-        result.sensible_heat_flux_mj_per_m2[index] = residual_context.sensible_conductance * (residual_context.air_temperature_k - solved.root);
-        result.latent_heat_flux_mj_per_m2[index] = latentHeatFlux(residual_context, solved.root);
-        result.storage_heat_flux_mj_per_m2[index] = residual_context.storage_conductance * (residual_context.previous_temperature_k - solved.root);
+        result.energy_residual_megajoules_per_m2[index] = solved.residual;
+        result.residual_tolerance_megajoules_per_m2[index] = options.absolute_tolerance + options.relative_tolerance * options.residual_scale;
+        result.sensible_heat_flux_megajoules_per_m2[index] = residual_context.sensible_conductance * (residual_context.air_temperature_k - solved.root);
+        result.latent_heat_flux_megajoules_per_m2[index] = latentHeatFlux(residual_context, solved.root);
+        result.storage_heat_flux_megajoules_per_m2[index] = residual_context.storage_conductance * (residual_context.previous_temperature_k - solved.root);
         result.iteration_count[index] = solved.iterations;
         result.newton_raphson_step_count[index] = solved.newton_raphson_steps;
         result.picard_step_count[index] = solved.picard_steps;
@@ -145,7 +145,7 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
 }
 
 fn residual(context: ResidualContext, temperature_k: f64) f64 {
-    return context.absorbed_shortwave_mj_per_m2 + context.downward_longwave_mj_per_m2 * context.exposure_fraction - emittedLongwave(context, temperature_k) + context.sensible_conductance * (context.air_temperature_k - temperature_k) + latentHeatFlux(context, temperature_k) + context.storage_conductance * (context.previous_temperature_k - temperature_k);
+    return context.absorbed_shortwave_megajoules_per_m2 + context.downward_longwave_megajoules_per_m2 * context.exposure_fraction - emittedLongwave(context, temperature_k) + context.sensible_conductance * (context.air_temperature_k - temperature_k) + latentHeatFlux(context, temperature_k) + context.storage_conductance * (context.previous_temperature_k - temperature_k);
 }
 
 fn derivative(context: ResidualContext, temperature_k: f64) f64 {
@@ -156,7 +156,7 @@ fn derivative(context: ResidualContext, temperature_k: f64) f64 {
 
 fn picard(context: ResidualContext, temperature_k: f64) f64 {
     const linear_conductance = context.sensible_conductance + context.storage_conductance;
-    return (context.absorbed_shortwave_mj_per_m2 + context.downward_longwave_mj_per_m2 * context.exposure_fraction - emittedLongwave(context, temperature_k) + latentHeatFlux(context, temperature_k) + context.sensible_conductance * context.air_temperature_k + context.storage_conductance * context.previous_temperature_k) / linear_conductance;
+    return (context.absorbed_shortwave_megajoules_per_m2 + context.downward_longwave_megajoules_per_m2 * context.exposure_fraction - emittedLongwave(context, temperature_k) + latentHeatFlux(context, temperature_k) + context.sensible_conductance * context.air_temperature_k + context.storage_conductance * context.previous_temperature_k) / linear_conductance;
 }
 
 fn emittedLongwave(context: ResidualContext, temperature_k: f64) f64 {
@@ -172,7 +172,7 @@ fn latentHeatFlux(context: ResidualContext, temperature_k: f64) f64 {
 }
 
 fn residualScale(context: ResidualContext, temperature_k: f64) f64 {
-    return @max(1.0, @abs(context.absorbed_shortwave_mj_per_m2) + @abs(context.downward_longwave_mj_per_m2 * context.exposure_fraction) + @abs(emittedLongwave(context, temperature_k)) + @abs(context.sensible_conductance * (context.air_temperature_k - temperature_k)) + @abs(latentHeatFlux(context, temperature_k)) + @abs(context.storage_conductance * (context.previous_temperature_k - temperature_k)));
+    return @max(1.0, @abs(context.absorbed_shortwave_megajoules_per_m2) + @abs(context.downward_longwave_megajoules_per_m2 * context.exposure_fraction) + @abs(emittedLongwave(context, temperature_k)) + @abs(context.sensible_conductance * (context.air_temperature_k - temperature_k)) + @abs(latentHeatFlux(context, temperature_k)) + @abs(context.storage_conductance * (context.previous_temperature_k - temperature_k)));
 }
 
 fn validateSettings(settings: Settings) !void {
@@ -188,14 +188,14 @@ fn freeF64Allocated(state: *State, count: usize) void {
 }
 
 test "canopy energy residual uses the uptake convergence ceiling" {
-    const context: ResidualContext = .{ .absorbed_shortwave_mj_per_m2 = 0.8, .downward_longwave_mj_per_m2 = 0.7, .air_temperature_k = 290, .atmospheric_vapor_pressure_kpa = 1.2, .previous_temperature_k = 285, .exposure_fraction = 0.8, .emissivity = 0.97, .sensible_conductance = 0.3, .latent_conductance = 0.05, .vapor_activity = 0.9, .storage_conductance = 0.4 };
+    const context: ResidualContext = .{ .absorbed_shortwave_megajoules_per_m2 = 0.8, .downward_longwave_megajoules_per_m2 = 0.7, .air_temperature_k = 290, .atmospheric_vapor_pressure_kpa = 1.2, .previous_temperature_k = 285, .exposure_fraction = 0.8, .emissivity = 0.97, .sensible_conductance = 0.3, .latent_conductance = 0.05, .vapor_activity = 0.9, .storage_conductance = 0.4 };
     const solved = try numerics.newtonPicard(context, residual, derivative, picard, 173.15, 373.15, 285, .{ .max_iterations = 200 });
     try std.testing.expect(solved.iterations < 200);
     try std.testing.expect(@abs(solved.residual) < 1.0e-6);
 }
 
 test "canopy energy analytic derivative matches finite difference" {
-    const context: ResidualContext = .{ .absorbed_shortwave_mj_per_m2 = 0.8, .downward_longwave_mj_per_m2 = 0.7, .air_temperature_k = 290, .atmospheric_vapor_pressure_kpa = 1.2, .previous_temperature_k = 285, .exposure_fraction = 0.8, .emissivity = 0.97, .sensible_conductance = 0.3, .latent_conductance = 0.05, .vapor_activity = 0.9, .storage_conductance = 0.4 };
+    const context: ResidualContext = .{ .absorbed_shortwave_megajoules_per_m2 = 0.8, .downward_longwave_megajoules_per_m2 = 0.7, .air_temperature_k = 290, .atmospheric_vapor_pressure_kpa = 1.2, .previous_temperature_k = 285, .exposure_fraction = 0.8, .emissivity = 0.97, .sensible_conductance = 0.3, .latent_conductance = 0.05, .vapor_activity = 0.9, .storage_conductance = 0.4 };
     const temperature_k: f64 = 288;
     const step: f64 = 1.0e-4;
     const finite_difference = (residual(context, temperature_k + step) - residual(context, temperature_k - step)) / (2 * step);

@@ -18,9 +18,9 @@ pub const Parameters = struct {
     maximum_anaerobic_charcoal_fraction: f64 = 0.5,
     oxygen_half_saturation_g_o_per_m3: f64 = 2.8,
     methane_half_saturation_g_c_per_m3: f64 = 0.005,
-    aerobic_combustion_energy_mj_per_g_c: f64 = 0.0375,
-    anaerobic_combustion_energy_mj_per_g_c: f64 = 0.0125,
-    methane_combustion_energy_mj_per_g_c: f64 = 0.0743,
+    aerobic_combustion_energy_megajoules_per_g_c: f64 = 0.0375,
+    anaerobic_combustion_energy_megajoules_per_g_c: f64 = 0.0125,
+    methane_combustion_energy_megajoules_per_g_c: f64 = 0.0743,
 
     pub fn validate(self: Parameters) !void {
         inline for (.{
@@ -33,9 +33,9 @@ pub const Parameters = struct {
             self.oxygen_g_per_g_combusted_carbon,
             self.oxygen_half_saturation_g_o_per_m3,
             self.methane_half_saturation_g_c_per_m3,
-            self.aerobic_combustion_energy_mj_per_g_c,
-            self.anaerobic_combustion_energy_mj_per_g_c,
-            self.methane_combustion_energy_mj_per_g_c,
+            self.aerobic_combustion_energy_megajoules_per_g_c,
+            self.anaerobic_combustion_energy_megajoules_per_g_c,
+            self.methane_combustion_energy_megajoules_per_g_c,
         }) |value| if (!std.math.isFinite(value) or value <= 0) return error.InvalidSoilCombustionParameter;
         inline for (.{ self.arrhenius_intercept, self.charcoal_arrhenius_intercept }) |value| if (!std.math.isFinite(value)) return error.InvalidSoilCombustionParameter;
         if (!std.math.isFinite(self.negligible_carbon_g_c) or self.negligible_carbon_g_c < 0) return error.InvalidSoilCombustionParameter;

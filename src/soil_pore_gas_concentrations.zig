@@ -1,3 +1,26 @@
+//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 3760--3791. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: architecturally superseded. Production stores the same physics in a
+//! different representation, deliberately, with the deviation recorded in
+//! `docs/model_changes.md`. Binding this kernel would reintroduce the
+//! formulation the project chose to leave behind, as a second writer.
+//!
+//! Superseded by: `gas_transport`, which uses an extensive-mass representation.
+//!
+//! It stores mass and divides by air-filled volume at the point of use, so
+//! a stored concentration field would be a second, staleable copy: the air
+//! volume changes every time water or ice moves, and a concentration recorded
+//! before that move is wrong afterwards. This is the same representation
+//! question EXEC-004 settled for litter solutes (`work_state.md` 971--982).
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const GaseousMasses = struct {

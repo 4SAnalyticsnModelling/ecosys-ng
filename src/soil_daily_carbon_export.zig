@@ -4,9 +4,12 @@ const organic_transport = @import("soil_organic_transport.zig");
 const dissolved_gas_transport = @import("soil_dissolved_gas_transport.zig");
 const gaseous_transport = @import("soil_gas_transport_step.zig");
 const gas = @import("gas_transport.zig");
+const solute_species = @import("solute_transport_species.zig");
 
 pub const State = struct {
     allocator: std.mem.Allocator,
+    dissolved_organic_carbon_input_g: []f64,
+    dissolved_inorganic_carbon_input_g: []f64,
     dissolved_organic_carbon_runoff_g: []f64,
     dissolved_inorganic_carbon_runoff_g: []f64,
     dissolved_organic_carbon_drainage_g: []f64,
@@ -16,6 +19,10 @@ pub const State = struct {
         if (cell_count == 0) return error.ZeroDailyCarbonExportCells;
         const doc_runoff = try zeroes(allocator, cell_count);
         errdefer allocator.free(doc_runoff);
+        const doc_input = try zeroes(allocator, cell_count);
+        errdefer allocator.free(doc_input);
+        const dic_input = try zeroes(allocator, cell_count);
+        errdefer allocator.free(dic_input);
         const dic_runoff = try zeroes(allocator, cell_count);
         errdefer allocator.free(dic_runoff);
         const doc_drainage = try zeroes(allocator, cell_count);
@@ -23,6 +30,8 @@ pub const State = struct {
         const dic_drainage = try zeroes(allocator, cell_count);
         return .{
             .allocator = allocator,
+            .dissolved_organic_carbon_input_g = doc_input,
+            .dissolved_inorganic_carbon_input_g = dic_input,
             .dissolved_organic_carbon_runoff_g = doc_runoff,
             .dissolved_inorganic_carbon_runoff_g = dic_runoff,
             .dissolved_organic_carbon_drainage_g = doc_drainage,
@@ -31,6 +40,8 @@ pub const State = struct {
     }
 
     pub fn deinit(self: *State) void {
+        self.allocator.free(self.dissolved_inorganic_carbon_input_g);
+        self.allocator.free(self.dissolved_organic_carbon_input_g);
         self.allocator.free(self.dissolved_inorganic_carbon_drainage_g);
         self.allocator.free(self.dissolved_organic_carbon_drainage_g);
         self.allocator.free(self.dissolved_inorganic_carbon_runoff_g);
@@ -39,6 +50,8 @@ pub const State = struct {
     }
 
     pub fn resetDaily(self: *State) void {
+        @memset(self.dissolved_organic_carbon_input_g, 0);
+        @memset(self.dissolved_inorganic_carbon_input_g, 0);
         @memset(self.dissolved_organic_carbon_runoff_g, 0);
         @memset(self.dissolved_inorganic_carbon_runoff_g, 0);
         @memset(self.dissolved_organic_carbon_drainage_g, 0);
@@ -51,19 +64,24 @@ pub const State = struct {
     pub fn accumulateOrganicDrainageHour(self: *State, model_grid: *const grid_module.GridState, transport: *const organic_transport.State) !void {
         if (self.dissolved_organic_carbon_drainage_g.len != model_grid.cell_count or transport.layer_count != model_grid.layer_count) return error.DailyCarbonExportDimensionMismatch;
         for (0..model_grid.cell_count) |cell| {
+            var inward_g_c: f64 = 0;
             var outward_g_c: f64 = 0;
             for (0..model_grid.active_soil_layer_count[cell]) |local_layer| {
                 const layer = try model_grid.layerIndex(cell, local_layer);
                 for (0..@import("soil_organic_initialization.zig").substrate_count) |substrate| {
                     const base = layer * organic_transport.component_count + substrate * organic_transport.components_per_substrate;
-                    outward_g_c += @max(0, -transport.boundary_net_flux_g[base + @intFromEnum(organic_transport.Component.dissolved_organic_carbon)]);
-                    outward_g_c += @max(0, -transport.boundary_net_flux_g[base + @intFromEnum(organic_transport.Component.dissolved_acetate_carbon)]);
+                    const doc_flux = transport.boundary_net_flux_g[base + @intFromEnum(organic_transport.Component.dissolved_organic_carbon)];
+                    const acetate_flux = transport.boundary_net_flux_g[base + @intFromEnum(organic_transport.Component.dissolved_acetate_carbon)];
+                    inward_g_c += @max(0, doc_flux) + @max(0, acetate_flux);
+                    outward_g_c += @max(0, -doc_flux) + @max(0, -acetate_flux);
                 }
             }
             if (!std.math.isFinite(outward_g_c)) return error.NonFiniteDailyCarbonExport;
-            const after = self.dissolved_organic_carbon_drainage_g[cell] + outward_g_c;
-            if (!std.math.isFinite(after)) return error.NonFiniteDailyCarbonExport;
-            self.dissolved_organic_carbon_drainage_g[cell] = after;
+            const input_after = self.dissolved_organic_carbon_input_g[cell] + inward_g_c;
+            const output_after = self.dissolved_organic_carbon_drainage_g[cell] + outward_g_c;
+            if (!std.math.isFinite(input_after) or !std.math.isFinite(output_after)) return error.NonFiniteDailyCarbonExport;
+            self.dissolved_organic_carbon_input_g[cell] = input_after;
+            self.dissolved_organic_carbon_drainage_g[cell] = output_after;
         }
     }
 
@@ -87,16 +105,17 @@ pub const State = struct {
     pub fn accumulateDissolvedInorganicDrainageHour(self: *State, model_grid: *const grid_module.GridState, transport: *const dissolved_gas_transport.State) !void {
         if (transport.layer_count != model_grid.layer_count or self.dissolved_inorganic_carbon_drainage_g.len != model_grid.cell_count) return error.DailyCarbonExportDimensionMismatch;
         for (0..model_grid.cell_count) |cell| {
+            var inward_g_c: f64 = 0;
             var outward_g_c: f64 = 0;
             for (0..model_grid.active_soil_layer_count[cell]) |local_layer| {
                 const layer = try model_grid.layerIndex(cell, local_layer);
                 const base = layer * gas.species_count;
-                outward_g_c += @max(0, -transport.boundary_net_flux_g[base + @intFromEnum(gas.Species.carbon_dioxide)]);
-                outward_g_c += @max(0, -transport.boundary_net_flux_g[base + @intFromEnum(gas.Species.methane)]);
+                const co2_flux = transport.boundary_net_flux_g[base + @intFromEnum(gas.Species.carbon_dioxide)];
+                const ch4_flux = transport.boundary_net_flux_g[base + @intFromEnum(gas.Species.methane)];
+                inward_g_c += @max(0, co2_flux) + @max(0, ch4_flux);
+                outward_g_c += @max(0, -co2_flux) + @max(0, -ch4_flux);
             }
-            const after = self.dissolved_inorganic_carbon_drainage_g[cell] + outward_g_c;
-            if (!std.math.isFinite(after)) return error.NonFiniteDailyCarbonExport;
-            self.dissolved_inorganic_carbon_drainage_g[cell] = after;
+            try self.accumulateInorganicBoundary(cell, inward_g_c, outward_g_c);
         }
     }
 
@@ -106,19 +125,78 @@ pub const State = struct {
     pub fn accumulateGaseousInorganicDrainageHour(self: *State, model_grid: *const grid_module.GridState, transport: *const gaseous_transport.State) !void {
         if (transport.subsurface_flux_g_per_h.len != try std.math.mul(usize, model_grid.layer_count, gas.species_count) or self.dissolved_inorganic_carbon_drainage_g.len != model_grid.cell_count) return error.DailyCarbonExportDimensionMismatch;
         for (0..model_grid.cell_count) |cell| {
+            var inward_g_c: f64 = 0;
             var outward_g_c: f64 = 0;
             for (0..model_grid.active_soil_layer_count[cell]) |local_layer| {
                 const layer = try model_grid.layerIndex(cell, local_layer);
                 const base = layer * gas.species_count;
-                outward_g_c += @max(0, -transport.subsurface_flux_g_per_h[base + @intFromEnum(gas.Species.carbon_dioxide)]);
-                outward_g_c += @max(0, -transport.subsurface_flux_g_per_h[base + @intFromEnum(gas.Species.methane)]);
+                const co2_flux = transport.subsurface_flux_g_per_h[base + @intFromEnum(gas.Species.carbon_dioxide)];
+                const ch4_flux = transport.subsurface_flux_g_per_h[base + @intFromEnum(gas.Species.methane)];
+                inward_g_c += @max(0, co2_flux) + @max(0, ch4_flux);
+                outward_g_c += @max(0, -co2_flux) + @max(0, -ch4_flux);
             }
-            const after = self.dissolved_inorganic_carbon_drainage_g[cell] + outward_g_c;
-            if (!std.math.isFinite(after)) return error.NonFiniteDailyCarbonExport;
-            self.dissolved_inorganic_carbon_drainage_g[cell] = after;
+            try self.accumulateInorganicBoundary(cell, inward_g_c, outward_g_c);
         }
     }
+
+    /// REDIST aqueous carbonate-species contribution to UDICD. Carbonate,
+    /// bicarbonate, and complex ions (Ca/Mg/Na carbonate and bicarbonate)
+    /// each carry one mol C per mol. Positive boundary flux is external
+    /// recharge; negative boundary flux is drainage loss.
+    pub fn accumulateSoluteCarbonateDrainageHour(
+        self: *State,
+        model_grid: *const grid_module.GridState,
+        boundary_flux_mol: []const f64,
+        aqueous_species_count: usize,
+        carbon_g_per_mol: f64,
+    ) !void {
+        if (aqueous_species_count == 0 or
+            boundary_flux_mol.len != try std.math.mul(usize, model_grid.layer_count, aqueous_species_count) or
+            self.dissolved_inorganic_carbon_drainage_g.len != model_grid.cell_count)
+            return error.DailyCarbonExportDimensionMismatch;
+        for (0..model_grid.cell_count) |cell| {
+            var inward_g_c: f64 = 0;
+            var outward_g_c: f64 = 0;
+            for (0..model_grid.active_soil_layer_count[cell]) |local_layer| {
+                const layer = try model_grid.layerIndex(cell, local_layer);
+                const base = layer * aqueous_species_count;
+                inline for (@typeInfo(solute_species.AqueousSpecies).@"enum".fields) |field| {
+                    if (field.value < aqueous_species_count) {
+                        const species: solute_species.AqueousSpecies = @enumFromInt(field.value);
+                        if (isCarbonateCarrier(species)) {
+                            const flux = boundary_flux_mol[base + field.value];
+                            inward_g_c += @max(0, flux) * carbon_g_per_mol;
+                            outward_g_c += @max(0, -flux) * carbon_g_per_mol;
+                        }
+                    }
+                }
+            }
+            try self.accumulateInorganicBoundary(cell, inward_g_c, outward_g_c);
+        }
+    }
+
+    fn accumulateInorganicBoundary(self: *State, cell: usize, inward_g_c: f64, outward_g_c: f64) !void {
+        const input_after = self.dissolved_inorganic_carbon_input_g[cell] + inward_g_c;
+        const output_after = self.dissolved_inorganic_carbon_drainage_g[cell] + outward_g_c;
+        if (!std.math.isFinite(input_after) or !std.math.isFinite(output_after)) return error.NonFiniteDailyCarbonExport;
+        self.dissolved_inorganic_carbon_input_g[cell] = input_after;
+        self.dissolved_inorganic_carbon_drainage_g[cell] = output_after;
+    }
 };
+
+fn isCarbonateCarrier(species: solute_species.AqueousSpecies) bool {
+    return switch (species) {
+        .carbonate,
+        .bicarbonate,
+        .calcium_carbonate,
+        .calcium_bicarbonate,
+        .magnesium_carbonate,
+        .magnesium_bicarbonate,
+        .sodium_carbonate,
+        => true,
+        else => false,
+    };
+}
 
 fn zeroes(allocator: std.mem.Allocator, count: usize) ![]f64 {
     const values = try allocator.alloc(f64, count);
@@ -127,7 +205,7 @@ fn zeroes(allocator: std.mem.Allocator, count: usize) ![]f64 {
 }
 
 test "UDOCD sums DOC and acetate outward losses over runtime layers and complexes" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     var transport = try organic_transport.State.init(std.testing.allocator, model_grid.layer_count);
@@ -144,8 +222,8 @@ test "UDOCD sums DOC and acetate outward losses over runtime layers and complexe
     try std.testing.expectApproxEqAbs(@as(f64, 10), daily.dissolved_organic_carbon_drainage_g[0], 1e-15);
 }
 
-test "UDICD includes only outward subsurface gaseous CO2 and CH4" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+test "subsurface gas ledger separates inward carbon from UDICD output" {
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     var transport = try gaseous_transport.State.init(std.testing.allocator, model_grid.layer_count);
@@ -158,5 +236,20 @@ test "UDICD includes only outward subsurface gaseous CO2 and CH4" {
     var daily = try State.init(std.testing.allocator, model_grid.cell_count);
     defer daily.deinit();
     try daily.accumulateGaseousInorganicDrainageHour(&model_grid, &transport);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), daily.dissolved_inorganic_carbon_input_g[0], 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 5), daily.dissolved_inorganic_carbon_drainage_g[0], 1e-15);
+}
+
+test "carbonate boundary ledger separates recharge from drainage" {
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    var model_grid = try grid_module.GridState.init(std.testing.allocator, config);
+    defer model_grid.deinit();
+    var flux = [_]f64{0} ** solute_species.AqueousSpecies.count;
+    flux[@intFromEnum(solute_species.AqueousSpecies.bicarbonate)] = 2;
+    flux[@intFromEnum(solute_species.AqueousSpecies.calcium_carbonate)] = -3;
+    var daily = try State.init(std.testing.allocator, model_grid.cell_count);
+    defer daily.deinit();
+    try daily.accumulateSoluteCarbonateDrainageHour(&model_grid, &flux, solute_species.AqueousSpecies.count, 12);
+    try std.testing.expectEqual(@as(f64, 24), daily.dissolved_inorganic_carbon_input_g[0]);
+    try std.testing.expectEqual(@as(f64, 36), daily.dissolved_inorganic_carbon_drainage_g[0]);
 }

@@ -64,7 +64,7 @@ test "late surface chemistry failure leaves organic gas and fertilizer inventori
     defer surface_chemistry.deinit();
     var soil_chemistry = try soil_chemistry_module.State.init(std.testing.allocator, 1);
     defer soil_chemistry.deinit();
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 4 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 4 });
     var grid = try @import("grid.zig").GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     var surface_geometry = try @import("surface_litter_geometry_step.zig").State.init(std.testing.allocator, 1);
@@ -78,8 +78,8 @@ test "late surface chemistry failure leaves organic gas and fertilizer inventori
     var total_capacity = [_]f64{1};
     var porosity = [_]f64{0.5};
     thermal.layer_volume_m3 = &layer_volume;
-    thermal.dry_solid_heat_capacity_mj_per_m3_k = &dry_capacity;
-    thermal.total_heat_capacity_mj_per_m3_k = &total_capacity;
+    thermal.dry_solid_heat_capacity_megajoules_per_m3_k = &dry_capacity;
+    thermal.total_heat_capacity_megajoules_per_m3_k = &total_capacity;
     thermal.porosity_fraction = &porosity;
     var surface_water = [_]f64{0.2};
     var surface_ice = [_]f64{0};
@@ -91,10 +91,10 @@ test "late surface chemistry failure leaves organic gas and fertilizer inventori
     surface_n.cells[0].ammonium_mol_n = 4;
     surface_chemistry.cells[0].potassium_mol_per_m3 = std.math.nan(f64);
     const inventories: inventory.Owners = .{ .surface_organic = &surface_organic, .soil_organic = &soil_organic, .surface_gas = &surface_gas, .soil_gas = &soil_gas, .surface_nitrogen_fertilizer = &surface_n, .soil_nitrogen_fertilizer = &soil_n, .mineral_fertilizer = &mineral };
-    const carriers: chemistry.CarrierVolumes = .{ .surface_water_before_m3 = 1, .soil_shared_water_before_m3 = 1, .soil_phosphate_non_band_water_before_m3 = 1, .surface_water_after_m3 = 0.5, .soil_shared_water_after_m3 = 1.5, .soil_phosphate_non_band_water_after_m3 = 1.5, .surface_dry_mass_before_Mg = 1, .soil_dry_mass_before_Mg = 1, .surface_dry_mass_after_Mg = 0.5, .soil_dry_mass_after_Mg = 1.5 };
+    const carriers: chemistry.CarrierVolumes = .{ .surface_water_before_m3 = 1, .soil_shared_water_before_m3 = 1, .soil_phosphate_non_band_water_before_m3 = 1, .surface_water_after_m3 = 0.5, .soil_shared_water_after_m3 = 1.5, .soil_phosphate_non_band_water_after_m3 = 1.5, .surface_dry_mass_before_megagrams = 1, .soil_dry_mass_before_megagrams = 1, .surface_dry_mass_after_megagrams = 0.5, .soil_dry_mass_after_megagrams = 1.5, .dissolved_chemistry_fraction = 0.5 };
     const water_heat_owners: water_heat.Owners = .{ .surface_liquid_water_m3 = &surface_water, .surface_ice_m3 = &surface_ice, .surface_temperature_k = grid.surface_temperature_k, .surface_geometry = &surface_geometry, .grid = &grid, .soil_thermal = &thermal };
     const zero_geometry_change = [_]f64{ 0, 0 };
-    try std.testing.expectError(error.InvalidSurfacePondChemistryState, transferSurfaceFractionToSoil(.{ .inventories = inventories, .surface_chemistry = &surface_chemistry, .soil_chemistry = &soil_chemistry, .water_heat = water_heat_owners, .soil_geometry = &soil_geometry }, .{ .cell = 0, .destination_soil_layer = 0, .fraction = 0.5, .chemistry_carriers = carriers, .dynamic_salts = false, .water_heat_parameters = .{ .dry_organic_heat_capacity_mj_per_g_c_k = 2.496e-6, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .ice_heat_capacity_mj_per_m3_k = 1.9274, .minimum_heat_capacity_mj_per_k = 0 }, .geometry_changes = .{ .pond_m = &zero_geometry_change, .freeze_thaw_m = &zero_geometry_change, .erosion_m = &zero_geometry_change, .organic_carbon_m = &zero_geometry_change }, .minimum_soil_layer_thickness_m = 1e-6 }));
+    try std.testing.expectError(error.InvalidSurfacePondChemistryState, transferSurfaceFractionToSoil(.{ .inventories = inventories, .surface_chemistry = &surface_chemistry, .soil_chemistry = &soil_chemistry, .water_heat = water_heat_owners, .soil_geometry = &soil_geometry }, .{ .cell = 0, .destination_soil_layer = 0, .fraction = 0.5, .chemistry_carriers = carriers, .dynamic_salts = false, .water_heat_parameters = .{ .dry_organic_heat_capacity_megajoules_per_g_c_k = 2.496e-6, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .ice_heat_capacity_megajoules_per_m3_k = 1.9274, .minimum_heat_capacity_megajoules_per_k = 0 }, .geometry_changes = .{ .pond_m = &zero_geometry_change, .freeze_thaw_m = &zero_geometry_change, .erosion_m = &zero_geometry_change, .organic_carbon_m = &zero_geometry_change }, .minimum_soil_layer_thickness_m = 1e-6 }));
     try std.testing.expectEqual(@as(f64, 8), surface_organic.microbial[0].carbon_g_c);
     try std.testing.expectEqual(@as(f64, 6), surface_gas.gaseous_mass_g[0]);
     try std.testing.expectEqual(@as(f64, 4), surface_n.cells[0].ammonium_mol_n);

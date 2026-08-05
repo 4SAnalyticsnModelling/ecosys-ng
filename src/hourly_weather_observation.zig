@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Inputs = struct {
-    shortwave_radiation_mj_per_m2_h: f64,
+    shortwave_radiation_megajoules_per_m2_h: f64,
     air_temperature_c: f64,
     ambient_vapor_pressure_kpa: f64,
     wind_speed_m_per_h: f64,
@@ -13,7 +13,7 @@ pub const Inputs = struct {
 };
 
 pub const Observation = struct {
-    shortwave_radiation_mj_per_m2_h: f64,
+    shortwave_radiation_megajoules_per_m2_h: f64,
     air_temperature_c: f64,
     air_temperature_k: f64,
     saturated_vapor_pressure_kpa: f64,
@@ -32,7 +32,7 @@ pub fn normalize(inputs: Inputs) !Observation {
     }
     const air_temperature_k = inputs.air_temperature_c + 273.15;
     if (air_temperature_k <= 0 or
-        inputs.shortwave_radiation_mj_per_m2_h < 0 or
+        inputs.shortwave_radiation_megajoules_per_m2_h < 0 or
         inputs.ambient_vapor_pressure_kpa < 0 or
         inputs.wind_speed_m_per_h < 0 or
         inputs.precipitation_water_equivalent_m < 0 or
@@ -59,7 +59,7 @@ pub fn normalize(inputs: Inputs) !Observation {
     }
 
     return .{
-        .shortwave_radiation_mj_per_m2_h = inputs.shortwave_radiation_mj_per_m2_h,
+        .shortwave_radiation_megajoules_per_m2_h = inputs.shortwave_radiation_megajoules_per_m2_h,
         .air_temperature_c = inputs.air_temperature_c,
         .air_temperature_k = air_temperature_k,
         .saturated_vapor_pressure_kpa = saturated_vapor_pressure_kpa,
@@ -78,7 +78,7 @@ pub fn normalize(inputs: Inputs) !Observation {
 
 fn exampleInputs() Inputs {
     return .{
-        .shortwave_radiation_mj_per_m2_h = 0.8,
+        .shortwave_radiation_megajoules_per_m2_h = 0.8,
         .air_temperature_c = 10,
         .ambient_vapor_pressure_kpa = 20,
         .wind_speed_m_per_h = 100,

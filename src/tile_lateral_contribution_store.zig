@@ -6,8 +6,11 @@ const manifest_magic = "ECOLATM1";
 const format_version: u32 = 2;
 const morton_order_tag: u8 = 1;
 const manifest_name = "lateral-contributions.morton.manifest";
-const atomic_replace_max_attempts: u8 = 20;
-const atomic_replace_retry_delay_ms: i64 = 25;
+// Cloud sync tools (e.g. OneDrive) can hold file locks on newly written files
+// during upload. 200 attempts × 50 ms = 10 s total budget covers typical
+// upload latency for small tile manifest files (~69 bytes).
+const atomic_replace_max_attempts: u8 = 200;
+const atomic_replace_retry_delay_ms: i64 = 50;
 
 pub const Contribution = struct {
     target_cell: usize,
@@ -80,7 +83,7 @@ pub const FileStore = struct {
         std.mem.sort(
             Contribution,
             sorted,
-            plan.grid_column_count,
+            plan.lon_count,
             contributionLessThan,
         );
         const file_name = try sourceFileName(
@@ -110,8 +113,8 @@ pub const FileStore = struct {
             .little,
         );
         try writer.interface.writeByte(morton_order_tag);
-        try writer.interface.writeInt(u64, plan.grid_row_count, .little);
-        try writer.interface.writeInt(u64, plan.grid_column_count, .little);
+        try writer.interface.writeInt(u64, plan.lat_count, .little);
+        try writer.interface.writeInt(u64, plan.lon_count, .little);
         try writer.interface.writeInt(
             u64,
             source_tile.z_order_index,
@@ -202,8 +205,8 @@ pub const FileStore = struct {
             .little,
         );
         try writer.interface.writeByte(morton_order_tag);
-        try writer.interface.writeInt(u64, plan.grid_row_count, .little);
-        try writer.interface.writeInt(u64, plan.grid_column_count, .little);
+        try writer.interface.writeInt(u64, plan.lat_count, .little);
+        try writer.interface.writeInt(u64, plan.lon_count, .little);
         try writer.interface.writeInt(u64, component_count, .little);
         try writer.interface.writeInt(u64, plan.tiles.len, .little);
         for (plan.tiles) |tile|
@@ -240,7 +243,7 @@ pub const FileStore = struct {
             return error.TileIndexOutOfRange;
         if (component_count == 0 or
             destination_delta.len !=
-                plan.grid_row_count * plan.grid_column_count * component_count)
+                plan.lat_count * plan.lon_count * component_count)
             return error.InvalidLateralContributionDestinationShape;
         try self.validateManifest(plan, component_count);
         const destination_tile = plan.tiles[destination_tile_index];
@@ -336,8 +339,8 @@ pub const FileStore = struct {
             return error.LateralContributionManifestGenerationMismatch;
         if (try reader.interface.takeByte() != morton_order_tag)
             return error.LateralContributionManifestIsNotMortonOrdered;
-        if (try reader.interface.takeInt(u64, .little) != plan.grid_row_count or
-            try reader.interface.takeInt(u64, .little) != plan.grid_column_count)
+        if (try reader.interface.takeInt(u64, .little) != plan.lat_count or
+            try reader.interface.takeInt(u64, .little) != plan.lon_count)
             return error.LateralContributionManifestShapeMismatch;
         if (try reader.interface.takeInt(u64, .little) != component_count)
             return error.LateralContributionManifestComponentCountMismatch;
@@ -394,8 +397,8 @@ fn validateSourceFile(
         return error.LateralContributionFileGenerationMismatch;
     if (try reader.takeByte() != morton_order_tag)
         return error.LateralContributionFileIsNotMortonOrdered;
-    if (try reader.takeInt(u64, .little) != plan.grid_row_count or
-        try reader.takeInt(u64, .little) != plan.grid_column_count or
+    if (try reader.takeInt(u64, .little) != plan.lat_count or
+        try reader.takeInt(u64, .little) != plan.lon_count or
         try reader.takeInt(u64, .little) != source_tile.z_order_index)
         return error.LateralContributionFileShapeMismatch;
     const component_count = std.math.cast(
@@ -406,7 +409,7 @@ fn validateSourceFile(
         return error.InvalidLateralContributionComponentCount;
     const record_count = try reader.takeInt(u64, .little);
     const source_tile_index = try plan.owningTileIndex(
-        source_tile.owned_north_row * plan.grid_column_count +
+        source_tile.owned_north_row * plan.lon_count +
             source_tile.owned_west_column,
     );
     var previous_cell_morton: ?u64 = null;
@@ -432,8 +435,8 @@ fn validateSourceFile(
             component_count,
             contribution,
         );
-        const row = target_cell / plan.grid_column_count;
-        const column = target_cell % plan.grid_column_count;
+        const row = target_cell / plan.lon_count;
+        const column = target_cell % plan.lon_count;
         const cell_morton = cellMortonIndex(
             @intCast(row),
             @intCast(column),
@@ -476,8 +479,8 @@ fn readSourceIntoOwned(
         return error.LateralContributionFileGenerationMismatch;
     if (try reader.takeByte() != morton_order_tag)
         return error.LateralContributionFileIsNotMortonOrdered;
-    if (try reader.takeInt(u64, .little) != plan.grid_row_count or
-        try reader.takeInt(u64, .little) != plan.grid_column_count or
+    if (try reader.takeInt(u64, .little) != plan.lat_count or
+        try reader.takeInt(u64, .little) != plan.lon_count or
         try reader.takeInt(u64, .little) != source_tile.z_order_index or
         try reader.takeInt(u64, .little) != component_count)
         return error.LateralContributionFileShapeMismatch;
@@ -488,11 +491,11 @@ fn readSourceIntoOwned(
         const target_cell = try reader.takeInt(u64, .little);
         const component = try reader.takeInt(u64, .little);
         const delta: f64 = @bitCast(try reader.takeInt(u64, .little));
-        if (target_cell >= plan.grid_row_count * plan.grid_column_count or
+        if (target_cell >= plan.lat_count * plan.lon_count or
             component >= component_count or !std.math.isFinite(delta))
             return error.InvalidLateralContributionRecord;
-        const row = target_cell / plan.grid_column_count;
-        const column = target_cell % plan.grid_column_count;
+        const row = target_cell / plan.lon_count;
+        const column = target_cell % plan.lon_count;
         const cell_morton = cellMortonIndex(
             @intCast(row),
             @intCast(column),
@@ -540,8 +543,8 @@ fn readSourceIntoOwnedCompact(
         return error.LateralContributionFileGenerationMismatch;
     if (try reader.takeByte() != morton_order_tag)
         return error.LateralContributionFileIsNotMortonOrdered;
-    if (try reader.takeInt(u64, .little) != plan.grid_row_count or
-        try reader.takeInt(u64, .little) != plan.grid_column_count or
+    if (try reader.takeInt(u64, .little) != plan.lat_count or
+        try reader.takeInt(u64, .little) != plan.lon_count or
         try reader.takeInt(u64, .little) != source_tile.z_order_index or
         try reader.takeInt(u64, .little) != component_count)
         return error.LateralContributionFileShapeMismatch;
@@ -552,11 +555,11 @@ fn readSourceIntoOwnedCompact(
         const target_cell = try reader.takeInt(u64, .little);
         const component = try reader.takeInt(u64, .little);
         const delta: f64 = @bitCast(try reader.takeInt(u64, .little));
-        if (target_cell >= plan.grid_row_count * plan.grid_column_count or
+        if (target_cell >= plan.lat_count * plan.lon_count or
             component >= component_count or !std.math.isFinite(delta))
             return error.InvalidLateralContributionRecord;
-        const row = target_cell / plan.grid_column_count;
-        const column = target_cell % plan.grid_column_count;
+        const row = target_cell / plan.lon_count;
+        const column = target_cell % plan.lon_count;
         const cell_morton = cellMortonIndex(
             @intCast(row),
             @intCast(column),
@@ -595,7 +598,7 @@ fn validateContribution(
     contribution: Contribution,
 ) !void {
     if (contribution.target_cell >=
-        plan.grid_row_count * plan.grid_column_count or
+        plan.lat_count * plan.lon_count or
         contribution.component >= component_count or
         !std.math.isFinite(contribution.delta))
         return error.InvalidLateralContributionRecord;
@@ -604,17 +607,17 @@ fn validateContribution(
 }
 
 fn contributionLessThan(
-    grid_column_count: usize,
+    lon_count: usize,
     left: Contribution,
     right: Contribution,
 ) bool {
     const left_morton = cellMortonIndex(
-        @intCast(left.target_cell / grid_column_count),
-        @intCast(left.target_cell % grid_column_count),
+        @intCast(left.target_cell / lon_count),
+        @intCast(left.target_cell % lon_count),
     );
     const right_morton = cellMortonIndex(
-        @intCast(right.target_cell / grid_column_count),
-        @intCast(right.target_cell % grid_column_count),
+        @intCast(right.target_cell / lon_count),
+        @intCast(right.target_cell % lon_count),
     );
     return left_morton < right_morton or
         (left_morton == right_morton and left.component < right.component);
@@ -715,10 +718,10 @@ test "two-pass Morton lateral contribution files conserve cross-tile exchange" {
         );
 
     var total_delta: f64 = 0;
-    for (0..plan.grid_row_count * plan.grid_column_count) |cell|
+    for (0..plan.lat_count * plan.lon_count) |cell|
         total_delta += all_delta[cell * component_count];
     try std.testing.expectEqual(@as(f64, 0), total_delta);
-    for (0..plan.grid_row_count * plan.grid_column_count) |cell|
+    for (0..plan.lat_count * plan.lon_count) |cell|
         try std.testing.expectEqual(
             @as(f64, 0),
             all_delta[cell * component_count + 1],

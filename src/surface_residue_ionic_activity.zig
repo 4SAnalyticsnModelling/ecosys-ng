@@ -1,3 +1,24 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 4414--4454. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: architecturally superseded. Production stores the same physics in a
+//! different representation, deliberately, with the deviation recorded in
+//! `docs/model_changes.md`. Binding this kernel would reintroduce the
+//! formulation the project chose to leave behind, as a second writer.
+//!
+//! Superseded by: the same `solute_activity_coefficients` / `solute_ion_activities` path.
+//!
+//! This is the surface-litter twin of `soil_ionic_strength_conductivity`
+//! and is superseded for the same reason. EXEC-004 settled that litter chemistry
+//! state is owned by the runtime litter SOLUTE state, not by a HOUR1 recompute.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 /// Species amounts follow HOUR1 lines 4415-4431 source order.

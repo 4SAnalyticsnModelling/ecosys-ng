@@ -3,8 +3,8 @@ const std = @import("std");
 pub const Inputs = struct {
     uppermost_soil_bulk_density_megagrams_m3: f64,
     density_sentinel_threshold_megagrams_m3: f64,
-    snowpack_heat_capacity_mj_k: f64,
-    minimum_snowpack_heat_capacity_mj_k: f64,
+    snowpack_heat_capacity_megajoules_k: f64,
+    minimum_snowpack_heat_capacity_megajoules_k: f64,
     snow_surface_roughness_m: f64,
     soil_surface_roughness_m: f64,
     surface_slope: f64,
@@ -30,8 +30,8 @@ pub fn compute(inputs: Inputs) !Result {
     const selected_surface_roughness_m =
         if (inputs.uppermost_soil_bulk_density_megagrams_m3 <
         inputs.density_sentinel_threshold_megagrams_m3 or
-        inputs.snowpack_heat_capacity_mj_k >
-            inputs.minimum_snowpack_heat_capacity_mj_k)
+        inputs.snowpack_heat_capacity_megajoules_k >
+            inputs.minimum_snowpack_heat_capacity_megajoules_k)
             inputs.snow_surface_roughness_m
         else
             inputs.soil_surface_roughness_m;
@@ -66,8 +66,8 @@ fn validate(inputs: Inputs) !void {
         if (!std.math.isFinite(@field(inputs, field.name)))
             return error.NonFiniteSurfaceRoughnessInput;
     inline for (.{
-        inputs.snowpack_heat_capacity_mj_k,
-        inputs.minimum_snowpack_heat_capacity_mj_k,
+        inputs.snowpack_heat_capacity_megajoules_k,
+        inputs.minimum_snowpack_heat_capacity_megajoules_k,
         inputs.snow_surface_roughness_m,
         inputs.soil_surface_roughness_m,
         inputs.cell_area_m2,
@@ -83,8 +83,8 @@ test "snow selects snow roughness and preserves storage calculation order" {
     const result = try compute(.{
         .uppermost_soil_bulk_density_megagrams_m3 = 1,
         .density_sentinel_threshold_megagrams_m3 = 0,
-        .snowpack_heat_capacity_mj_k = 2,
-        .minimum_snowpack_heat_capacity_mj_k = 1,
+        .snowpack_heat_capacity_megajoules_k = 2,
+        .minimum_snowpack_heat_capacity_megajoules_k = 1,
         .snow_surface_roughness_m = 0.02,
         .soil_surface_roughness_m = 0.01,
         .surface_slope = 0.1,
@@ -105,8 +105,8 @@ test "bare soil selects soil roughness" {
     const result = try compute(.{
         .uppermost_soil_bulk_density_megagrams_m3 = 1,
         .density_sentinel_threshold_megagrams_m3 = 0,
-        .snowpack_heat_capacity_mj_k = 0,
-        .minimum_snowpack_heat_capacity_mj_k = 1,
+        .snowpack_heat_capacity_megajoules_k = 0,
+        .minimum_snowpack_heat_capacity_megajoules_k = 1,
         .snow_surface_roughness_m = 0.02,
         .soil_surface_roughness_m = 0.01,
         .surface_slope = 0,

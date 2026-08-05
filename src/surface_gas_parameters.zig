@@ -47,6 +47,13 @@ pub fn parse(source: []const u8) !Parameters {
     var tokens = delimited_input.tokens(source);
     try expectRecord(&tokens, "atmospheric_concentration_g_per_m3");
     var result: Parameters = undefined;
+    // NOTE: this record is a placeholder. `ecosys_ng.zig` unconditionally
+    // overwrites `atmospheric_concentration_g_per_m3` with
+    // `atmosphericConcentrationsFromUmolPerMol` applied to the site file's
+    // umol/mol mixing ratios, because atmospheric composition is site state
+    // rather than a process coefficient. Do not read these parsed values as the
+    // concentrations the model runs with, and do not "fix" the shipped row to
+    // look physical: the O2 and N2 entries are deliberately unused.
     try fill(&tokens, &result.atmospheric_concentration_g_per_m3);
     try expectRecord(&tokens, "solubility_reference_water_to_air");
     try fill(&tokens, &result.solubility.reference_water_to_air);
@@ -68,11 +75,11 @@ pub fn parse(source: []const u8) !Parameters {
     result.maximum_aqueous_oxygen_concentration_g_o_per_m3 = try nextFloat(&tokens);
     try expectRecord(&tokens, "litter_water_retention_m3_per_g_c");
     try fillFive(&tokens, &result.litter_geometry.water_retention_m3_per_g_c);
-    try expectRecord(&tokens, "litter_dry_bulk_density_Mg_per_m3");
-    try fillFive(&tokens, &result.litter_geometry.dry_bulk_density_Mg_per_m3);
+    try expectRecord(&tokens, "litter_dry_bulk_density_megagrams_per_m3");
+    try fillFive(&tokens, &result.litter_geometry.dry_bulk_density_megagrams_per_m3);
     try expectRecord(&tokens, "litter_geometry");
-    result.litter_geometry.dry_mass_Mg_per_g_c = try nextFloat(&tokens);
-    result.litter_geometry.particle_density_Mg_per_m3 = try nextFloat(&tokens);
+    result.litter_geometry.dry_mass_megagrams_per_g_c = try nextFloat(&tokens);
+    result.litter_geometry.particle_density_megagrams_per_m3 = try nextFloat(&tokens);
     result.litter_geometry.field_capacity_fraction_of_porosity = try nextFloat(&tokens);
     result.litter_geometry.wilting_point_fraction_of_porosity = try nextFloat(&tokens);
     result.initial_litter_water_m3_per_g_c = try nextFloat(&tokens);
@@ -184,7 +191,7 @@ fn expectedRecordValueCount(label: []const u8) ?usize {
         .{ .name = "air_water_exchange", .count = scalarCount(surface_precipitation.GasExchangeParameters) },
         .{ .name = "microbial_oxygen", .count = 7 },
         .{ .name = "litter_water_retention_m3_per_g_c", .count = litter_geometry.source_pool_count },
-        .{ .name = "litter_dry_bulk_density_Mg_per_m3", .count = litter_geometry.source_pool_count },
+        .{ .name = "litter_dry_bulk_density_megagrams_per_m3", .count = litter_geometry.source_pool_count },
         .{ .name = "litter_geometry", .count = 5 },
         .{ .name = "litter_water_potential_mpa", .count = scalarCount(litter_water_environment.Parameters) },
         .{ .name = "surface_population_metabolism", .count = microbial_respiration.source_population_count },
@@ -318,7 +325,7 @@ const source_parameter_text =
     "air_water_exchange,0.5,12,12,0.5,1,0.7\n" ++
     "microbial_oxygen|0.064|8.57e-6|1e-6|2.387e11|0.001|1e-12|1.0\n" ++
     "litter_water_retention_m3_per_g_c,2e-6,5e-6,5e-6,5e-6,5e-6\n" ++
-    "litter_dry_bulk_density_Mg_per_m3|0.1|0.0125|0.025|0.025|0.025\n" ++
+    "litter_dry_bulk_density_megagrams_per_m3|0.1|0.0125|0.025|0.025|0.025\n" ++
     "litter_geometry 1.82e-6 1.30 0.5 0.25 8e-6\n" ++
     "litter_water_potential_mpa -0.0005 -1.5e12 -1.5e4 0.5 0.5\n" ++
     "surface_population_metabolism AEROBIC_HETEROTROPH aerobic_heterotroph Aerobic_Heterotroph FERMENTING_HETEROTROPH acetotrophic_methanogen aerobic_heterotroph fermenting_heterotroph\n" ++

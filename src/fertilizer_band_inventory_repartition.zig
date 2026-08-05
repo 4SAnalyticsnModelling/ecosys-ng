@@ -50,8 +50,9 @@ pub const Result = struct {
 
 /// Applies one nutrient family's band-growth inventory transaction.
 ///
-/// Traceability: SOLUTE (`solute.f`) lines 3750-3915. Call separately for
-/// NH4, NO3, and PO4, supplying pools in their source statement order.
+/// Traceability: SOLUTE (`solute.f`) NH4 lines 3761--3804, NO3 lines
+/// 3813--3833, and PO4 lines 3842--3914. Call separately for each nutrient,
+/// supplying pools in their source statement order.
 /// A negative FVL removes inventory from non-band and adds the same amount to
 /// band. Every candidate is validated before any owner is mutated.
 pub fn repartition(inputs: Inputs, pools: []const Pool) !Result {
@@ -263,6 +264,70 @@ test "NH4 source units publish conservative molar changes and move fertilizer" {
     );
 }
 
+test "SOLUTE 3761-3804 transfers all NH4 band-growth pools in source order" {
+    const relative_change = [_]f64{-0.1};
+    const dissolved_ammonium_g_n = [_]f64{14};
+    const dissolved_ammonia_g_n = [_]f64{28};
+    const exchangeable_ammonium_mol = [_]f64{3};
+    var ammonium_non_band_change = [_]f64{0};
+    var ammonium_band_change = [_]f64{0};
+    var ammonia_non_band_change = [_]f64{0};
+    var ammonia_band_change = [_]f64{0};
+    var exchange_non_band_change = [_]f64{0};
+    var exchange_band_change = [_]f64{0};
+    var broadcast_ammonium = [_]f64{10};
+    var banded_ammonium = [_]f64{2};
+    var broadcast_ammonia = [_]f64{20};
+    var banded_ammonia = [_]f64{3};
+    var broadcast_urea = [_]f64{30};
+    var banded_urea = [_]f64{4};
+    const pools = [_]Pool{
+        .{ .name = "dissolved ammonium", .inventory_unit = .grams_nitrogen, .storage = .{ .deferred = .{ .non_band_inventory = &dissolved_ammonium_g_n, .non_band_change = &ammonium_non_band_change, .band_change = &ammonium_band_change, .change_unit = .moles, .inventory_units_per_change_unit = 14 } } },
+        .{ .name = "dissolved ammonia", .inventory_unit = .grams_nitrogen, .storage = .{ .deferred = .{ .non_band_inventory = &dissolved_ammonia_g_n, .non_band_change = &ammonia_non_band_change, .band_change = &ammonia_band_change, .change_unit = .moles, .inventory_units_per_change_unit = 14 } } },
+        .{ .name = "exchangeable ammonium", .inventory_unit = .moles, .storage = .{ .deferred = .{ .non_band_inventory = &exchangeable_ammonium_mol, .non_band_change = &exchange_non_band_change, .band_change = &exchange_band_change, .change_unit = .moles, .inventory_units_per_change_unit = 1 } } },
+        .{ .name = "broadcast ammonium fertilizer", .inventory_unit = .moles, .storage = .{ .immediate = .{ .non_band_inventory = &broadcast_ammonium, .band_inventory = &banded_ammonium } } },
+        .{ .name = "broadcast ammonia fertilizer", .inventory_unit = .moles, .storage = .{ .immediate = .{ .non_band_inventory = &broadcast_ammonia, .band_inventory = &banded_ammonia } } },
+        .{ .name = "broadcast urea fertilizer", .inventory_unit = .moles, .storage = .{ .immediate = .{ .non_band_inventory = &broadcast_urea, .band_inventory = &banded_urea } } },
+    };
+    _ = try repartition(.{ .relative_non_band_change = &relative_change, .band_active = true, .first_active_layer = 0, .last_active_layer = 0 }, &pools);
+    try std.testing.expectEqual(@as(f64, -0.1), ammonium_non_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 0.1), ammonium_band_change[0]);
+    try std.testing.expectEqual(@as(f64, -0.2), ammonia_non_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 0.2), ammonia_band_change[0]);
+    try std.testing.expectApproxEqAbs(@as(f64, -0.3), exchange_non_band_change[0], 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.3), exchange_band_change[0], 1e-15);
+    try std.testing.expectEqual(@as(f64, 9), broadcast_ammonium[0]);
+    try std.testing.expectEqual(@as(f64, 3), banded_ammonium[0]);
+    try std.testing.expectEqual(@as(f64, 18), broadcast_ammonia[0]);
+    try std.testing.expectEqual(@as(f64, 5), banded_ammonia[0]);
+    try std.testing.expectEqual(@as(f64, 27), broadcast_urea[0]);
+    try std.testing.expectEqual(@as(f64, 7), banded_urea[0]);
+}
+
+test "SOLUTE 3813-3833 transfers nitrate band-growth pools in source order" {
+    const relative_change = [_]f64{-0.25};
+    const dissolved_nitrate_g_n = [_]f64{28};
+    const dissolved_nitrite_g_n = [_]f64{14};
+    var nitrate_non_band_change = [_]f64{1};
+    var nitrate_band_change = [_]f64{2};
+    var nitrite_non_band_change = [_]f64{3};
+    var nitrite_band_change = [_]f64{4};
+    var broadcast_nitrate_fertilizer_mol = [_]f64{8};
+    var banded_nitrate_fertilizer_mol = [_]f64{5};
+    const pools = [_]Pool{
+        .{ .name = "dissolved nitrate", .inventory_unit = .grams_nitrogen, .storage = .{ .deferred = .{ .non_band_inventory = &dissolved_nitrate_g_n, .non_band_change = &nitrate_non_band_change, .band_change = &nitrate_band_change, .change_unit = .moles, .inventory_units_per_change_unit = 14 } } },
+        .{ .name = "dissolved nitrite", .inventory_unit = .grams_nitrogen, .storage = .{ .deferred = .{ .non_band_inventory = &dissolved_nitrite_g_n, .non_band_change = &nitrite_non_band_change, .band_change = &nitrite_band_change, .change_unit = .moles, .inventory_units_per_change_unit = 14 } } },
+        .{ .name = "broadcast nitrate fertilizer", .inventory_unit = .moles, .storage = .{ .immediate = .{ .non_band_inventory = &broadcast_nitrate_fertilizer_mol, .band_inventory = &banded_nitrate_fertilizer_mol } } },
+    };
+    _ = try repartition(.{ .relative_non_band_change = &relative_change, .band_active = true, .first_active_layer = 0, .last_active_layer = 0 }, &pools);
+    try std.testing.expectEqual(@as(f64, 0.5), nitrate_non_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 2.5), nitrate_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 2.75), nitrite_non_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 4.25), nitrite_band_change[0]);
+    try std.testing.expectEqual(@as(f64, 6), broadcast_nitrate_fertilizer_mol[0]);
+    try std.testing.expectEqual(@as(f64, 7), banded_nitrate_fertilizer_mol[0]);
+}
+
 test "PO4 dissolved exchange and precipitate ledgers conserve phosphorus" {
     const fvl = [_]f64{-0.1};
     const dissolved_g_p = [_]f64{31};
@@ -323,6 +388,44 @@ test "PO4 dissolved exchange and precipitate ledgers conserve phosphorus" {
         adsorbed_non[0] + adsorbed_band[0] +
         precipitated_non[0] + precipitated_band[0];
     try std.testing.expectApproxEqAbs(@as(f64, 0), phosphorus_change_mol, 1e-15);
+}
+
+test "SOLUTE 3888-3913 salt option transfers all eight phosphate species" {
+    const relative_change = [_]f64{-0.1};
+    const names = [_][]const u8{
+        "phosphate",
+        "phosphoric acid",
+        "iron HPO4 pair",
+        "iron H2PO4 pair",
+        "calcium PO4 pair",
+        "calcium HPO4 pair",
+        "calcium H2PO4 pair",
+        "magnesium HPO4 pair",
+    };
+    var inventories: [names.len][1]f64 = undefined;
+    var non_band_changes: [names.len][1]f64 = @splat(.{0});
+    var band_changes: [names.len][1]f64 = @splat(.{0});
+    var pools: [names.len]Pool = undefined;
+    for (&pools, 0..) |*pool, index| {
+        inventories[index][0] = @floatFromInt(index + 1);
+        pool.* = .{
+            .name = names[index],
+            .inventory_unit = .moles,
+            .storage = .{ .deferred = .{
+                .non_band_inventory = inventories[index][0..],
+                .non_band_change = non_band_changes[index][0..],
+                .band_change = band_changes[index][0..],
+                .change_unit = .moles,
+                .inventory_units_per_change_unit = 1,
+            } },
+        };
+    }
+    _ = try repartition(.{ .relative_non_band_change = &relative_change, .band_active = true, .first_active_layer = 0, .last_active_layer = 0 }, &pools);
+    for (0..names.len) |index| {
+        const expected = -0.1 * @as(f64, @floatFromInt(index + 1));
+        try std.testing.expectApproxEqAbs(expected, non_band_changes[index][0], 1e-15);
+        try std.testing.expectApproxEqAbs(-expected, band_changes[index][0], 1e-15);
+    }
 }
 
 test "invalid late pool rejects transaction without earlier mutation" {

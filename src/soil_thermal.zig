@@ -10,11 +10,11 @@ pub const State = struct {
     layer_volume_m3: []f64,
     layer_thickness_m: []f64,
     porosity_fraction: []f64,
-    dry_solid_heat_capacity_mj_per_m3_k: []f64,
-    solid_thermal_conductivity_numerator_m_mj_per_h_k: []f64,
+    dry_solid_heat_capacity_megajoules_per_m3_k: []f64,
+    solid_thermal_conductivity_numerator_m_megajoules_per_h_k: []f64,
     solid_thermal_conductivity_denominator: []f64,
-    total_heat_capacity_mj_per_m3_k: []f64,
-    thermal_conductivity_m_mj_per_h_k: []f64,
+    total_heat_capacity_megajoules_per_m3_k: []f64,
+    thermal_conductivity_m_megajoules_per_h_k: []f64,
 
     pub fn initMapped(
         allocator: std.mem.Allocator,
@@ -54,8 +54,8 @@ pub const State = struct {
                 // the matrix volume; macropore volume is additional pore
                 // space and must be included here.
                 result.porosity_fraction[index] = (entry.hydrology_per_m2.matrix_pore_volume_m3[layer] + entry.hydrology_per_m2.macropore_volume_m3[layer]) / entry.hydrology_per_m2.total_layer_volume_m3[layer];
-                result.dry_solid_heat_capacity_mj_per_m3_k[index] = entry.material.dry_solid_heat_capacity_mj_per_m3_k[layer];
-                result.solid_thermal_conductivity_numerator_m_mj_per_h_k[index] = entry.material.solid_thermal_conductivity_numerator_m_mj_per_h_k[layer];
+                result.dry_solid_heat_capacity_megajoules_per_m3_k[index] = entry.material.dry_solid_heat_capacity_megajoules_per_m3_k[layer];
+                result.solid_thermal_conductivity_numerator_m_megajoules_per_h_k[index] = entry.material.solid_thermal_conductivity_numerator_m_megajoules_per_h_k[layer];
                 result.solid_thermal_conductivity_denominator[index] = entry.material.solid_thermal_conductivity_denominator[layer];
             }
         }
@@ -112,8 +112,8 @@ pub const State = struct {
 pub const UpdateContext = struct {
     thermal: *State,
     grid: *GridState,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_heat_capacity_mj_per_m3_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 /// Updates WATSUB heat capacity and thermal conductivity from current water,
@@ -121,7 +121,7 @@ pub const UpdateContext = struct {
 pub fn updateTile(context: *UpdateContext, range: CellRange) !void {
     const thermal = context.thermal;
     if (range.end > thermal.cell_count or context.grid.cell_count != thermal.cell_count or context.grid.soil_layer_capacity != thermal.soil_layer_capacity) return error.SoilThermalDimensionMismatch;
-    if (!std.math.isFinite(context.liquid_water_heat_capacity_mj_per_m3_k) or context.liquid_water_heat_capacity_mj_per_m3_k <= 0 or !std.math.isFinite(context.ice_heat_capacity_mj_per_m3_k) or context.ice_heat_capacity_mj_per_m3_k <= 0) return error.InvalidSoilThermalHeatCapacity;
+    if (!std.math.isFinite(context.liquid_water_heat_capacity_megajoules_per_m3_k) or context.liquid_water_heat_capacity_megajoules_per_m3_k <= 0 or !std.math.isFinite(context.ice_heat_capacity_megajoules_per_m3_k) or context.ice_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidSoilThermalHeatCapacity;
     for (range.first..range.end) |cell| {
         const active_layers = context.grid.active_soil_layer_count[cell];
         if (active_layers > thermal.soil_layer_capacity) return error.SoilLayerCountMismatch;
@@ -170,12 +170,21 @@ pub fn updateTile(context: *UpdateContext, range: CellRange) !void {
                 std.log.err("invalid soil thermal water state: cell={d} layer={d} liquid_fraction={e} ice_fraction={e} porosity_fraction={e} liquid_water_m3={e} ice_water_m3={e} pore_capacity_m3={e} layer_volume_m3={e}", .{ cell, layer, liquid_fraction, ice_fraction, porosity_fraction, liquid_water_m3, ice_water_m3, pore_capacity_m3, volume });
                 return error.InvalidSoilThermalWaterState;
             }
-            thermal.total_heat_capacity_mj_per_m3_k[index] = thermal.dry_solid_heat_capacity_mj_per_m3_k[index] + context.liquid_water_heat_capacity_mj_per_m3_k * liquid_fraction + context.ice_heat_capacity_mj_per_m3_k * ice_fraction;
+            // WATSUB lines 252--254: VHCP1 = VHCM + 4.19*(VOLW1+VOLV1+VOLWH1)
+            //                              + 1.9274*(VOLI1+VOLIH1).
+            // The vapor volume VOLV1 carries liquid heat capacity in the
+            // oracle, and the EXEC landscape census reconstructs the same
+            // definition. Omitting it here gave a layer two different heat
+            // capacities depending on which owner was asked, so a conservative
+            // layer remap appeared to create energy (EXEC-002).
+            const vapor_fraction = context.grid.water_vapor_volume_m3[index] / volume;
+            if (!std.math.isFinite(vapor_fraction) or vapor_fraction < 0) return error.InvalidSoilThermalWaterState;
+            thermal.total_heat_capacity_megajoules_per_m3_k[index] = thermal.dry_solid_heat_capacity_megajoules_per_m3_k[index] + context.liquid_water_heat_capacity_megajoules_per_m3_k * (liquid_fraction + vapor_fraction) + context.ice_heat_capacity_megajoules_per_m3_k * ice_fraction;
             const air_weight = 1.467 - 0.467 * air_fraction;
-            const numerator = thermal.solid_thermal_conductivity_numerator_m_mj_per_h_k[index] + liquid_fraction * 2.067e-3 + 0.611 * ice_fraction * 7.844e-3 + air_weight * air_fraction * 9.050e-5;
+            const numerator = thermal.solid_thermal_conductivity_numerator_m_megajoules_per_h_k[index] + liquid_fraction * 2.067e-3 + 0.611 * ice_fraction * 7.844e-3 + air_weight * air_fraction * 9.050e-5;
             const denominator = thermal.solid_thermal_conductivity_denominator[index] + liquid_fraction + 0.611 * ice_fraction + air_weight * air_fraction;
             if (!std.math.isFinite(numerator) or !std.math.isFinite(denominator) or numerator < 0 or denominator <= 0) return error.InvalidSoilThermalConductivity;
-            thermal.thermal_conductivity_m_mj_per_h_k[index] = numerator / denominator;
+            thermal.thermal_conductivity_m_megajoules_per_h_k[index] = numerator / denominator;
         }
     }
 }
@@ -195,13 +204,13 @@ test "soil thermal state updates from mapped example water and ice" {
     var catalog = @import("soil_catalog.zig").Catalog.init(allocator);
     defer catalog.deinit();
     _ = try catalog.appendFromSource("soil", source, @import("soil_water_retention.zig").compatibilityParameters(), @import("soil_profile_derivation.zig").compatibilityParameters());
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = catalog.entries.items[0].profile.total_layer_count, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = catalog.entries.items[0].profile.total_layer_count, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var grid = try GridState.init(allocator, config);
     defer grid.deinit();
     try @import("model_initialization.zig").initializeCellHydrology(&grid, 0, catalog.entries.items[0].hydrology_per_m2);
     var thermal = try State.initMapped(allocator, grid, catalog.entries.items, &.{0}, &.{1.0}, &.{1.0});
     defer thermal.deinit();
-    var context: UpdateContext = .{ .thermal = &thermal, .grid = &grid, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .ice_heat_capacity_mj_per_m3_k = 1.9274 };
+    var context: UpdateContext = .{ .thermal = &thermal, .grid = &grid, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .ice_heat_capacity_megajoules_per_m3_k = 1.9274 };
     grid.liquid_water_m3[0] = grid.matrix_pore_capacity_m3[0] * 2;
     grid.ice_water_m3[0] = grid.matrix_pore_capacity_m3[0];
     try updateTile(&context, .{ .first = 0, .end = 1 });
@@ -216,8 +225,8 @@ test "soil thermal state updates from mapped example water and ice" {
         grid.ice_water_m3[0],
     );
     try thermal.validateFinite();
-    try std.testing.expect(thermal.total_heat_capacity_mj_per_m3_k[0] > thermal.dry_solid_heat_capacity_mj_per_m3_k[0]);
-    try std.testing.expect(thermal.thermal_conductivity_m_mj_per_h_k[0] > 0);
+    try std.testing.expect(thermal.total_heat_capacity_megajoules_per_m3_k[0] > thermal.dry_solid_heat_capacity_megajoules_per_m3_k[0]);
+    try std.testing.expect(thermal.thermal_conductivity_m_megajoules_per_h_k[0] > 0);
 
     grid.matrix_pore_capacity_m3[0] += 0.01;
     try updateTile(&context, .{ .first = 0, .end = 1 });

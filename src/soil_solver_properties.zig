@@ -55,12 +55,12 @@ pub const State = struct {
     sand_mass_fraction: []f64,
     clay_mass_fraction: []f64,
     /// STARTS/REDIST SAND, SILT, CLAY authoritative extensive inventories.
-    sand_mass_Mg: []f64,
-    silt_mass_Mg: []f64,
-    clay_mass_Mg: []f64,
+    sand_mass_megagrams: []f64,
+    silt_mass_megagrams: []f64,
+    clay_mass_megagrams: []f64,
     total_organic_carbon_g_per_megagram: []f64,
-    cation_exchange_capacity_mol_per_Mg: []f64,
-    anion_exchange_capacity_mol_per_Mg: []f64,
+    cation_exchange_capacity_mol_per_megagram: []f64,
+    anion_exchange_capacity_mol_per_megagram: []f64,
     cation_exchange_capacity_mol: []f64,
     anion_exchange_capacity_mol: []f64,
     porosity_fraction: []f64,
@@ -119,12 +119,12 @@ pub const State = struct {
         @memset(result.bulk_density_megagrams_per_m3, 1);
         @memset(result.sand_mass_fraction, 0.5);
         @memset(result.clay_mass_fraction, 0.25);
-        @memset(result.sand_mass_Mg, 0.5);
-        @memset(result.silt_mass_Mg, 0.25);
-        @memset(result.clay_mass_Mg, 0.25);
+        @memset(result.sand_mass_megagrams, 0.5);
+        @memset(result.silt_mass_megagrams, 0.25);
+        @memset(result.clay_mass_megagrams, 0.25);
         @memset(result.total_organic_carbon_g_per_megagram, 0);
-        @memset(result.cation_exchange_capacity_mol_per_Mg, 0);
-        @memset(result.anion_exchange_capacity_mol_per_Mg, 0);
+        @memset(result.cation_exchange_capacity_mol_per_megagram, 0);
+        @memset(result.anion_exchange_capacity_mol_per_megagram, 0);
         @memset(result.cation_exchange_capacity_mol, 0);
         @memset(result.anion_exchange_capacity_mol, 0);
         @memset(result.porosity_fraction, 0.5);
@@ -200,15 +200,15 @@ pub const State = struct {
                     mualem_van_genuchten;
                 result.clay_mass_fraction[index] = entry.material.clay_mass_fraction[layer];
                 result.sand_mass_fraction[index] = entry.material.sand_mass_fraction[layer];
-                const bulk_soil_mass_Mg = entry.material.bulk_density_megagrams_per_m3[layer] * entry.hydrology_per_m2.total_layer_volume_m3[layer] * area_m2;
-                result.sand_mass_Mg[index] = entry.material.sand_mass_fraction[layer] * bulk_soil_mass_Mg;
-                result.silt_mass_Mg[index] = entry.material.silt_mass_fraction[layer] * bulk_soil_mass_Mg;
-                result.clay_mass_Mg[index] = entry.material.clay_mass_fraction[layer] * bulk_soil_mass_Mg;
+                const bulk_soil_mass_megagrams = entry.material.bulk_density_megagrams_per_m3[layer] * entry.hydrology_per_m2.total_layer_volume_m3[layer] * area_m2;
+                result.sand_mass_megagrams[index] = entry.material.sand_mass_fraction[layer] * bulk_soil_mass_megagrams;
+                result.silt_mass_megagrams[index] = entry.material.silt_mass_fraction[layer] * bulk_soil_mass_megagrams;
+                result.clay_mass_megagrams[index] = entry.material.clay_mass_fraction[layer] * bulk_soil_mass_megagrams;
                 result.total_organic_carbon_g_per_megagram[index] = entry.material.total_organic_carbon_g_per_megagram[layer];
-                result.cation_exchange_capacity_mol_per_Mg[index] = entry.material.cation_exchange_capacity_mol_per_megagram[layer];
-                result.anion_exchange_capacity_mol_per_Mg[index] = 10.0 * entry.profile.anion_exchange_capacity_cmol_kg[layer];
-                result.cation_exchange_capacity_mol[index] = result.cation_exchange_capacity_mol_per_Mg[index] * bulk_soil_mass_Mg;
-                result.anion_exchange_capacity_mol[index] = result.anion_exchange_capacity_mol_per_Mg[index] * bulk_soil_mass_Mg;
+                result.cation_exchange_capacity_mol_per_megagram[index] = entry.material.cation_exchange_capacity_mol_per_megagram[layer];
+                result.anion_exchange_capacity_mol_per_megagram[index] = 10.0 * entry.profile.anion_exchange_capacity_cmol_kg[layer];
+                result.cation_exchange_capacity_mol[index] = result.cation_exchange_capacity_mol_per_megagram[index] * bulk_soil_mass_megagrams;
+                result.anion_exchange_capacity_mol[index] = result.anion_exchange_capacity_mol_per_megagram[index] * bulk_soil_mass_megagrams;
                 result.matrix_bulk_volume_m3[index] = entry.hydrology_per_m2.matrix_volume_m3[layer] * area_m2;
                 result.layer_volume_m3[index] = entry.hydrology_per_m2.total_layer_volume_m3[layer] * area_m2;
                 result.layer_thickness_m[index] = entry.hydrology_per_m2.layer_thickness_m[layer];
@@ -297,7 +297,7 @@ test "mapped solver properties use runtime dimensions classes and profile scienc
     var catalog = catalog_module.Catalog.init(allocator);
     defer catalog.deinit();
     _ = try catalog.appendFromSource("soil", source, compatibilityParameters().retention, compatibilityParameters().profile_derivation);
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = catalog.entries.items[0].profile.total_layer_count, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = catalog.entries.items[0].profile.total_layer_count, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(allocator, cfg);
     defer grid.deinit();
     try @import("model_initialization.zig").initializeCellHydrology(&grid, 0, catalog.entries.items[0].hydrology_per_m2);
@@ -311,12 +311,12 @@ test "mapped solver properties use runtime dimensions classes and profile scienc
     try std.testing.expectEqual(grid.layer_count * 3 * 37, state.matrix_hydraulic_conductivity_m2_per_h_mpa.len);
     try std.testing.expect(state.matrix_bulk_volume_m3[0] > 0);
     const entry = catalog.entries.items[0];
-    const bulk_soil_mass_Mg = entry.material.bulk_density_megagrams_per_m3[0] * entry.hydrology_per_m2.total_layer_volume_m3[0];
-    try std.testing.expectApproxEqAbs(entry.material.sand_mass_fraction[0] * bulk_soil_mass_Mg, state.sand_mass_Mg[0], 1e-14);
-    try std.testing.expectApproxEqAbs(entry.material.silt_mass_fraction[0] * bulk_soil_mass_Mg, state.silt_mass_Mg[0], 1e-14);
-    try std.testing.expectApproxEqAbs(entry.material.clay_mass_fraction[0] * bulk_soil_mass_Mg, state.clay_mass_Mg[0], 1e-14);
-    try std.testing.expectApproxEqAbs(state.cation_exchange_capacity_mol_per_Mg[0] * bulk_soil_mass_Mg, state.cation_exchange_capacity_mol[0], 1e-14);
-    try std.testing.expectApproxEqAbs(state.anion_exchange_capacity_mol_per_Mg[0] * bulk_soil_mass_Mg, state.anion_exchange_capacity_mol[0], 1e-14);
+    const bulk_soil_mass_megagrams = entry.material.bulk_density_megagrams_per_m3[0] * entry.hydrology_per_m2.total_layer_volume_m3[0];
+    try std.testing.expectApproxEqAbs(entry.material.sand_mass_fraction[0] * bulk_soil_mass_megagrams, state.sand_mass_megagrams[0], 1e-14);
+    try std.testing.expectApproxEqAbs(entry.material.silt_mass_fraction[0] * bulk_soil_mass_megagrams, state.silt_mass_megagrams[0], 1e-14);
+    try std.testing.expectApproxEqAbs(entry.material.clay_mass_fraction[0] * bulk_soil_mass_megagrams, state.clay_mass_megagrams[0], 1e-14);
+    try std.testing.expectApproxEqAbs(state.cation_exchange_capacity_mol_per_megagram[0] * bulk_soil_mass_megagrams, state.cation_exchange_capacity_mol[0], 1e-14);
+    try std.testing.expectApproxEqAbs(state.anion_exchange_capacity_mol_per_megagram[0] * bulk_soil_mass_megagrams, state.anion_exchange_capacity_mol[0], 1e-14);
     try std.testing.expect(state.matrix_air_entry_water_fraction[0] > 0);
     try std.testing.expect(state.matrix_hydraulic_conductivity_m2_per_h_mpa[2 * parameters.hydraulic_conductivity_class_count] > 0);
     try std.testing.expectApproxEqAbs(0.5 * state.layer_thickness_m[0], state.layer_midpoint_depth_m[0], 1e-15);

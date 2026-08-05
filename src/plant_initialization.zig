@@ -233,7 +233,7 @@ pub fn initializePlantHeatAndWater(
     canopy.plant_phenology_temperature_k[plant] = temperature_k;
     canopy.plant_canopy_osmotic_potential_mpa[plant] = osmotic_potential_mpa;
     canopy.plant_canopy_turgor_potential_mpa[plant] = turgor_potential_mpa;
-    canopy.plant_stored_energy_mj[plant] = 0;
+    canopy.plant_stored_energy_megajoules[plant] = 0;
     canopy.plant_transpiration_m3_per_h[plant] = 0;
 }
 
@@ -597,7 +597,7 @@ test "STARTQ standing dead partition coefficients alter all runtime element frac
 }
 
 test "STARTQ plant heat and water status uses mean annual air temperature" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var plants = try PlantState.init(std.testing.allocator, config);
     defer plants.deinit();
     var canopy = try canopy_photosynthesis.State.init(std.testing.allocator, 1, 1, &.{1}, &.{1}, &.{1});
@@ -611,7 +611,7 @@ test "STARTQ plant heat and water status uses mean annual air temperature" {
 }
 
 test "STARTQ runtime heat water controls determine initial canopy state" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 });
     var plants = try PlantState.init(std.testing.allocator, config);
     defer plants.deinit();
     var canopy = try canopy_photosynthesis.State.init(std.testing.allocator, 1, 1, &.{1}, &.{1}, &.{0});

@@ -97,7 +97,7 @@ test "NITRO 553-555 nitrous acid fraction preserves dissociation operation order
 }
 
 test "layer chemodenitrification derives both zone fluxes without mutation" {
-    var model_grid = try grid.GridState.init(std.testing.allocator, .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 });
+    var model_grid = try grid.GridState.init(std.testing.allocator, .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 });
     defer model_grid.deinit();
     model_grid.matrix_liquid_water_m3[0] = 1;
     model_grid.soil_temperature_k[0] = 298.15;

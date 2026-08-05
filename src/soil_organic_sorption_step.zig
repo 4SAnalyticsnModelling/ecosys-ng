@@ -30,8 +30,8 @@ pub const ApplyContext = struct {
     respiration_fluxes: *const fluxes.State,
     water_volume_m3: []const f64,
     matrix_bulk_volume_m3: []const f64,
-    bulk_density_Mg_per_m3: []const f64,
-    anion_exchange_capacity_mol_per_Mg: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
+    anion_exchange_capacity_mol_per_megagram: []const f64,
     sorption_rate_per_h: f64,
     adsorption_coefficient: f64,
     timestep_h: f64,
@@ -59,8 +59,8 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
             .adsorbed = .{ .doc_g_c = adsorbed.carbon_g_c, .acetate_g_c = context.organic_state.adsorbed_acetate_carbon_g_c[mobile], .don_g_n = adsorbed.nitrogen_g_n, .dop_g_p = adsorbed.phosphorus_g_p },
         }, .{
             .water_volume_m3 = context.water_volume_m3[layer],
-            .soil_mass_Mg = context.matrix_bulk_volume_m3[layer] * context.bulk_density_Mg_per_m3[layer],
-            .anion_exchange_capacity_mol_per_Mg = context.anion_exchange_capacity_mol_per_Mg[layer],
+            .soil_mass_megagrams = context.matrix_bulk_volume_m3[layer] * context.bulk_density_megagrams_per_m3[layer],
+            .anion_exchange_capacity_mol_per_megagram = context.anion_exchange_capacity_mol_per_megagram[layer],
             .adsorption_coefficient = context.adsorption_coefficient,
             .substrate_complex_fraction = substrate_fraction,
             .doc_fraction_of_dissolved_carbon = doc_fraction,
@@ -74,7 +74,7 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
 
 fn validate(context: ApplyContext, range: compute.CellRange) !void {
     const layers = context.result.layer_count;
-    if (range.first > range.end or range.end > layers or context.organic_state.layer_count != layers or context.microbial_state.cell_count * context.microbial_state.layer_count != layers or context.respiration_fluxes.layer_count != layers or context.respiration_fluxes.process_unit_count_per_layer != context.microbial_state.substrate_count * context.microbial_state.population_count or context.water_volume_m3.len != layers or context.matrix_bulk_volume_m3.len != layers or context.bulk_density_Mg_per_m3.len != layers or context.anion_exchange_capacity_mol_per_Mg.len != layers) return error.SoilOrganicSorptionDimensionMismatch;
+    if (range.first > range.end or range.end > layers or context.organic_state.layer_count != layers or context.microbial_state.cell_count * context.microbial_state.layer_count != layers or context.respiration_fluxes.layer_count != layers or context.respiration_fluxes.process_unit_count_per_layer != context.microbial_state.substrate_count * context.microbial_state.population_count or context.water_volume_m3.len != layers or context.matrix_bulk_volume_m3.len != layers or context.bulk_density_megagrams_per_m3.len != layers or context.anion_exchange_capacity_mol_per_megagram.len != layers) return error.SoilOrganicSorptionDimensionMismatch;
     inline for (.{ context.sorption_rate_per_h, context.adsorption_coefficient, context.timestep_h, context.negligible_amount_g }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSoilOrganicSorptionParameter;
     if (context.timestep_h <= 0) return error.InvalidSoilOrganicSorptionParameter;
 }
@@ -92,7 +92,7 @@ test "soil organic sorption stages conservative runtime substrate exchanges" {
     respiration.substrate_complex_fraction[0] = 1;
     var state = try State.init(std.testing.allocator, 1);
     defer state.deinit();
-    var context: ApplyContext = .{ .result = &state, .organic_state = &organic_state, .microbial_state = &microbial_state, .respiration_fluxes = &respiration, .water_volume_m3 = &.{1}, .matrix_bulk_volume_m3 = &.{2}, .bulk_density_Mg_per_m3 = &.{1}, .anion_exchange_capacity_mol_per_Mg = &.{100}, .sorption_rate_per_h = 0.1, .adsorption_coefficient = 1, .timestep_h = 1, .negligible_amount_g = 1e-12 };
+    var context: ApplyContext = .{ .result = &state, .organic_state = &organic_state, .microbial_state = &microbial_state, .respiration_fluxes = &respiration, .water_volume_m3 = &.{1}, .matrix_bulk_volume_m3 = &.{2}, .bulk_density_megagrams_per_m3 = &.{1}, .anion_exchange_capacity_mol_per_megagram = &.{100}, .sorption_rate_per_h = 0.1, .adsorption_coefficient = 1, .timestep_h = 1, .negligible_amount_g = 1e-12 };
     try applyTile(&context, .{ .first = 0, .end = 1 });
     try std.testing.expect(state.exchange[0].doc_g_c > 0);
     try std.testing.expect(state.exchange[0].don_g_n > 0);

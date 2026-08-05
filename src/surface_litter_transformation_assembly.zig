@@ -9,22 +9,22 @@ pub const PhosphateMineralRates = struct {
 };
 
 pub const CationExchangeRates = struct {
-    hydrogen_mol_per_Mg_step: f64,
-    aluminum_mol_per_Mg_step: f64,
-    iron_mol_per_Mg_step: f64,
-    calcium_mol_per_Mg_step: f64,
-    magnesium_mol_per_Mg_step: f64,
-    sodium_mol_per_Mg_step: f64,
-    potassium_mol_per_Mg_step: f64,
+    hydrogen_mol_per_megagram_step: f64,
+    aluminum_mol_per_megagram_step: f64,
+    iron_mol_per_megagram_step: f64,
+    calcium_mol_per_megagram_step: f64,
+    magnesium_mol_per_megagram_step: f64,
+    sodium_mol_per_megagram_step: f64,
+    potassium_mol_per_megagram_step: f64,
 };
 
 pub const Inputs = struct {
     ammonium_association_mol_n_per_m3_step: f64,
-    ammonium_exchange_mol_n_per_Mg_step: f64,
+    ammonium_exchange_mol_n_per_megagram_step: f64,
     dihydrogen_phosphate_association_mol_p_per_m3_step: f64,
     phosphate_minerals: PhosphateMineralRates,
     cation_exchange: CationExchangeRates,
-    litter_mass_per_water_volume_Mg_per_m3: f64,
+    litter_mass_per_water_volume_megagrams_per_m3: f64,
 };
 
 pub const NitrogenTransformations = struct {
@@ -60,14 +60,14 @@ pub const Result = struct {
 /// step to mol m^-3 per step using runtime litter mass-to-water density.
 pub fn calculateSourceOrder(inputs: Inputs) !Result {
     try validateInputs(inputs);
-    const density = inputs.litter_mass_per_water_volume_Mg_per_m3;
+    const density = inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const minerals = inputs.phosphate_minerals;
     const exchange = inputs.cation_exchange;
 
     // SOLUTE.F 4987--4998, preserved in assignment order.
     const ammonium =
         inputs.ammonium_association_mol_n_per_m3_step -
-        inputs.ammonium_exchange_mol_n_per_Mg_step * density;
+        inputs.ammonium_exchange_mol_n_per_megagram_step * density;
     const ammonia = -inputs.ammonium_association_mol_n_per_m3_step;
     const hydrogen_phosphate =
         -inputs.dihydrogen_phosphate_association_mol_p_per_m3_step;
@@ -78,14 +78,14 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         minerals.dicalcium_phosphate_mol_mineral_per_m3_step -
         2.0 * minerals.monocalcium_phosphate_mol_mineral_per_m3_step -
         3.0 * minerals.hydroxyapatite_mol_mineral_per_m3_step;
-    const hydrogen = -exchange.hydrogen_mol_per_Mg_step * density;
+    const hydrogen = -exchange.hydrogen_mol_per_megagram_step * density;
     const hydroxide = 0.0;
-    const aluminum = -exchange.aluminum_mol_per_Mg_step * density;
-    const iron = -exchange.iron_mol_per_Mg_step * density;
-    const calcium = -exchange.calcium_mol_per_Mg_step * density;
-    const magnesium = -exchange.magnesium_mol_per_Mg_step * density;
-    const sodium = -exchange.sodium_mol_per_Mg_step * density;
-    const potassium = -exchange.potassium_mol_per_Mg_step * density;
+    const aluminum = -exchange.aluminum_mol_per_megagram_step * density;
+    const iron = -exchange.iron_mol_per_megagram_step * density;
+    const calcium = -exchange.calcium_mol_per_megagram_step * density;
+    const magnesium = -exchange.magnesium_mol_per_megagram_step * density;
+    const sodium = -exchange.sodium_mol_per_megagram_step * density;
+    const potassium = -exchange.potassium_mol_per_megagram_step * density;
 
     const result: Result = .{
         .nitrogen = .{
@@ -114,14 +114,14 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
 fn validateInputs(inputs: Inputs) !void {
     inline for (.{
         inputs.ammonium_association_mol_n_per_m3_step,
-        inputs.ammonium_exchange_mol_n_per_Mg_step,
+        inputs.ammonium_exchange_mol_n_per_megagram_step,
         inputs.dihydrogen_phosphate_association_mol_p_per_m3_step,
-        inputs.litter_mass_per_water_volume_Mg_per_m3,
+        inputs.litter_mass_per_water_volume_megagrams_per_m3,
     }) |value| {
         if (!std.math.isFinite(value))
             return error.InvalidSurfaceLitterTransformationAssemblyInput;
     }
-    if (inputs.litter_mass_per_water_volume_Mg_per_m3 <= 0)
+    if (inputs.litter_mass_per_water_volume_megagrams_per_m3 <= 0)
         return error.InvalidSurfaceLitterTransformationAssemblyInput;
     try validateFiniteStruct(inputs.phosphate_minerals);
     try validateFiniteStruct(inputs.cation_exchange);
@@ -150,7 +150,7 @@ fn validateFiniteResultStruct(value: anytype) !void {
 fn testInputs() Inputs {
     return .{
         .ammonium_association_mol_n_per_m3_step = 0.4,
-        .ammonium_exchange_mol_n_per_Mg_step = 0.1,
+        .ammonium_exchange_mol_n_per_megagram_step = 0.1,
         .dihydrogen_phosphate_association_mol_p_per_m3_step = 0.3,
         .phosphate_minerals = .{
             .aluminum_phosphate_mol_mineral_per_m3_step = 0.01,
@@ -160,28 +160,28 @@ fn testInputs() Inputs {
             .hydroxyapatite_mol_mineral_per_m3_step = 0.05,
         },
         .cation_exchange = .{
-            .hydrogen_mol_per_Mg_step = 0.06,
-            .aluminum_mol_per_Mg_step = 0.07,
-            .iron_mol_per_Mg_step = 0.08,
-            .calcium_mol_per_Mg_step = 0.09,
-            .magnesium_mol_per_Mg_step = 0.10,
-            .sodium_mol_per_Mg_step = 0.11,
-            .potassium_mol_per_Mg_step = 0.12,
+            .hydrogen_mol_per_megagram_step = 0.06,
+            .aluminum_mol_per_megagram_step = 0.07,
+            .iron_mol_per_megagram_step = 0.08,
+            .calcium_mol_per_megagram_step = 0.09,
+            .magnesium_mol_per_megagram_step = 0.10,
+            .sodium_mol_per_megagram_step = 0.11,
+            .potassium_mol_per_megagram_step = 0.12,
         },
-        .litter_mass_per_water_volume_Mg_per_m3 = 2,
+        .litter_mass_per_water_volume_megagrams_per_m3 = 2,
     };
 }
 
 test "SOLUTE surface transformation assembly preserves every source equation" {
     const inputs = testInputs();
     const result = try calculateSourceOrder(inputs);
-    const density = inputs.litter_mass_per_water_volume_Mg_per_m3;
+    const density = inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const minerals = inputs.phosphate_minerals;
     const exchange = inputs.cation_exchange;
 
     try std.testing.expectEqual(
         inputs.ammonium_association_mol_n_per_m3_step -
-            inputs.ammonium_exchange_mol_n_per_Mg_step * density,
+            inputs.ammonium_exchange_mol_n_per_megagram_step * density,
         result.nitrogen.ammonium_mol_n_per_m3_step,
     );
     try std.testing.expectEqual(
@@ -202,7 +202,7 @@ test "SOLUTE surface transformation assembly preserves every source equation" {
         result.phosphorus.dihydrogen_phosphate_mol_p_per_m3_step,
     );
     try std.testing.expectEqual(
-        -exchange.calcium_mol_per_Mg_step * density,
+        -exchange.calcium_mol_per_megagram_step * density,
         result.ions.calcium_mol_per_m3_step,
     );
     try std.testing.expectEqual(
@@ -214,11 +214,11 @@ test "SOLUTE surface transformation assembly preserves every source equation" {
 test "surface transformation assembly closes nitrogen and phosphorus" {
     const inputs = testInputs();
     const result = try calculateSourceOrder(inputs);
-    const density = inputs.litter_mass_per_water_volume_Mg_per_m3;
+    const density = inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const nitrogen_with_exchange =
         result.nitrogen.ammonium_mol_n_per_m3_step +
         result.nitrogen.ammonia_mol_n_per_m3_step +
-        inputs.ammonium_exchange_mol_n_per_Mg_step * density;
+        inputs.ammonium_exchange_mol_n_per_megagram_step * density;
     const minerals = inputs.phosphate_minerals;
     const phosphorus_with_solids =
         result.phosphorus.hydrogen_phosphate_mol_p_per_m3_step +
@@ -257,7 +257,7 @@ test "surface transformation assembly preserves signed reversibility" {
 
 test "surface transformation assembly rejects invalid input and overflow" {
     var inputs = testInputs();
-    inputs.litter_mass_per_water_volume_Mg_per_m3 = 0;
+    inputs.litter_mass_per_water_volume_megagrams_per_m3 = 0;
     try std.testing.expectError(
         error.InvalidSurfaceLitterTransformationAssemblyInput,
         calculateSourceOrder(inputs),
@@ -272,9 +272,9 @@ test "surface transformation assembly rejects invalid input and overflow" {
     );
 
     inputs = testInputs();
-    inputs.litter_mass_per_water_volume_Mg_per_m3 =
+    inputs.litter_mass_per_water_volume_megagrams_per_m3 =
         std.math.floatMax(f64);
-    inputs.cation_exchange.calcium_mol_per_Mg_step =
+    inputs.cation_exchange.calcium_mol_per_megagram_step =
         std.math.floatMax(f64);
     try std.testing.expectError(
         error.NonFiniteSurfaceLitterTransformationAssemblyResult,

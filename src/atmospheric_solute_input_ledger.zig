@@ -1,6 +1,31 @@
 const std = @import("std");
 const snow = @import("snow_solute_transport.zig");
 
+pub const AcceptedDirectLiquid = struct {
+    rain_m3: f64,
+    irrigation_m3: f64,
+};
+
+/// Allocates only the liquid volume accepted by the surface-water router to
+/// its weather and irrigation sources. Unaccepted water must not carry solute
+/// into either storage or the external-input ledger.
+pub fn partitionAcceptedDirectLiquid(
+    accepted_direct_m3: f64,
+    available_rain_m3: f64,
+    available_irrigation_m3: f64,
+    tolerance_m3: f64,
+) !AcceptedDirectLiquid {
+    inline for (.{ accepted_direct_m3, available_rain_m3, available_irrigation_m3, tolerance_m3 }) |value|
+        if (!std.math.isFinite(value) or value < 0) return error.InvalidAtmosphericSoluteInputVolume;
+    const available_m3 = available_rain_m3 + available_irrigation_m3;
+    if (!std.math.isFinite(available_m3) or accepted_direct_m3 > available_m3 + tolerance_m3)
+        return error.AtmosphericSoluteInputExceedsAvailableWater;
+    if (accepted_direct_m3 == 0 or available_m3 == 0) return .{ .rain_m3 = 0, .irrigation_m3 = 0 };
+    const accepted_m3 = @min(accepted_direct_m3, available_m3);
+    const rain_m3 = accepted_m3 * available_rain_m3 / available_m3;
+    return .{ .rain_m3 = rain_m3, .irrigation_m3 = accepted_m3 - rain_m3 };
+}
+
 /// Runtime-sized accepted precipitation and irrigation chemistry before it
 /// branches into snow, litter, non-band soil, and band soil destinations.
 /// Values retain each carrier's tracked-element grams.
@@ -105,6 +130,16 @@ test "accepted atmospheric input recombines snow litter and both soil zones" {
     try std.testing.expectEqual(
         @as(f64, 5),
         try state.speciesInputG(1, .ammonium_nitrogen),
+    );
+}
+
+test "direct chemistry follows accepted water rather than nominal precipitation" {
+    const accepted = try partitionAcceptedDirectLiquid(8, 9, 1, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 7.2), accepted.rain_m3, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), accepted.irrigation_m3, 1e-15);
+    try std.testing.expectError(
+        error.AtmosphericSoluteInputExceedsAvailableWater,
+        partitionAcceptedDirectLiquid(11, 9, 1, 1e-12),
     );
 }
 

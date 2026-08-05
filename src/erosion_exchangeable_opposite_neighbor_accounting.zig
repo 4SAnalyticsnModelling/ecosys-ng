@@ -52,7 +52,7 @@ pub const exchangeable_pool_count: usize =
     @typeInfo(ExchangeablePool).@"enum".fields.len;
 
 pub const OppositeNeighborFlux = struct {
-    total_sediment_Mg_per_step: f64,
+    total_sediment_megagrams_per_step: f64,
     /// `X*ER` and `X*EB`, mol/step by [exchangeable_pool].
     mol_per_step_by_pool: []const f64,
 };
@@ -61,7 +61,7 @@ pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
     boundary_side: BoundarySide,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     /// Null when the geometry-derived opposite-neighbor coordinate is absent.
     opposite_neighbor_first_side_flux: ?OppositeNeighborFlux,
 };
@@ -89,13 +89,13 @@ pub fn account(inputs: Inputs, state: *State, workspace: Workspace) !void {
     }
     const flux = inputs.opposite_neighbor_first_side_flux orelse return;
     try validateInputs(
-        inputs.sediment_activity_threshold_Mg_per_step,
+        inputs.sediment_activity_threshold_megagrams_per_step,
         flux,
         state.*,
         workspace,
     );
-    if (@abs(flux.total_sediment_Mg_per_step) <=
-        inputs.sediment_activity_threshold_Mg_per_step)
+    if (@abs(flux.total_sediment_megagrams_per_step) <=
+        inputs.sediment_activity_threshold_megagrams_per_step)
     {
         return;
     }
@@ -138,7 +138,7 @@ fn validateInputs(
         return error.OppositeNeighborExchangeableErosionDimensionMismatch;
     }
     if (!std.math.isFinite(threshold) or
-        !std.math.isFinite(flux.total_sediment_Mg_per_step))
+        !std.math.isFinite(flux.total_sediment_megagrams_per_step))
     {
         return error.NonFiniteOppositeNeighborExchangeableErosionInput;
     }
@@ -196,9 +196,9 @@ test "active opposite neighbor subtracts all exchangeable pools" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = -2,
+            .total_sediment_megagrams_per_step = -2,
             .mol_per_step_by_pool = &three,
         },
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
@@ -215,9 +215,9 @@ test "shared face exchangeable transfer conserves every pool exactly" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .north_south,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = 2,
+            .total_sediment_megagrams_per_step = 2,
             .mol_per_step_by_pool = &shared,
         },
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
@@ -233,9 +233,9 @@ test "strict sediment outer side and geometry gates bypass pools" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = 1,
+            .total_sediment_megagrams_per_step = 1,
             .mol_per_step_by_pool = &huge,
         },
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
@@ -246,28 +246,28 @@ test "strict sediment outer side and geometry gates bypass pools" {
             .disturbance_mode = .freeze_thaw,
             .transport_axis = .east_west,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .vertical,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .east_west,
             .boundary_side = .second,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
         .{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .east_west,
             .boundary_side = .first,
-            .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+            .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
             .opposite_neighbor_first_side_flux = null,
         },
     };
@@ -289,9 +289,9 @@ test "dimension alias invalid and overflow errors preserve state atomically" {
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
         .boundary_side = .first,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .opposite_neighbor_first_side_flux = .{
-            .total_sediment_Mg_per_step = 2,
+            .total_sediment_megagrams_per_step = 2,
             .mol_per_step_by_pool = three[0..21],
         },
     };

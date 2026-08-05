@@ -23,9 +23,9 @@ pub const CombustionParameters = struct {
     maximum_anaerobic_charcoal_fraction: f64,
     oxygen_half_saturation_umol_per_mol: f64,
     methane_half_saturation_umol_per_mol: f64,
-    aerobic_combustion_energy_mj_per_g_c: f64,
-    anaerobic_combustion_energy_mj_per_g_c: f64,
-    methane_combustion_energy_mj_per_g_c: f64,
+    aerobic_combustion_energy_megajoules_per_g_c: f64,
+    anaerobic_combustion_energy_megajoules_per_g_c: f64,
+    methane_combustion_energy_megajoules_per_g_c: f64,
 
     pub fn validate(self: CombustionParameters) !void {
         inline for (@typeInfo(CombustionParameters).@"struct".fields) |field| {
@@ -58,9 +58,9 @@ pub fn sourceCombustionParameters() CombustionParameters {
         .maximum_anaerobic_charcoal_fraction = 0.5,
         .oxygen_half_saturation_umol_per_mol = 2_100,
         .methane_half_saturation_umol_per_mol = 10,
-        .aerobic_combustion_energy_mj_per_g_c = 0.0375,
-        .anaerobic_combustion_energy_mj_per_g_c = 0.0125,
-        .methane_combustion_energy_mj_per_g_c = 0.0743,
+        .aerobic_combustion_energy_megajoules_per_g_c = 0.0375,
+        .anaerobic_combustion_energy_megajoules_per_g_c = 0.0125,
+        .methane_combustion_energy_megajoules_per_g_c = 0.0743,
     };
 }
 

@@ -16,10 +16,10 @@ pub const TransportAxis = enum {
 
 /// Signed mineral flux entering from one erosion boundary.
 pub const MineralFlux = struct {
-    total_sediment_Mg_per_step: f64 = 0,
-    sand_Mg_per_step: f64 = 0,
-    silt_Mg_per_step: f64 = 0,
-    clay_Mg_per_step: f64 = 0,
+    total_sediment_megagrams_per_step: f64 = 0,
+    sand_megagrams_per_step: f64 = 0,
+    silt_megagrams_per_step: f64 = 0,
+    clay_megagrams_per_step: f64 = 0,
     cation_exchange_capacity_mol_per_step: f64 = 0,
     anion_exchange_capacity_mol_per_step: f64 = 0,
 };
@@ -28,11 +28,11 @@ pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
     /// Cell-specific `ZEROS` gate, Mg per model step.
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     /// Current-cell `X*ER(N,NN,N2,N1)` [boundary_side].
     local_flux_by_boundary_side: []const MineralFlux,
     /// Positive-neighbor `XSEDER(N,NN,N5,N4)` [boundary_side].
-    positive_neighbor_total_sediment_Mg_per_step_by_boundary_side: []const f64,
+    positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side: []const f64,
 };
 
 pub const State = struct {
@@ -58,12 +58,12 @@ pub fn account(inputs: Inputs, state: *State) !void {
     var candidate = state.net_incoming;
     for (
         inputs.local_flux_by_boundary_side,
-        inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side,
+        inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side,
     ) |local, positive_neighbor_total| {
-        if (@abs(local.total_sediment_Mg_per_step) <=
-            inputs.sediment_activity_threshold_Mg_per_step and
+        if (@abs(local.total_sediment_megagrams_per_step) <=
+            inputs.sediment_activity_threshold_megagrams_per_step and
             @abs(positive_neighbor_total) <=
-                inputs.sediment_activity_threshold_Mg_per_step)
+                inputs.sediment_activity_threshold_megagrams_per_step)
         {
             continue;
         }
@@ -80,18 +80,18 @@ fn erosionEnabled(mode: DisturbanceMode) bool {
 fn validateInputs(inputs: Inputs, state: State) !void {
     if (inputs.local_flux_by_boundary_side.len == 0)
         return error.InvalidErosionIncomingDimensions;
-    if (inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side.len !=
+    if (inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side.len !=
         inputs.local_flux_by_boundary_side.len)
     {
         return error.ErosionIncomingDimensionMismatch;
     }
-    if (!std.math.isFinite(inputs.sediment_activity_threshold_Mg_per_step))
+    if (!std.math.isFinite(inputs.sediment_activity_threshold_megagrams_per_step))
         return error.NonFiniteErosionIncomingInput;
-    if (inputs.sediment_activity_threshold_Mg_per_step < 0)
+    if (inputs.sediment_activity_threshold_megagrams_per_step < 0)
         return error.InvalidErosionActivityThreshold;
     try validateFlux(state.net_incoming);
     for (inputs.local_flux_by_boundary_side) |flux| try validateFlux(flux);
-    for (inputs.positive_neighbor_total_sediment_Mg_per_step_by_boundary_side) |value|
+    for (inputs.positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side) |value|
         if (!std.math.isFinite(value))
             return error.NonFiniteErosionIncomingInput;
 }
@@ -127,18 +127,18 @@ fn expectFlux(actual: MineralFlux, expected: f64) !void {
 test "horizontal erosion adds source-ordered local mineral inventories" {
     const local = [_]MineralFlux{
         .{
-            .total_sediment_Mg_per_step = 2,
-            .sand_Mg_per_step = 3,
-            .silt_Mg_per_step = 4,
-            .clay_Mg_per_step = 5,
+            .total_sediment_megagrams_per_step = 2,
+            .sand_megagrams_per_step = 3,
+            .silt_megagrams_per_step = 4,
+            .clay_megagrams_per_step = 5,
             .cation_exchange_capacity_mol_per_step = 6,
             .anion_exchange_capacity_mol_per_step = 7,
         },
         .{
-            .total_sediment_Mg_per_step = 8,
-            .sand_Mg_per_step = 9,
-            .silt_Mg_per_step = 10,
-            .clay_Mg_per_step = 11,
+            .total_sediment_megagrams_per_step = 8,
+            .sand_megagrams_per_step = 9,
+            .silt_megagrams_per_step = 10,
+            .clay_megagrams_per_step = 11,
             .cation_exchange_capacity_mol_per_step = 12,
             .anion_exchange_capacity_mol_per_step = 13,
         },
@@ -149,18 +149,18 @@ test "horizontal erosion adds source-ordered local mineral inventories" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive_neighbor_totals,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive_neighbor_totals,
     }, &state);
 
     try std.testing.expectEqual(
         @as(f64, 110),
-        state.net_incoming.total_sediment_Mg_per_step,
+        state.net_incoming.total_sediment_megagrams_per_step,
     );
-    try std.testing.expectEqual(@as(f64, 112), state.net_incoming.sand_Mg_per_step);
-    try std.testing.expectEqual(@as(f64, 114), state.net_incoming.silt_Mg_per_step);
-    try std.testing.expectEqual(@as(f64, 116), state.net_incoming.clay_Mg_per_step);
+    try std.testing.expectEqual(@as(f64, 112), state.net_incoming.sand_megagrams_per_step);
+    try std.testing.expectEqual(@as(f64, 114), state.net_incoming.silt_megagrams_per_step);
+    try std.testing.expectEqual(@as(f64, 116), state.net_incoming.clay_megagrams_per_step);
     try std.testing.expectEqual(
         @as(f64, 118),
         state.net_incoming.cation_exchange_capacity_mol_per_step,
@@ -174,18 +174,18 @@ test "horizontal erosion adds source-ordered local mineral inventories" {
 test "strict activity gate may be triggered by positive neighbor sediment" {
     const local = [_]MineralFlux{
         .{
-            .total_sediment_Mg_per_step = 1,
-            .sand_Mg_per_step = 2,
-            .silt_Mg_per_step = 3,
-            .clay_Mg_per_step = 4,
+            .total_sediment_megagrams_per_step = 1,
+            .sand_megagrams_per_step = 2,
+            .silt_megagrams_per_step = 3,
+            .clay_megagrams_per_step = 4,
             .cation_exchange_capacity_mol_per_step = 5,
             .anion_exchange_capacity_mol_per_step = 6,
         },
         .{
-            .total_sediment_Mg_per_step = 1,
-            .sand_Mg_per_step = 7,
-            .silt_Mg_per_step = 7,
-            .clay_Mg_per_step = 7,
+            .total_sediment_megagrams_per_step = 1,
+            .sand_megagrams_per_step = 7,
+            .silt_megagrams_per_step = 7,
+            .clay_megagrams_per_step = 7,
             .cation_exchange_capacity_mol_per_step = 7,
             .anion_exchange_capacity_mol_per_step = 7,
         },
@@ -196,16 +196,16 @@ test "strict activity gate may be triggered by positive neighbor sediment" {
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive_neighbor_totals,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive_neighbor_totals,
     }, &state);
 
     try std.testing.expectEqual(
         @as(f64, 1),
-        state.net_incoming.total_sediment_Mg_per_step,
+        state.net_incoming.total_sediment_megagrams_per_step,
     );
-    try std.testing.expectEqual(@as(f64, 2), state.net_incoming.sand_Mg_per_step);
+    try std.testing.expectEqual(@as(f64, 2), state.net_incoming.sand_megagrams_per_step);
     try std.testing.expectEqual(
         @as(f64, 6),
         state.net_incoming.anion_exchange_capacity_mol_per_step,
@@ -225,9 +225,9 @@ test "accepted side sum exactly conserves every mineral inventory" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive_neighbor_totals,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive_neighbor_totals,
     }, &state);
 
     try expectFlux(state.net_incoming, 8);
@@ -241,16 +241,16 @@ test "non-erosion modes and vertical transport bypass unused inputs" {
     try account(.{
         .disturbance_mode = .freeze_thaw,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .local_flux_by_boundary_side = &empty_flux,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &empty_neighbor,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &empty_neighbor,
     }, &state);
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .vertical,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .local_flux_by_boundary_side = &empty_flux,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &empty_neighbor,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &empty_neighbor,
     }, &state);
     try expectFlux(state.net_incoming, 9);
 }
@@ -263,9 +263,9 @@ test "nonfinite input and late overflow preserve state atomically" {
     const base_inputs = Inputs{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .local_flux_by_boundary_side = &local,
-        .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &positive_neighbor_totals,
+        .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &positive_neighbor_totals,
     };
 
     try std.testing.expectError(
@@ -293,9 +293,9 @@ test "dimension and threshold failures precede mutation" {
         account(.{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .north_south,
-            .sediment_activity_threshold_Mg_per_step = 1,
+            .sediment_activity_threshold_megagrams_per_step = 1,
             .local_flux_by_boundary_side = &local,
-            .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &no_neighbors,
+            .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &no_neighbors,
         }, &state),
     );
     try expectFlux(state.net_incoming, 5);
@@ -306,9 +306,9 @@ test "dimension and threshold failures precede mutation" {
         account(.{
             .disturbance_mode = .freeze_thaw_and_erosion,
             .transport_axis = .north_south,
-            .sediment_activity_threshold_Mg_per_step = -1,
+            .sediment_activity_threshold_megagrams_per_step = -1,
             .local_flux_by_boundary_side = &local,
-            .positive_neighbor_total_sediment_Mg_per_step_by_boundary_side = &neighbor,
+            .positive_neighbor_total_sediment_megagrams_per_step_by_boundary_side = &neighbor,
         }, &state),
     );
     try expectFlux(state.net_incoming, 5);

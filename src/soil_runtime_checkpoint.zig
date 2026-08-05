@@ -14,12 +14,12 @@ pub const SolverField = enum {
     bulk_density_megagrams_per_m3,
     sand_mass_fraction,
     clay_mass_fraction,
-    sand_mass_Mg,
-    silt_mass_Mg,
-    clay_mass_Mg,
+    sand_mass_megagrams,
+    silt_mass_megagrams,
+    clay_mass_megagrams,
     total_organic_carbon_g_per_megagram,
-    cation_exchange_capacity_mol_per_Mg,
-    anion_exchange_capacity_mol_per_Mg,
+    cation_exchange_capacity_mol_per_megagram,
+    anion_exchange_capacity_mol_per_megagram,
     cation_exchange_capacity_mol,
     anion_exchange_capacity_mol,
     porosity_fraction,
@@ -30,11 +30,11 @@ pub const ThermalField = enum {
     layer_volume_m3,
     layer_thickness_m,
     porosity_fraction,
-    dry_solid_heat_capacity_mj_per_m3_k,
-    solid_thermal_conductivity_numerator_m_mj_per_h_k,
+    dry_solid_heat_capacity_megajoules_per_m3_k,
+    solid_thermal_conductivity_numerator_m_megajoules_per_h_k,
     solid_thermal_conductivity_denominator,
-    total_heat_capacity_mj_per_m3_k,
-    thermal_conductivity_m_mj_per_h_k,
+    total_heat_capacity_megajoules_per_m3_k,
+    thermal_conductivity_m_megajoules_per_h_k,
 };
 
 pub const View = struct {
@@ -118,13 +118,13 @@ pub const Snapshot = struct {
             @intFromEnum(ThermalField.porosity_fraction)
         ];
         const dry_heat_capacity = self.thermal_fields[
-            @intFromEnum(ThermalField.dry_solid_heat_capacity_mj_per_m3_k)
+            @intFromEnum(ThermalField.dry_solid_heat_capacity_megajoules_per_m3_k)
         ];
         const total_heat_capacity = self.thermal_fields[
-            @intFromEnum(ThermalField.total_heat_capacity_mj_per_m3_k)
+            @intFromEnum(ThermalField.total_heat_capacity_megajoules_per_m3_k)
         ];
         const conductivity = self.thermal_fields[
-            @intFromEnum(ThermalField.thermal_conductivity_m_mj_per_h_k)
+            @intFromEnum(ThermalField.thermal_conductivity_m_megajoules_per_h_k)
         ];
         for (0..self.layer_count) |index| {
             if (solver_volume[index] <= 0 or matrix_volume[index] < 0 or
@@ -213,9 +213,9 @@ pub fn validateView(view: View) !void {
             view.soil_thermal.layer_thickness_m[index] <= 0 or
             view.soil_thermal.porosity_fraction[index] < 0 or
             view.soil_thermal.porosity_fraction[index] > 1 or
-            view.soil_thermal.dry_solid_heat_capacity_mj_per_m3_k[index] < 0 or
-            view.soil_thermal.total_heat_capacity_mj_per_m3_k[index] < 0 or
-            view.soil_thermal.thermal_conductivity_m_mj_per_h_k[index] < 0)
+            view.soil_thermal.dry_solid_heat_capacity_megajoules_per_m3_k[index] < 0 or
+            view.soil_thermal.total_heat_capacity_megajoules_per_m3_k[index] < 0 or
+            view.soil_thermal.thermal_conductivity_m_megajoules_per_h_k[index] < 0)
             return error.InvalidSoilRuntimeCheckpointState;
     }
 }

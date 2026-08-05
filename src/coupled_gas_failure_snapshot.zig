@@ -3,7 +3,15 @@ const atmosphere = @import("gas_atmosphere_exchange.zig");
 const gas = @import("gas_transport.zig");
 
 const magic = "ECOSGAS!";
-const format_version: u32 = 1;
+/// Version written by `write`. Version 2 adds the REDIST `LL=MIN(L,LG)` bubble
+/// receiver map, which version 1 omitted even though the solver residual reads
+/// it. Version 1 snapshots are still decodable, because the archived Ottawa
+/// captures are the only real production evidence available and discarding them
+/// would be worse than reading them. They are instead flagged: a decoded v1
+/// case carries `bubble_receiver_map_captured = false`, and any caller that
+/// replays one must report that its bubbling destinations were not recorded.
+const format_version: u32 = 2;
+const minimum_readable_version: u32 = 1;
 const checksum_seed: u64 = 0x45434f5347415346;
 
 pub const Limits = struct {
@@ -37,6 +45,12 @@ pub const InputView = struct {
     gas_water_exchange_rate_per_step: []const f64,
     band_gas_water_exchange_rate_per_step: []const f64,
     bubbling_enabled: []const bool,
+    /// REDIST bubble destination per cell. `null` for the whole map means the
+    /// caller supplied no map and the solver releases into the source cell;
+    /// a `null` entry means no gas-phase route exists and the released mass
+    /// leaves as a boundary flux. Both are solver-visible inputs and both
+    /// must round-trip, so the distinction is preserved on the wire.
+    bubble_receiver_cell_by_cell: ?[]const ?usize = null,
 };
 
 /// Heap-owned, self-contained input to one coupled gas solve. Diagnostic
@@ -55,9 +69,17 @@ pub const ReplayCase = struct {
     gas_water_exchange_rate_per_step: []f64,
     band_gas_water_exchange_rate_per_step: []f64,
     bubbling_enabled: []bool,
+    bubble_receiver_cell_by_cell: ?[]?usize,
+    /// False only for a decoded version 1 snapshot, whose bubble receiver map
+    /// was never recorded. A replay of such a case solves the solver's default
+    /// release-into-source-cell system, which may differ from the system that
+    /// failed, so the result is not evidence about that failure's bubbling.
+    bubble_receiver_map_captured: bool = true,
     options: SolverOptions,
 
     pub fn deinit(self: *ReplayCase) void {
+        if (self.bubble_receiver_cell_by_cell) |receivers|
+            self.allocator.free(receivers);
         self.allocator.free(self.bubbling_enabled);
         self.allocator.free(self.band_gas_water_exchange_rate_per_step);
         self.allocator.free(self.gas_water_exchange_rate_per_step);
@@ -84,6 +106,7 @@ pub const ReplayCase = struct {
             .gas_water_exchange_rate_per_step = self.gas_water_exchange_rate_per_step,
             .band_gas_water_exchange_rate_per_step = self.band_gas_water_exchange_rate_per_step,
             .bubbling_enabled = self.bubbling_enabled,
+            .bubble_receiver_cell_by_cell = self.bubble_receiver_cell_by_cell,
         };
     }
 };
@@ -134,6 +157,11 @@ pub fn capture(
     );
     errdefer allocator.free(band_exchange);
     const bubbling = try allocator.dupe(bool, source_inputs.bubbling_enabled);
+    errdefer allocator.free(bubbling);
+    const receivers: ?[]?usize = if (source_inputs.bubble_receiver_cell_by_cell) |source|
+        try allocator.dupe(?usize, source)
+    else
+        null;
     return .{
         .allocator = allocator,
         .state = state,
@@ -147,6 +175,8 @@ pub fn capture(
         .gas_water_exchange_rate_per_step = exchange,
         .band_gas_water_exchange_rate_per_step = band_exchange,
         .bubbling_enabled = bubbling,
+        .bubble_receiver_cell_by_cell = receivers,
+        .bubble_receiver_map_captured = true,
         .options = options,
     };
 }
@@ -167,7 +197,8 @@ pub fn write(allocator: std.mem.Allocator, writer: anytype, replay_case: *const 
 pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits) !ReplayCase {
     if (!std.mem.eql(u8, try reader.takeArray(magic.len), magic))
         return error.InvalidCoupledGasSnapshotMagic;
-    if (try reader.takeInt(u32, .little) != format_version)
+    const version = try reader.takeInt(u32, .little);
+    if (version < minimum_readable_version or version > format_version)
         return error.UnsupportedCoupledGasSnapshotVersion;
     const payload_length_u64 = try reader.takeInt(u64, .little);
     const expected_checksum = try reader.takeInt(u64, .little);
@@ -185,7 +216,7 @@ pub fn read(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits
         return error.CoupledGasSnapshotChecksumMismatch;
     rejectTrailing(reader) catch |err| return err;
     var payload_reader: std.Io.Reader = .fixed(payload);
-    var result = try readPayload(allocator, &payload_reader, limits);
+    var result = try readPayload(allocator, &payload_reader, limits, version);
     errdefer result.deinit();
     rejectTrailing(&payload_reader) catch
         return error.InvalidCoupledGasSnapshotPayloadLength;
@@ -219,6 +250,21 @@ fn writePayload(writer: anytype, replay_case: *const ReplayCase) !void {
     try writeF64Slice(writer, replay_case.band_gas_water_exchange_rate_per_step);
     for (replay_case.bubbling_enabled) |enabled|
         try writer.writeByte(@intFromBool(enabled));
+    // One presence byte for the whole map, then one presence byte plus index
+    // per cell, so "no map" and "map of all nulls" stay distinguishable.
+    if (replay_case.bubble_receiver_cell_by_cell) |receivers| {
+        try writer.writeByte(1);
+        for (receivers) |receiver| {
+            if (receiver) |cell| {
+                try writer.writeByte(1);
+                try writer.writeInt(u64, @intCast(cell), .little);
+            } else {
+                try writer.writeByte(0);
+            }
+        }
+    } else {
+        try writer.writeByte(0);
+    }
     inline for (std.meta.fields(SolverOptions)) |field| switch (field.type) {
         f64 => try writeF64(writer, @field(replay_case.options, field.name)),
         u16 => try writer.writeInt(u16, @field(replay_case.options, field.name), .little),
@@ -226,7 +272,12 @@ fn writePayload(writer: anytype, replay_case: *const ReplayCase) !void {
     };
 }
 
-fn readPayload(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Limits) !ReplayCase {
+fn readPayload(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    limits: Limits,
+    version: u32,
+) !ReplayCase {
     const cell_count = try readCount(reader, limits.maximum_cells);
     const face_count = try readCount(reader, limits.maximum_faces);
     const atmospheric_count = try readCount(reader, limits.maximum_boundaries);
@@ -274,6 +325,21 @@ fn readPayload(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Lim
         1 => true,
         else => return error.InvalidCoupledGasSnapshotBoolean,
     };
+    const receivers: ?[]?usize = if (version < 2) null else switch (try reader.takeByte()) {
+        0 => null,
+        1 => blk: {
+            const map = try allocator.alloc(?usize, cell_count);
+            errdefer allocator.free(map);
+            for (map) |*receiver| receiver.* = switch (try reader.takeByte()) {
+                0 => null,
+                1 => try readIndex(reader),
+                else => return error.InvalidCoupledGasSnapshotBoolean,
+            };
+            break :blk map;
+        },
+        else => return error.InvalidCoupledGasSnapshotBoolean,
+    };
+    errdefer if (receivers) |map| allocator.free(map);
     var options: SolverOptions = undefined;
     inline for (std.meta.fields(SolverOptions)) |field| switch (field.type) {
         f64 => @field(options, field.name) = try readF64(reader),
@@ -293,6 +359,8 @@ fn readPayload(allocator: std.mem.Allocator, reader: *std.Io.Reader, limits: Lim
         .gas_water_exchange_rate_per_step = exchange,
         .band_gas_water_exchange_rate_per_step = band_exchange,
         .bubbling_enabled = bubbling,
+        .bubble_receiver_cell_by_cell = receivers,
+        .bubble_receiver_map_captured = version >= 2,
         .options = options,
     };
 }
@@ -360,6 +428,11 @@ fn validateView(
     for (inputs.faces) |face|
         if (face.first_cell >= cells or face.second_cell >= cells or face.first_cell == face.second_cell)
             return error.InvalidCoupledGasSnapshotTopology;
+    if (inputs.bubble_receiver_cell_by_cell) |receivers| {
+        if (receivers.len != cells) return error.InvalidCoupledGasSnapshotDimensions;
+        for (receivers) |receiver| if (receiver) |cell|
+            if (cell >= cells) return error.InvalidCoupledGasSnapshotTopology;
+    }
     for (inputs.atmospheric_boundaries) |boundary|
         try validateBoundary(boundary, cells);
     for (inputs.subsurface_boundaries) |boundary|
@@ -494,6 +567,10 @@ fn makeReplayCase(allocator: std.mem.Allocator) !ReplayCase {
     errdefer allocator.free(band_exchange);
     @memset(band_exchange, 0.05);
     const bubbling = try allocator.dupe(bool, &.{ true, false });
+    errdefer allocator.free(bubbling);
+    // Cell 0 releases into cell 1; cell 1 has no gas-phase route, so its
+    // release is a boundary loss. Both branches are exercised on the wire.
+    const receivers = try allocator.dupe(?usize, &[_]?usize{ 1, null });
     return .{
         .allocator = allocator,
         .state = state,
@@ -507,6 +584,7 @@ fn makeReplayCase(allocator: std.mem.Allocator) !ReplayCase {
         .gas_water_exchange_rate_per_step = exchange,
         .band_gas_water_exchange_rate_per_step = band_exchange,
         .bubbling_enabled = bubbling,
+        .bubble_receiver_cell_by_cell = receivers,
         .options = .{ .max_iterations = 80 },
     };
 }
@@ -544,9 +622,15 @@ test "coupled gas failure snapshot rejects corruption truncation version and tra
 
     const wrong_version = try std.testing.allocator.dupe(u8, encoded.written());
     defer std.testing.allocator.free(wrong_version);
-    wrong_version[magic.len] = 2;
+    wrong_version[magic.len] = format_version + 1;
     var version_reader: std.Io.Reader = .fixed(wrong_version);
     try std.testing.expectError(error.UnsupportedCoupledGasSnapshotVersion, read(std.testing.allocator, &version_reader, .{}));
+
+    const below_minimum = try std.testing.allocator.dupe(u8, encoded.written());
+    defer std.testing.allocator.free(below_minimum);
+    below_minimum[magic.len] = minimum_readable_version - 1;
+    var below_reader: std.Io.Reader = .fixed(below_minimum);
+    try std.testing.expectError(error.UnsupportedCoupledGasSnapshotVersion, read(std.testing.allocator, &below_reader, .{}));
 
     const trailing = try std.testing.allocator.alloc(u8, encoded.written().len + 1);
     defer std.testing.allocator.free(trailing);
@@ -613,6 +697,130 @@ test "capture deep copies every replay input and state array" {
     );
     try std.testing.expectEqual(@as(f64, 0.3), captured.water_volume_m3[0]);
     try std.testing.expect(captured.bubbling_enabled[0]);
+
+    // The receiver map is a solver input, so it must be deep copied too.
+    source.bubble_receiver_cell_by_cell.?[0] = 0;
+    try std.testing.expectEqual(
+        @as(?usize, 1),
+        captured.bubble_receiver_cell_by_cell.?[0],
+    );
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        captured.bubble_receiver_cell_by_cell.?[1],
+    );
+}
+
+test "bubble receiver map round-trips and distinguishes absent from all-null" {
+    var with_map = try makeReplayCase(std.testing.allocator);
+    defer with_map.deinit();
+    var mapped: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer mapped.deinit();
+    try write(std.testing.allocator, &mapped.writer, &with_map);
+    var mapped_reader: std.Io.Reader = .fixed(mapped.written());
+    var restored_mapped = try read(std.testing.allocator, &mapped_reader, .{});
+    defer restored_mapped.deinit();
+    try std.testing.expectEqualSlices(
+        ?usize,
+        with_map.bubble_receiver_cell_by_cell.?,
+        restored_mapped.bubble_receiver_cell_by_cell.?,
+    );
+
+    // "No map at all" means release into the source cell, which is a
+    // physically different destination from "a map whose entries are all
+    // null" (release as a boundary loss). The encoding must not conflate them.
+    var absent = try makeReplayCase(std.testing.allocator);
+    defer absent.deinit();
+    std.testing.allocator.free(absent.bubble_receiver_cell_by_cell.?);
+    absent.bubble_receiver_cell_by_cell = null;
+    var absent_bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer absent_bytes.deinit();
+    try write(std.testing.allocator, &absent_bytes.writer, &absent);
+    var absent_reader: std.Io.Reader = .fixed(absent_bytes.written());
+    var restored_absent = try read(std.testing.allocator, &absent_reader, .{});
+    defer restored_absent.deinit();
+    try std.testing.expectEqual(
+        @as(?[]?usize, null),
+        restored_absent.bubble_receiver_cell_by_cell,
+    );
+
+    var all_null = try makeReplayCase(std.testing.allocator);
+    defer all_null.deinit();
+    for (all_null.bubble_receiver_cell_by_cell.?) |*receiver| receiver.* = null;
+    var all_null_bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer all_null_bytes.deinit();
+    try write(std.testing.allocator, &all_null_bytes.writer, &all_null);
+    var all_null_reader: std.Io.Reader = .fixed(all_null_bytes.written());
+    var restored_all_null = try read(std.testing.allocator, &all_null_reader, .{});
+    defer restored_all_null.deinit();
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        restored_all_null.bubble_receiver_cell_by_cell.?.len,
+    );
+    try std.testing.expect(!std.mem.eql(u8, absent_bytes.written(), all_null_bytes.written()));
+}
+
+test "snapshot rejects an out-of-range bubble receiver cell" {
+    var replay_case = try makeReplayCase(std.testing.allocator);
+    defer replay_case.deinit();
+    replay_case.bubble_receiver_cell_by_cell.?[0] = 2;
+    var encoded: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer encoded.deinit();
+    try std.testing.expectError(
+        error.InvalidCoupledGasSnapshotTopology,
+        write(std.testing.allocator, &encoded.writer, &replay_case),
+    );
+}
+
+test "version 1 snapshot decodes but is flagged as missing its bubble receiver map" {
+    // The archived Ottawa captures are version 1. They must stay readable
+    // because they are the only real production coupled-gas evidence, but a
+    // replay of one is not evidence about bubbling destinations. Build a
+    // version 1 payload by writing an absent-map case, deleting the single
+    // presence byte version 2 added, and relabelling the version.
+    var replay_case = try makeReplayCase(std.testing.allocator);
+    defer replay_case.deinit();
+    std.testing.allocator.free(replay_case.bubble_receiver_cell_by_cell.?);
+    replay_case.bubble_receiver_cell_by_cell = null;
+    var encoded: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer encoded.deinit();
+    try write(std.testing.allocator, &encoded.writer, &replay_case);
+
+    const version_two = encoded.written();
+    const option_bytes = 7 * @sizeOf(f64) + @sizeOf(u16);
+    const legacy = try std.testing.allocator.alloc(u8, version_two.len - 1);
+    defer std.testing.allocator.free(legacy);
+    const split = version_two.len - option_bytes - 1;
+    @memcpy(legacy[0..split], version_two[0..split]);
+    @memcpy(legacy[split..], version_two[split + 1 ..]);
+    legacy[magic.len] = 1;
+    const header = magic.len + 4 + 8 + 8;
+    const payload = legacy[header..];
+    std.mem.writeInt(u64, legacy[magic.len + 4 ..][0..8], payload.len, .little);
+    std.mem.writeInt(
+        u64,
+        legacy[magic.len + 4 + 8 ..][0..8],
+        std.hash.Wyhash.hash(checksum_seed, payload),
+        .little,
+    );
+
+    var reader: std.Io.Reader = .fixed(legacy);
+    var restored = try read(std.testing.allocator, &reader, .{});
+    defer restored.deinit();
+    try std.testing.expect(!restored.bubble_receiver_map_captured);
+    try std.testing.expectEqual(
+        @as(?[]?usize, null),
+        restored.bubble_receiver_cell_by_cell,
+    );
+    // The state itself still round-trips, so a v1 replay remains useful for
+    // everything except bubbling destinations.
+    try std.testing.expectEqualSlices(
+        f64,
+        replay_case.state.gaseous_mass_g,
+        restored.state.gaseous_mass_g,
+    );
+    // A freshly captured case is always faithful, so the flag records archive
+    // provenance rather than merely echoing an absent map.
+    try std.testing.expect(replay_case.bubble_receiver_map_captured);
 }
 
 test "capture validates before allocation and rejects incomplete replay input" {

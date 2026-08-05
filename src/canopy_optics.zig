@@ -32,8 +32,8 @@ pub const State = struct {
     leaf_par_albedo: []f64,
     leaf_shortwave_transmission: []f64,
     leaf_par_transmission: []f64,
-    direct_leaf_shortwave_mj_per_m2: []f64,
-    diffuse_leaf_shortwave_mj_per_m2: []f64,
+    direct_leaf_shortwave_megajoules_per_m2: []f64,
+    diffuse_leaf_shortwave_megajoules_per_m2: []f64,
     direct_leaf_par_micromol_per_m2_per_s: []f64,
     diffuse_leaf_par_micromol_per_m2_per_s: []f64,
 
@@ -51,8 +51,8 @@ pub const State = struct {
             .leaf_par_albedo = undefined,
             .leaf_shortwave_transmission = undefined,
             .leaf_par_transmission = undefined,
-            .direct_leaf_shortwave_mj_per_m2 = undefined,
-            .diffuse_leaf_shortwave_mj_per_m2 = undefined,
+            .direct_leaf_shortwave_megajoules_per_m2 = undefined,
+            .diffuse_leaf_shortwave_megajoules_per_m2 = undefined,
             .direct_leaf_par_micromol_per_m2_per_s = undefined,
             .diffuse_leaf_par_micromol_per_m2_per_s = undefined,
         };
@@ -69,10 +69,10 @@ pub const State = struct {
         errdefer allocator.free(result.leaf_shortwave_transmission);
         result.leaf_par_transmission = try allocator.alloc(f64, count);
         errdefer allocator.free(result.leaf_par_transmission);
-        result.direct_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, count);
-        errdefer allocator.free(result.direct_leaf_shortwave_mj_per_m2);
-        result.diffuse_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, count);
-        errdefer allocator.free(result.diffuse_leaf_shortwave_mj_per_m2);
+        result.direct_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, count);
+        errdefer allocator.free(result.direct_leaf_shortwave_megajoules_per_m2);
+        result.diffuse_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, count);
+        errdefer allocator.free(result.diffuse_leaf_shortwave_megajoules_per_m2);
         result.direct_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, count);
         errdefer allocator.free(result.direct_leaf_par_micromol_per_m2_per_s);
         result.diffuse_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, count);
@@ -106,8 +106,8 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         self.allocator.free(self.diffuse_leaf_par_micromol_per_m2_per_s);
         self.allocator.free(self.direct_leaf_par_micromol_per_m2_per_s);
-        self.allocator.free(self.diffuse_leaf_shortwave_mj_per_m2);
-        self.allocator.free(self.direct_leaf_shortwave_mj_per_m2);
+        self.allocator.free(self.diffuse_leaf_shortwave_megajoules_per_m2);
+        self.allocator.free(self.direct_leaf_shortwave_megajoules_per_m2);
         self.allocator.free(self.leaf_par_absorptivity);
         self.allocator.free(self.leaf_shortwave_absorptivity);
         self.allocator.free(self.leaf_par_transmission);
@@ -140,8 +140,8 @@ pub fn applyLeafAbsorptionTile(context: *ApplyContext, range: CellRange) !void {
             if (!context.state.species_is_active[index]) continue;
             const shortwave_absorptivity = context.state.leaf_shortwave_absorptivity[index];
             const par_absorptivity = context.state.leaf_par_absorptivity[index];
-            context.state.direct_leaf_shortwave_mj_per_m2[index] = context.radiation.direct_shortwave_mj_per_m2[cell] * shortwave_absorptivity;
-            context.state.diffuse_leaf_shortwave_mj_per_m2[index] = context.radiation.diffuse_shortwave_mj_per_m2[cell] * shortwave_absorptivity;
+            context.state.direct_leaf_shortwave_megajoules_per_m2[index] = context.radiation.direct_shortwave_megajoules_per_m2[cell] * shortwave_absorptivity;
+            context.state.diffuse_leaf_shortwave_megajoules_per_m2[index] = context.radiation.diffuse_shortwave_megajoules_per_m2[cell] * shortwave_absorptivity;
             context.state.direct_leaf_par_micromol_per_m2_per_s[index] = context.radiation.direct_par_micromol_per_m2_per_s[cell] * par_absorptivity;
             context.state.diffuse_leaf_par_micromol_per_m2_per_s[index] = context.radiation.diffuse_par_micromol_per_m2_per_s[cell] * par_absorptivity;
         }
@@ -160,8 +160,8 @@ test "absorption kernel supports inactive slots beyond assigned species" {
     const count: usize = 11;
     var radiation = try RadiationState.init(allocator, 1);
     defer radiation.deinit();
-    radiation.direct_shortwave_mj_per_m2[0] = 2;
-    radiation.diffuse_shortwave_mj_per_m2[0] = 0.5;
+    radiation.direct_shortwave_megajoules_per_m2[0] = 2;
+    radiation.diffuse_shortwave_megajoules_per_m2[0] = 0.5;
     radiation.direct_par_micromol_per_m2_per_s[0] = 1000;
     radiation.diffuse_par_micromol_per_m2_per_s[0] = 200;
     var state: State = .{
@@ -175,8 +175,8 @@ test "absorption kernel supports inactive slots beyond assigned species" {
         .leaf_par_albedo = try allocator.alloc(f64, count),
         .leaf_shortwave_transmission = try allocator.alloc(f64, count),
         .leaf_par_transmission = try allocator.alloc(f64, count),
-        .direct_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, count),
-        .diffuse_leaf_shortwave_mj_per_m2 = try allocator.alloc(f64, count),
+        .direct_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, count),
+        .diffuse_leaf_shortwave_megajoules_per_m2 = try allocator.alloc(f64, count),
         .direct_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, count),
         .diffuse_leaf_par_micromol_per_m2_per_s = try allocator.alloc(f64, count),
     };
@@ -188,9 +188,9 @@ test "absorption kernel supports inactive slots beyond assigned species" {
     state.leaf_par_absorptivity[10] = 0.85;
     var context: ApplyContext = .{ .state = &state, .radiation = &radiation };
     try applyLeafAbsorptionTile(&context, .{ .first = 0, .end = 1 });
-    try std.testing.expectApproxEqAbs(@as(f64, 1.2), state.direct_leaf_shortwave_mj_per_m2[10], 1.0e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.2), state.direct_leaf_shortwave_megajoules_per_m2[10], 1.0e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 850), state.direct_leaf_par_micromol_per_m2_per_s[10], 1.0e-12);
-    try std.testing.expectEqual(@as(f64, 0), state.direct_leaf_shortwave_mj_per_m2[0]);
+    try std.testing.expectEqual(@as(f64, 0), state.direct_leaf_shortwave_megajoules_per_m2[0]);
 }
 
 test "READQ optical budgets retain albedo transmission and absorption" {

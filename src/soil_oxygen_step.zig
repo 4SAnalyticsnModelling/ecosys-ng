@@ -145,7 +145,7 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
 }
 
 test "tiled soil oxygen solve conserves oxygen and exits before NPH times NPG" {
-    const config = @import("config.zig").SimulationConfig{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
+    const config = @import("config.zig").SimulationConfig{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 1;
@@ -185,7 +185,7 @@ test "tiled soil oxygen solve conserves oxygen and exits before NPH times NPG" {
 }
 
 test "invalid soil oxygen input leaves authoritative gas and allocation unchanged" {
-    const config = @import("config.zig").SimulationConfig{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
+    const config = @import("config.zig").SimulationConfig{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     var gas = try gas_transport.State.init(std.testing.allocator, 1);

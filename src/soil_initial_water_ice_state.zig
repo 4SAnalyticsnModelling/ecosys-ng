@@ -19,7 +19,7 @@ pub const Inputs = struct {
     wilting_point_m3_m3: f64,
     micropore_volume_m3: f64,
     macropore_volume_m3: f64,
-    mineral_heat_capacity_mj_k: f64,
+    mineral_heat_capacity_megajoules_k: f64,
 };
 
 pub const State = struct {
@@ -30,7 +30,7 @@ pub const State = struct {
     macropore_water_m3: f64,
     micropore_ice_m3: f64,
     macropore_ice_m3: f64,
-    heat_capacity_mj_k: f64,
+    heat_capacity_megajoules_k: f64,
     previous_water_content_m3_m3: f64,
     previous_ice_content_m3_m3: f64,
 };
@@ -77,7 +77,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
             state.ice_content_m3_m3 * inputs.micropore_volume_m3;
         state.macropore_ice_m3 =
             state.ice_content_m3_m3 * inputs.macropore_volume_m3;
-        state.heat_capacity_mj_k = inputs.mineral_heat_capacity_mj_k +
+        state.heat_capacity_megajoules_k = inputs.mineral_heat_capacity_megajoules_k +
             4.19 * (state.micropore_water_m3 + state.macropore_water_m3) +
             1.9274 * (state.micropore_ice_m3 + state.macropore_ice_m3);
         state.previous_water_content_m3_m3 = state.water_content_m3_m3;
@@ -94,7 +94,7 @@ fn validate(inputs: Inputs, state: State) !void {
             return error.NonFiniteSoilInitializationState;
     if (inputs.porosity_m3_m3 < 0 or inputs.field_capacity_m3_m3 < 0 or
         inputs.wilting_point_m3_m3 < 0 or inputs.micropore_volume_m3 < 0 or
-        inputs.macropore_volume_m3 < 0 or inputs.mineral_heat_capacity_mj_k < 0)
+        inputs.macropore_volume_m3 < 0 or inputs.mineral_heat_capacity_megajoules_k < 0)
         return error.InvalidSoilInitializationInput;
 }
 
@@ -114,14 +114,14 @@ test "first-run codes initialize water then ice and publish volumes" {
         .wilting_point_m3_m3 = 0.1,
         .micropore_volume_m3 = 2,
         .macropore_volume_m3 = 1,
-        .mineral_heat_capacity_mj_k = 5,
+        .mineral_heat_capacity_megajoules_k = 5,
     }, &state);
     try std.testing.expectEqual(@as(f64, 0.3), state.water_content_m3_m3);
     try std.testing.expectEqual(@as(f64, 0.2), state.ice_content_m3_m3);
     try std.testing.expectEqual(@as(f64, 0.6), state.micropore_water_m3);
     try std.testing.expectApproxEqAbs(
         @as(f64, 5 + 4.19 * 0.9 + 1.9274 * 0.6),
-        state.heat_capacity_mj_k,
+        state.heat_capacity_megajoules_k,
         1e-14,
     );
 }
@@ -143,7 +143,7 @@ test "noninitial execution leaves state unchanged" {
         .wilting_point_m3_m3 = 0.1,
         .micropore_volume_m3 = 1,
         .macropore_volume_m3 = 1,
-        .mineral_heat_capacity_mj_k = 1,
+        .mineral_heat_capacity_megajoules_k = 1,
     }, &state);
     try std.testing.expectEqual(@as(f64, 0.42), state.water_content_m3_m3);
 }

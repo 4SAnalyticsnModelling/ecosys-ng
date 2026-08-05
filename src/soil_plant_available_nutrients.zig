@@ -370,7 +370,7 @@ test "soil profile nutrient concentrations initialize extensive non-band masses"
     var catalog = @import("soil_catalog.zig").Catalog.init(allocator);
     defer catalog.deinit();
     _ = try catalog.appendFromSource("soil", fixture, @import("soil_water_retention.zig").compatibilityParameters(), @import("soil_profile_derivation.zig").compatibilityParameters());
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 20 });
     var grid = try GridState.init(allocator, config);
     defer grid.deinit();
     try @import("model_initialization.zig").initializeCellHydrology(&grid, 0, catalog.entries.items[0].hydrology_per_m2);

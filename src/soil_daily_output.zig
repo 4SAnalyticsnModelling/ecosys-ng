@@ -248,22 +248,22 @@ pub const Phosphorus = struct {
 };
 
 pub fn sorbedPhosphorusConcentrationGPerM3(
-    sorbed_phosphorus_mol_p_per_Mg: f64,
-    dry_matter_density_Mg_per_m3: f64,
+    sorbed_phosphorus_mol_p_per_megagram: f64,
+    dry_matter_density_megagrams_per_m3: f64,
     phosphorus_molar_mass_g_per_mol: f64,
 ) !f64 {
     inline for (.{
-        sorbed_phosphorus_mol_p_per_Mg,
-        dry_matter_density_Mg_per_m3,
+        sorbed_phosphorus_mol_p_per_megagram,
+        dry_matter_density_megagrams_per_m3,
         phosphorus_molar_mass_g_per_mol,
     }) |value| if (!std.math.isFinite(value))
         return error.NonFiniteSorbedPhosphorusConcentrationInput;
-    if (sorbed_phosphorus_mol_p_per_Mg < 0 or
-        dry_matter_density_Mg_per_m3 < 0 or
+    if (sorbed_phosphorus_mol_p_per_megagram < 0 or
+        dry_matter_density_megagrams_per_m3 < 0 or
         phosphorus_molar_mass_g_per_mol <= 0)
         return error.InvalidSorbedPhosphorusConcentrationInput;
-    return sorbed_phosphorus_mol_p_per_Mg *
-        dry_matter_density_Mg_per_m3 *
+    return sorbed_phosphorus_mol_p_per_megagram *
+        dry_matter_density_megagrams_per_m3 *
         phosphorus_molar_mass_g_per_mol;
 }
 
@@ -410,7 +410,7 @@ pub fn calculateWaterInto(inputs: WaterInputs, values: []f64) !void {
 }
 
 pub const HeatInputs = struct {
-    total_radiation_mj_m2: f64,
+    total_radiation_megajoules_m2: f64,
     maximum_air_temperature_c: f64,
     minimum_air_temperature_c: f64,
     maximum_atmospheric_vapor_pressure_kpa: f64,
@@ -452,7 +452,7 @@ pub fn calculateHeatInto(inputs: HeatInputs, values: []f64) !void {
     try finiteSlice(inputs.minimum_soil_temperature_c_by_layer);
     try finiteSlice(inputs.electrical_conductivity_by_layer);
     var i: usize = 0;
-    for ([_]f64{ inputs.total_radiation_mj_m2, inputs.maximum_air_temperature_c, inputs.minimum_air_temperature_c, inputs.maximum_atmospheric_vapor_pressure_kpa, inputs.minimum_atmospheric_vapor_pressure_kpa, inputs.cumulative_wind_m * 0.001, inputs.total_precipitation_mm }) |value| {
+    for ([_]f64{ inputs.total_radiation_megajoules_m2, inputs.maximum_air_temperature_c, inputs.minimum_air_temperature_c, inputs.maximum_atmospheric_vapor_pressure_kpa, inputs.minimum_atmospheric_vapor_pressure_kpa, inputs.cumulative_wind_m * 0.001, inputs.total_precipitation_mm }) |value| {
         values[i] = value;
         i += 1;
     }
@@ -653,7 +653,7 @@ test "OUTSD heat reproduces historical fifty choices without fixed ceilings" {
     const maximum = [_]f64{20} ** 14;
     const minimum = [_]f64{10} ** 14;
     const conductivity = [_]f64{1} ** 12;
-    const inputs: HeatInputs = .{ .total_radiation_mj_m2 = 5, .maximum_air_temperature_c = 25, .minimum_air_temperature_c = 5, .maximum_atmospheric_vapor_pressure_kpa = 0.9, .minimum_atmospheric_vapor_pressure_kpa = 0.3, .cumulative_wind_m = 2000, .total_precipitation_mm = 1, .maximum_soil_temperature_c_by_layer = &maximum, .minimum_soil_temperature_c_by_layer = &minimum, .surface_maximum_soil_temperature_c = 30, .surface_minimum_soil_temperature_c = 8, .electrical_conductivity_by_layer = &conductivity, .ionic_outflow_mol = 2, .grid_area_m2 = 4 };
+    const inputs: HeatInputs = .{ .total_radiation_megajoules_m2 = 5, .maximum_air_temperature_c = 25, .minimum_air_temperature_c = 5, .maximum_atmospheric_vapor_pressure_kpa = 0.9, .minimum_atmospheric_vapor_pressure_kpa = 0.3, .cumulative_wind_m = 2000, .total_precipitation_mm = 1, .maximum_soil_temperature_c_by_layer = &maximum, .minimum_soil_temperature_c_by_layer = &minimum, .surface_maximum_soil_temperature_c = 30, .surface_minimum_soil_temperature_c = 8, .electrical_conductivity_by_layer = &conductivity, .ionic_outflow_mol = 2, .grid_area_m2 = 4 };
     var output = try heat(std.testing.allocator, inputs);
     defer output.deinit();
     try std.testing.expectEqual(@as(usize, 50), output.values.len);

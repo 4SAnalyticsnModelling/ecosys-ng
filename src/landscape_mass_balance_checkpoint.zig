@@ -91,7 +91,7 @@ test "landscape mass balance checkpoint round trips cumulative history and monit
     var boundary_state: boundary.State = .{};
     try boundary_state.accumulateAccepted(.{
         .rain_m3 = 2.5,
-        .heat_input_mj = 4,
+        .heat_input_megajoules = 4,
         .dinitrogen_input_g_n = 0.3,
         .ion_output_mol = 0.02,
     });
@@ -100,7 +100,7 @@ test "landscape mass balance checkpoint round trips cumulative history and monit
         .monitor = .{
             .baseline = .{
                 .water_m3 = -2.5,
-                .heat_mj = -4,
+                .heat_megajoules = -4,
                 .oxygen_g = 0,
                 .carbon_g = 0,
                 .nitrogen_g = -0.3,
@@ -123,7 +123,7 @@ test "landscape mass balance checkpoint round trips cumulative history and monit
     );
     try std.testing.expectEqual(
         @as(f64, -4),
-        restored.monitor.?.baseline.heat_mj,
+        restored.monitor.?.baseline.heat_megajoules,
     );
     try std.testing.expectEqual(
         @as(f64, 1e-6),

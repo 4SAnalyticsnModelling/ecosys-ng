@@ -3320,7 +3320,7 @@ fn testMacroporeMualemVanGenuchten() retention.MualemVanGenuchtenParameters {
 }
 
 test "runtime NPH hybrid water solve exits early and conserves both pore domains" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.35;
@@ -3357,8 +3357,8 @@ test "runtime NPH hybrid water solve exits early and conserves both pore domains
 test "subsurface irrigation is an external source in the Richards residual" {
     const cfg = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -3417,8 +3417,8 @@ test "subsurface irrigation is an external source in the Richards residual" {
 test "simultaneous Richards residual is independent of face ordering" {
     const cfg = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 3,
-            .grid_rows = 1,
+            .lon_count = 3,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -3532,7 +3532,7 @@ test "simultaneous Richards residual is independent of face ordering" {
 }
 
 test "lower drainage and lateral water-table recharge converge inside NPH residual" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.4;
@@ -3654,7 +3654,7 @@ test "whole-step residual retains every independent storage coordinate" {
 }
 
 test "rejected water solve leaves grid and published flux unchanged" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.35;
@@ -3680,7 +3680,7 @@ test "rejected water solve leaves grid and published flux unchanged" {
 }
 
 test "converged WATSUB flux binds to shared hydrology and solute faces" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 2 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 0.35;
@@ -3812,7 +3812,7 @@ test "Dall'Amico ice impedance scales runtime Mualem conductivity" {
 
 test "macropore Richards flow uses runtime shape and conserves pore water" {
     const cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 2, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 },
+        .{ .lon_count = 2, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 2 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 },
     );
@@ -3862,7 +3862,7 @@ test "macropore Richards flow uses runtime shape and conserves pore water" {
 
 test "Gerke van Genuchten exchange converges inside the water residual" {
     const cfg = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 },
+        .{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 },
         .{ .worker_threads = 1, .tile_cells = 1 },
         .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 40 },
     );
@@ -3931,8 +3931,8 @@ test "Gerke van Genuchten exchange converges inside the water residual" {
 test "large geospatial dual-domain volume converges within runtime NPH" {
     const cfg = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },

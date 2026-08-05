@@ -229,10 +229,10 @@ pub const Heat = struct {
     }
 };
 
-pub fn heat(net_radiation_mj: f64, latent_heat_mj: f64, sensible_heat_mj: f64, storage_heat_mj: f64, canopy_temperature_c: f64, temperature_function: f64, standing_dead_temperature_c: f64, cell_area_m2: f64) !Heat {
+pub fn heat(net_radiation_megajoules: f64, latent_heat_megajoules: f64, sensible_heat_megajoules: f64, storage_heat_megajoules: f64, canopy_temperature_c: f64, temperature_function: f64, standing_dead_temperature_c: f64, cell_area_m2: f64) !Heat {
     try validateArea(cell_area_m2);
-    inline for (.{ net_radiation_mj, latent_heat_mj, sensible_heat_mj, storage_heat_mj, canopy_temperature_c, temperature_function, standing_dead_temperature_c }) |value| try finite(value);
-    return .{ .canopy_net_radiation_w_per_m2 = 277.8 * net_radiation_mj / cell_area_m2, .canopy_latent_heat_flux_w_per_m2 = 277.8 * latent_heat_mj / cell_area_m2, .canopy_sensible_heat_flux_w_per_m2 = 277.8 * sensible_heat_mj / cell_area_m2, .canopy_storage_heat_flux_w_per_m2 = 277.8 * storage_heat_mj / cell_area_m2, .canopy_temperature_c = canopy_temperature_c, .temperature_function = temperature_function, .standing_dead_temperature_c = standing_dead_temperature_c };
+    inline for (.{ net_radiation_megajoules, latent_heat_megajoules, sensible_heat_megajoules, storage_heat_megajoules, canopy_temperature_c, temperature_function, standing_dead_temperature_c }) |value| try finite(value);
+    return .{ .canopy_net_radiation_w_per_m2 = 277.8 * net_radiation_megajoules / cell_area_m2, .canopy_latent_heat_flux_w_per_m2 = 277.8 * latent_heat_megajoules / cell_area_m2, .canopy_sensible_heat_flux_w_per_m2 = 277.8 * sensible_heat_megajoules / cell_area_m2, .canopy_storage_heat_flux_w_per_m2 = 277.8 * storage_heat_megajoules / cell_area_m2, .canopy_temperature_c = canopy_temperature_c, .temperature_function = temperature_function, .standing_dead_temperature_c = standing_dead_temperature_c };
 }
 
 fn validateArea(area_m2: f64) !void {

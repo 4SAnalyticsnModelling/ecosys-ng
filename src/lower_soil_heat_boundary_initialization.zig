@@ -8,19 +8,19 @@ pub const Inputs = struct {
 };
 
 pub const Parameters = struct {
-    minimum_snow_water_heat_capacity_mj_per_m2_k: f64,
-    minimum_surface_litter_heat_capacity_mj_per_m2_k: f64,
-    minimum_soil_water_heat_capacity_mj_per_m2_k: f64,
+    minimum_snow_water_heat_capacity_megajoules_per_m2_k: f64,
+    minimum_surface_litter_heat_capacity_megajoules_per_m2_k: f64,
+    minimum_soil_water_heat_capacity_megajoules_per_m2_k: f64,
     minimum_source_depth_m: f64,
     source_depth_below_profile_m: f64,
-    lower_boundary_conductivity_m_mj_per_h_k: f64,
-    geothermal_flux_mj_per_m2_h: f64,
+    lower_boundary_conductivity_m_megajoules_per_h_k: f64,
+    geothermal_flux_megajoules_per_m2_h: f64,
 };
 
 pub const State = struct {
-    minimum_snow_water_heat_capacity_mj_per_k: []f64,
-    minimum_surface_litter_heat_capacity_mj_per_k: []f64,
-    minimum_soil_water_heat_capacity_mj_per_k: []f64,
+    minimum_snow_water_heat_capacity_megajoules_per_k: []f64,
+    minimum_surface_litter_heat_capacity_megajoules_per_k: []f64,
+    minimum_soil_water_heat_capacity_megajoules_per_k: []f64,
     lower_heat_source_depth_m: []f64,
     surface_litter_temperature_c: []f64,
     surface_litter_temperature_k: []f64,
@@ -48,12 +48,12 @@ pub fn initialize(
         if (!std.math.isFinite(value))
             return error.NonFiniteLowerHeatBoundaryParameter;
     }
-    if (parameters.minimum_snow_water_heat_capacity_mj_per_m2_k < 0 or
-        parameters.minimum_surface_litter_heat_capacity_mj_per_m2_k < 0 or
-        parameters.minimum_soil_water_heat_capacity_mj_per_m2_k < 0 or
+    if (parameters.minimum_snow_water_heat_capacity_megajoules_per_m2_k < 0 or
+        parameters.minimum_surface_litter_heat_capacity_megajoules_per_m2_k < 0 or
+        parameters.minimum_soil_water_heat_capacity_megajoules_per_m2_k < 0 or
         parameters.minimum_source_depth_m <= 0 or
         parameters.source_depth_below_profile_m < 0 or
-        parameters.lower_boundary_conductivity_m_mj_per_h_k <= 0)
+        parameters.lower_boundary_conductivity_m_megajoules_per_h_k <= 0)
         return error.InvalidLowerHeatBoundaryParameter;
 
     for (0..cell_count) |cell| {
@@ -74,29 +74,29 @@ pub fn initialize(
                 parameters.source_depth_below_profile_m,
         );
         inline for (.{
-            parameters.minimum_snow_water_heat_capacity_mj_per_m2_k *
+            parameters.minimum_snow_water_heat_capacity_megajoules_per_m2_k *
                 inputs.top_soil_horizontal_area_m2[cell],
-            parameters.minimum_surface_litter_heat_capacity_mj_per_m2_k *
+            parameters.minimum_surface_litter_heat_capacity_megajoules_per_m2_k *
                 inputs.top_soil_horizontal_area_m2[cell],
-            parameters.minimum_soil_water_heat_capacity_mj_per_m2_k *
+            parameters.minimum_soil_water_heat_capacity_megajoules_per_m2_k *
                 inputs.top_soil_horizontal_area_m2[cell],
             source_depth_m,
             inputs.mean_annual_soil_temperature_k[cell] +
-                parameters.geothermal_flux_mj_per_m2_h * source_depth_m /
-                    parameters.lower_boundary_conductivity_m_mj_per_h_k,
+                parameters.geothermal_flux_megajoules_per_m2_h * source_depth_m /
+                    parameters.lower_boundary_conductivity_m_megajoules_per_h_k,
         }) |candidate| if (!std.math.isFinite(candidate))
             return error.LowerHeatBoundaryOverflow;
     }
 
     for (0..cell_count) |cell| {
-        state.minimum_snow_water_heat_capacity_mj_per_k[cell] =
-            parameters.minimum_snow_water_heat_capacity_mj_per_m2_k *
+        state.minimum_snow_water_heat_capacity_megajoules_per_k[cell] =
+            parameters.minimum_snow_water_heat_capacity_megajoules_per_m2_k *
             inputs.top_soil_horizontal_area_m2[cell];
-        state.minimum_surface_litter_heat_capacity_mj_per_k[cell] =
-            parameters.minimum_surface_litter_heat_capacity_mj_per_m2_k *
+        state.minimum_surface_litter_heat_capacity_megajoules_per_k[cell] =
+            parameters.minimum_surface_litter_heat_capacity_megajoules_per_m2_k *
             inputs.top_soil_horizontal_area_m2[cell];
-        state.minimum_soil_water_heat_capacity_mj_per_k[cell] =
-            parameters.minimum_soil_water_heat_capacity_mj_per_m2_k *
+        state.minimum_soil_water_heat_capacity_megajoules_per_k[cell] =
+            parameters.minimum_soil_water_heat_capacity_megajoules_per_m2_k *
             inputs.top_soil_horizontal_area_m2[cell];
         state.lower_heat_source_depth_m[cell] = @max(
             parameters.minimum_source_depth_m,
@@ -109,30 +109,30 @@ pub fn initialize(
             inputs.mean_annual_soil_temperature_k[cell];
         state.deep_source_temperature_k[cell] =
             inputs.mean_annual_soil_temperature_k[cell] +
-            parameters.geothermal_flux_mj_per_m2_h *
+            parameters.geothermal_flux_megajoules_per_m2_h *
                 state.lower_heat_source_depth_m[cell] /
-                parameters.lower_boundary_conductivity_m_mj_per_h_k;
+                parameters.lower_boundary_conductivity_m_megajoules_per_h_k;
     }
 }
 
 fn sourceParameters() Parameters {
     return .{
-        .minimum_snow_water_heat_capacity_mj_per_m2_k = 8.380e-4,
-        .minimum_surface_litter_heat_capacity_mj_per_m2_k = 8.380e-5,
-        .minimum_soil_water_heat_capacity_mj_per_m2_k = 8.380e-4,
+        .minimum_snow_water_heat_capacity_megajoules_per_m2_k = 8.380e-4,
+        .minimum_surface_litter_heat_capacity_megajoules_per_m2_k = 8.380e-5,
+        .minimum_soil_water_heat_capacity_megajoules_per_m2_k = 8.380e-4,
         .minimum_source_depth_m = 10,
         .source_depth_below_profile_m = 1,
-        .lower_boundary_conductivity_m_mj_per_h_k = 8.1e-3,
-        .geothermal_flux_mj_per_m2_h = 2.052e-4,
+        .lower_boundary_conductivity_m_megajoules_per_h_k = 8.1e-3,
+        .geothermal_flux_megajoules_per_m2_h = 2.052e-4,
     };
 }
 
 test "STARTS initializes minimum capacities and geothermal source" {
     var fields = [_]f64{0.0} ** 7;
     const state: State = .{
-        .minimum_snow_water_heat_capacity_mj_per_k = fields[0..1],
-        .minimum_surface_litter_heat_capacity_mj_per_k = fields[1..2],
-        .minimum_soil_water_heat_capacity_mj_per_k = fields[2..3],
+        .minimum_snow_water_heat_capacity_megajoules_per_k = fields[0..1],
+        .minimum_surface_litter_heat_capacity_megajoules_per_k = fields[1..2],
+        .minimum_soil_water_heat_capacity_megajoules_per_k = fields[2..3],
         .lower_heat_source_depth_m = fields[3..4],
         .surface_litter_temperature_c = fields[4..5],
         .surface_litter_temperature_k = fields[5..6],
@@ -159,9 +159,9 @@ test "runtime source depth follows deeper profile and late failure is atomic" {
     var fields = [_]f64{7.0} ** 14;
     const before = fields;
     const state: State = .{
-        .minimum_snow_water_heat_capacity_mj_per_k = fields[0..2],
-        .minimum_surface_litter_heat_capacity_mj_per_k = fields[2..4],
-        .minimum_soil_water_heat_capacity_mj_per_k = fields[4..6],
+        .minimum_snow_water_heat_capacity_megajoules_per_k = fields[0..2],
+        .minimum_surface_litter_heat_capacity_megajoules_per_k = fields[2..4],
+        .minimum_soil_water_heat_capacity_megajoules_per_k = fields[4..6],
         .lower_heat_source_depth_m = fields[6..8],
         .surface_litter_temperature_c = fields[8..10],
         .surface_litter_temperature_k = fields[10..12],

@@ -73,36 +73,36 @@ pub const PackedWorkspace = struct {
 };
 
 pub const DirectionalSediment = struct {
-    east_Mg: []const f64,
-    west_Mg: []const f64,
-    south_Mg: []const f64,
-    north_Mg: []const f64,
+    east_megagrams: []const f64,
+    west_megagrams: []const f64,
+    south_megagrams: []const f64,
+    north_megagrams: []const f64,
 };
 
 /// Ports every EROSION `FSEDER * pool` expression through a runtime component
 /// axis. Components retain their physical unit; the dimensionless transported
 /// surface-mass fraction applies identically to Mg minerals, mol sorbed and
 /// precipitated species, and g organic C/N/P pools in the Fortran source.
-pub fn calculateFluxes(state: *FluxState, components: []const Component, surface_soil_mass_Mg: []const f64, surface_pool_amounts: []const f64, cumulative_sediment: DirectionalSediment) !void {
-    if (components.len != state.component_count or surface_soil_mass_Mg.len != state.cell_count or surface_pool_amounts.len != state.east.len or cumulative_sediment.east_Mg.len != state.cell_count or cumulative_sediment.west_Mg.len != state.cell_count or cumulative_sediment.south_Mg.len != state.cell_count or cumulative_sediment.north_Mg.len != state.cell_count) return error.ErodedConstituentDimensionMismatch;
+pub fn calculateFluxes(state: *FluxState, components: []const Component, surface_soil_mass_megagrams: []const f64, surface_pool_amounts: []const f64, cumulative_sediment: DirectionalSediment) !void {
+    if (components.len != state.component_count or surface_soil_mass_megagrams.len != state.cell_count or surface_pool_amounts.len != state.east.len or cumulative_sediment.east_megagrams.len != state.cell_count or cumulative_sediment.west_megagrams.len != state.cell_count or cumulative_sediment.south_megagrams.len != state.cell_count or cumulative_sediment.north_megagrams.len != state.cell_count) return error.ErodedConstituentDimensionMismatch;
     for (components) |component| if (component.name.len == 0) return error.EmptyErodedComponentName;
-    try calculatePackedFluxes(state, surface_soil_mass_Mg, surface_pool_amounts, cumulative_sediment);
+    try calculatePackedFluxes(state, surface_soil_mass_megagrams, surface_pool_amounts, cumulative_sediment);
 }
 
 /// Runtime packed-pool variant used by the live soil chemistry and organic
 /// bridges. Physical units remain owned by each packed component; erosion
 /// applies only the dimensionless transported surface-mass fraction.
-pub fn calculatePackedFluxes(state: *FluxState, surface_soil_mass_Mg: []const f64, surface_pool_amounts: []const f64, cumulative_sediment: DirectionalSediment) !void {
-    if (surface_soil_mass_Mg.len != state.cell_count or surface_pool_amounts.len != state.east.len or cumulative_sediment.east_Mg.len != state.cell_count or cumulative_sediment.west_Mg.len != state.cell_count or cumulative_sediment.south_Mg.len != state.cell_count or cumulative_sediment.north_Mg.len != state.cell_count) return error.ErodedConstituentDimensionMismatch;
+pub fn calculatePackedFluxes(state: *FluxState, surface_soil_mass_megagrams: []const f64, surface_pool_amounts: []const f64, cumulative_sediment: DirectionalSediment) !void {
+    if (surface_soil_mass_megagrams.len != state.cell_count or surface_pool_amounts.len != state.east.len or cumulative_sediment.east_megagrams.len != state.cell_count or cumulative_sediment.west_megagrams.len != state.cell_count or cumulative_sediment.south_megagrams.len != state.cell_count or cumulative_sediment.north_megagrams.len != state.cell_count) return error.ErodedConstituentDimensionMismatch;
     inline for (.{ state.east, state.west, state.south, state.north }) |values| @memset(values, 0);
     for (0..state.cell_count) |cell| {
-        const soil_mass_Mg = surface_soil_mass_Mg[cell];
-        if (!std.math.isFinite(soil_mass_Mg) or soil_mass_Mg <= 0) return error.InvalidSurfaceSoilMass;
-        const sediment_by_direction = [_]f64{ cumulative_sediment.east_Mg[cell], cumulative_sediment.west_Mg[cell], cumulative_sediment.south_Mg[cell], cumulative_sediment.north_Mg[cell] };
+        const soil_mass_megagrams = surface_soil_mass_megagrams[cell];
+        if (!std.math.isFinite(soil_mass_megagrams) or soil_mass_megagrams <= 0) return error.InvalidSurfaceSoilMass;
+        const sediment_by_direction = [_]f64{ cumulative_sediment.east_megagrams[cell], cumulative_sediment.west_megagrams[cell], cumulative_sediment.south_megagrams[cell], cumulative_sediment.north_megagrams[cell] };
         const output_by_direction = [_][]f64{ state.east, state.west, state.south, state.north };
-        for (sediment_by_direction, output_by_direction) |sediment_Mg, output| {
-            if (!std.math.isFinite(sediment_Mg) or sediment_Mg < 0) return error.InvalidDirectionalSediment;
-            const transported_fraction = @min(1, sediment_Mg / soil_mass_Mg);
+        for (sediment_by_direction, output_by_direction) |sediment_megagrams, output| {
+            if (!std.math.isFinite(sediment_megagrams) or sediment_megagrams < 0) return error.InvalidDirectionalSediment;
+            const transported_fraction = @min(1, sediment_megagrams / soil_mass_megagrams);
             for (0..state.component_count) |component| {
                 const index = cell * state.component_count + component;
                 const pool = surface_pool_amounts[index];
@@ -113,18 +113,18 @@ pub fn calculatePackedFluxes(state: *FluxState, surface_soil_mass_Mg: []const f6
     }
 }
 
-pub fn routePackedPools(allocator: std.mem.Allocator, columns: usize, rows: usize, component_count: usize, surface_soil_mass_Mg: []const f64, surface_pool_amounts: []f64, cumulative_sediment: DirectionalSediment, exported_amounts: []f64) !void {
+pub fn routePackedPools(allocator: std.mem.Allocator, columns: usize, rows: usize, component_count: usize, surface_soil_mass_megagrams: []const f64, surface_pool_amounts: []f64, cumulative_sediment: DirectionalSediment, exported_amounts: []f64) !void {
     const cell_count = try std.math.mul(usize, columns, rows);
-    if (cell_count == 0 or component_count == 0 or surface_soil_mass_Mg.len != cell_count or surface_pool_amounts.len != try std.math.mul(usize, cell_count, component_count) or exported_amounts.len != surface_pool_amounts.len) return error.ErodedConstituentDimensionMismatch;
+    if (cell_count == 0 or component_count == 0 or surface_soil_mass_megagrams.len != cell_count or surface_pool_amounts.len != try std.math.mul(usize, cell_count, component_count) or exported_amounts.len != surface_pool_amounts.len) return error.ErodedConstituentDimensionMismatch;
     var flux = try FluxState.init(allocator, cell_count, component_count);
     defer flux.deinit();
-    try calculatePackedFluxes(&flux, surface_soil_mass_Mg, surface_pool_amounts, cumulative_sediment);
+    try calculatePackedFluxes(&flux, surface_soil_mass_megagrams, surface_pool_amounts, cumulative_sediment);
     try applyFluxes(columns, rows, flux, surface_pool_amounts, exported_amounts);
 }
 
-pub fn routePackedWorkspace(workspace: *PackedWorkspace, columns: usize, rows: usize, surface_soil_mass_Mg: []const f64, cumulative_sediment: DirectionalSediment) !void {
+pub fn routePackedWorkspace(workspace: *PackedWorkspace, columns: usize, rows: usize, surface_soil_mass_megagrams: []const f64, cumulative_sediment: DirectionalSediment) !void {
     if (try std.math.mul(usize, columns, rows) != workspace.cell_count) return error.ErodedConstituentDimensionMismatch;
-    try calculatePackedFluxes(&workspace.flux, surface_soil_mass_Mg, workspace.pools, cumulative_sediment);
+    try calculatePackedFluxes(&workspace.flux, surface_soil_mass_megagrams, workspace.pools, cumulative_sediment);
     try applyFluxes(columns, rows, workspace.flux, workspace.pools, workspace.exported);
 }
 
@@ -174,7 +174,7 @@ test "erosion fraction applies without converting component units" {
     var flux = try FluxState.init(std.testing.allocator, 1, 3);
     defer flux.deinit();
     const components = [_]Component{ .{ .name = "sand", .unit = .megagram }, .{ .name = "exchangeable_ammonium", .unit = .mole }, .{ .name = "microbial_carbon", .unit = .gram } };
-    try calculateFluxes(&flux, &components, &.{10}, &.{ 4, 100, 2000 }, .{ .east_Mg = &.{1}, .west_Mg = &.{0}, .south_Mg = &.{0}, .north_Mg = &.{0} });
+    try calculateFluxes(&flux, &components, &.{10}, &.{ 4, 100, 2000 }, .{ .east_megagrams = &.{1}, .west_megagrams = &.{0}, .south_megagrams = &.{0}, .north_megagrams = &.{0} });
     try std.testing.expectEqual(@as(f64, 0.4), flux.east[0]);
     try std.testing.expectEqual(@as(f64, 10), flux.east[1]);
     try std.testing.expectEqual(@as(f64, 200), flux.east[2]);
@@ -183,7 +183,7 @@ test "erosion fraction applies without converting component units" {
 test "packed runtime components route without artificial descriptors" {
     var pools = [_]f64{ 4, 100, 1, 2 };
     var exported: [4]f64 = undefined;
-    try routePackedPools(std.testing.allocator, 2, 1, 2, &.{ 10, 10 }, &pools, .{ .east_Mg = &.{ 1, 0 }, .west_Mg = &.{ 0, 0 }, .south_Mg = &.{ 0, 0 }, .north_Mg = &.{ 0, 0 } }, &exported);
+    try routePackedPools(std.testing.allocator, 2, 1, 2, &.{ 10, 10 }, &pools, .{ .east_megagrams = &.{ 1, 0 }, .west_megagrams = &.{ 0, 0 }, .south_megagrams = &.{ 0, 0 }, .north_megagrams = &.{ 0, 0 } }, &exported);
     try std.testing.expectApproxEqAbs(@as(f64, 3.6), pools[0], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 90), pools[1], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 1.4), pools[2], 1e-14);
@@ -194,7 +194,7 @@ test "erosion fraction retains Fortran one-point-zero cap" {
     var flux = try FluxState.init(std.testing.allocator, 1, 1);
     defer flux.deinit();
     const components = [_]Component{.{ .name = "clay", .unit = .megagram }};
-    try calculateFluxes(&flux, &components, &.{2}, &.{1.5}, .{ .east_Mg = &.{3}, .west_Mg = &.{0}, .south_Mg = &.{0}, .north_Mg = &.{0} });
+    try calculateFluxes(&flux, &components, &.{2}, &.{1.5}, .{ .east_megagrams = &.{3}, .west_megagrams = &.{0}, .south_megagrams = &.{0}, .north_megagrams = &.{0} });
     try std.testing.expectEqual(@as(f64, 1.5), flux.east[0]);
 }
 

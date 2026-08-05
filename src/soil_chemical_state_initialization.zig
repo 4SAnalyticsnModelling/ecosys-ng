@@ -66,8 +66,8 @@ pub const State = struct {
     reaction_demand: ReactionDemandState,
     subsurface_boundary_organic: SubsurfaceBoundaryOrganicState,
     inhibitor_activity: InhibitorActivity,
-    layer_combustion_heat_mj: *f64,
-    cell_combustion_heat_mj: *f64,
+    layer_combustion_heat_megajoules: *f64,
+    cell_combustion_heat_megajoules: *f64,
 };
 
 fn zeroPointerFields(value: anytype) void {
@@ -113,8 +113,8 @@ pub fn initialize(
             );
     }
     zeroPointerFields(state.inhibitor_activity);
-    state.layer_combustion_heat_mj.* = 0.0;
-    state.cell_combustion_heat_mj.* = 0.0;
+    state.layer_combustion_heat_megajoules.* = 0.0;
+    state.cell_combustion_heat_megajoules.* = 0.0;
 }
 
 fn pointerStruct(comptime T: type, values: []f64, start: usize) T {
@@ -166,8 +166,8 @@ fn testState(values: []f64, boundary: []f64) State {
             .acetate_g_c = boundary[6..8],
         },
         .inhibitor_activity = inhibitor,
-        .layer_combustion_heat_mj = &values[offset],
-        .cell_combustion_heat_mj = &values[offset + 1],
+        .layer_combustion_heat_megajoules = &values[offset],
+        .cell_combustion_heat_megajoules = &values[offset + 1],
     };
 }
 

@@ -33,11 +33,11 @@ pub const Dimensions = struct {
 
 pub const SurfaceWaterHeatFlux = struct {
     runoff_water_m3_per_step: f64 = 0,
-    runoff_heat_mj_per_step: f64 = 0,
+    runoff_heat_megajoules_per_step: f64 = 0,
     drifting_snow_m3_per_step: f64 = 0,
     drifting_snow_liquid_water_m3_per_step: f64 = 0,
     drifting_snow_ice_m3_per_step: f64 = 0,
-    drifting_snow_heat_mj_per_step: f64 = 0,
+    drifting_snow_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const OrganicElementFlux = struct {
@@ -185,10 +185,10 @@ pub const SnowSaltSpecies = enum {
 };
 
 pub const ErodedMineralFlux = struct {
-    sediment_Mg_per_step: f64 = 0,
-    sand_Mg_per_step: f64 = 0,
-    silt_Mg_per_step: f64 = 0,
-    clay_Mg_per_step: f64 = 0,
+    sediment_megagrams_per_step: f64 = 0,
+    sand_megagrams_per_step: f64 = 0,
+    silt_megagrams_per_step: f64 = 0,
+    clay_megagrams_per_step: f64 = 0,
     cation_exchange_capacity_mol_per_step: f64 = 0,
     anion_exchange_capacity_mol_per_step: f64 = 0,
 };
@@ -292,7 +292,7 @@ pub const SnowpackWaterHeatFlux = struct {
     liquid_water_m3_per_step: f64 = 0,
     water_vapor_m3_per_step: f64 = 0,
     ice_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 /// All storage is caller-owned and runtime allocated. Flattened indexes are
@@ -704,7 +704,7 @@ test "late non-finite accumulator fails before any reset mutation" {
     var state = try allocateState(arena.allocator(), nonlegacy_dimensions, 3);
     state.snowpack_water_heat_by_cell_layer[
         state.snowpack_water_heat_by_cell_layer.len - 1
-    ].convective_heat_mj_per_step = std.math.nan(f64);
+    ].convective_heat_megajoules_per_step = std.math.nan(f64);
 
     try std.testing.expectError(
         error.NonFiniteTransportAccumulator,
@@ -714,7 +714,7 @@ test "late non-finite accumulator fails before any reset mutation" {
     try std.testing.expect(std.math.isNan(
         state.snowpack_water_heat_by_cell_layer[
             state.snowpack_water_heat_by_cell_layer.len - 1
-        ].convective_heat_mj_per_step,
+        ].convective_heat_megajoules_per_step,
     ));
 }
 

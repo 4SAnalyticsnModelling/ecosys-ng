@@ -68,17 +68,17 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
             p.water_activity_product_mol2_per_m6;
         equilibrium.h2po4_at_protonated_site_mol_p_per_m3 =
             equilibrium.h2po4_protonated_site_product *
-            s.adsorbed_h2po4_mol_p_per_Mg /
-            s.protonated_site_mol_per_Mg;
+            s.adsorbed_h2po4_mol_p_per_megagram /
+            s.protonated_site_mol_per_megagram;
         extents.h2po4_with_protonated_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.h2po4_activity_mol_p_per_m3,
                 equilibrium.h2po4_at_protonated_site_mol_p_per_m3,
                 inputs.coefficients.monovalent,
-                primary * s.adsorbed_h2po4_mol_p_per_Mg,
+                primary * s.adsorbed_h2po4_mol_p_per_megagram,
                 primary * @min(
                     a.h2po4_concentration_mol_p_per_m3,
-                    s.protonated_site_mol_per_Mg,
+                    s.protonated_site_mol_per_megagram,
                 ),
                 maximum,
             );
@@ -89,17 +89,17 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
             shared.hydroxide_mol_per_m3;
         equilibrium.h2po4_at_hydroxyl_site_mol_p_per_m3 =
             equilibrium.h2po4_hydroxyl_site_product *
-            s.adsorbed_h2po4_mol_p_per_Mg /
-            s.hydroxyl_site_mol_per_Mg;
+            s.adsorbed_h2po4_mol_p_per_megagram /
+            s.hydroxyl_site_mol_per_megagram;
         extents.h2po4_with_hydroxyl_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.h2po4_activity_mol_p_per_m3,
                 equilibrium.h2po4_at_hydroxyl_site_mol_p_per_m3,
                 inputs.coefficients.monovalent,
-                hydroxyl_fraction * s.adsorbed_h2po4_mol_p_per_Mg,
+                hydroxyl_fraction * s.adsorbed_h2po4_mol_p_per_megagram,
                 hydroxyl_fraction * @min(
                     a.h2po4_concentration_mol_p_per_m3,
-                    s.hydroxyl_site_mol_per_Mg,
+                    s.hydroxyl_site_mol_per_megagram,
                 ),
                 maximum,
             );
@@ -111,17 +111,17 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
             p.h2po4_dissociation_constant_mol_per_m3;
         equilibrium.hpo4_at_hydroxyl_site_mol_p_per_m3 =
             equilibrium.hpo4_hydroxyl_site_product *
-            s.adsorbed_hpo4_mol_p_per_Mg /
-            s.hydroxyl_site_mol_per_Mg;
+            s.adsorbed_hpo4_mol_p_per_megagram /
+            s.hydroxyl_site_mol_per_megagram;
         extents.hpo4_with_hydroxyl_site_source_extent_per_step =
             sourceBoundedExtent(
                 a.hpo4_activity_mol_p_per_m3,
                 equilibrium.hpo4_at_hydroxyl_site_mol_p_per_m3,
                 inputs.coefficients.divalent,
-                primary * s.adsorbed_hpo4_mol_p_per_Mg,
+                primary * s.adsorbed_hpo4_mol_p_per_megagram,
                 primary * @min(
                     a.hpo4_concentration_mol_p_per_m3,
-                    s.hydroxyl_site_mol_per_Mg,
+                    s.hydroxyl_site_mol_per_megagram,
                 ),
                 maximum,
             );
@@ -222,8 +222,8 @@ fn finiteNonnegative(value: f64) !void {
 }
 
 fn validateActiveSites(sites: non_band_exchange.SurfaceSites) !void {
-    if (sites.hydroxyl_site_mol_per_Mg <= 0 or
-        sites.protonated_site_mol_per_Mg <= 0)
+    if (sites.hydroxyl_site_mol_per_megagram <= 0 or
+        sites.protonated_site_mol_per_megagram <= 0)
         return error.InvalidActiveBandPhosphateExchangeSite;
 }
 
@@ -253,10 +253,10 @@ fn validInputs() Inputs {
             .h2po4_activity_mol_p_per_m3 = 0.16,
         },
         .sites = .{
-            .hydroxyl_site_mol_per_Mg = 0.4,
-            .protonated_site_mol_per_Mg = 0.3,
-            .adsorbed_hpo4_mol_p_per_Mg = 0.04,
-            .adsorbed_h2po4_mol_p_per_Mg = 0.05,
+            .hydroxyl_site_mol_per_megagram = 0.4,
+            .protonated_site_mol_per_megagram = 0.3,
+            .adsorbed_hpo4_mol_p_per_megagram = 0.04,
+            .adsorbed_h2po4_mol_p_per_megagram = 0.05,
         },
         .shared_activities = .{
             .hydrogen_mol_per_m3 = 0.08,
@@ -302,20 +302,20 @@ test "fixed-pH band exchange matches every source equation exactly" {
         p.h2po4_exchange_constant *
         p.water_activity_product_mol2_per_m6;
     const protonated_equilibrium =
-        protonated_product * s.adsorbed_h2po4_mol_p_per_Mg /
-        s.protonated_site_mol_per_Mg;
+        protonated_product * s.adsorbed_h2po4_mol_p_per_megagram /
+        s.protonated_site_mol_per_megagram;
     const hydroxyl_product =
         p.h2po4_exchange_constant * shared.hydroxide_mol_per_m3;
     const hydroxyl_equilibrium =
-        hydroxyl_product * s.adsorbed_h2po4_mol_p_per_Mg /
-        s.hydroxyl_site_mol_per_Mg;
+        hydroxyl_product * s.adsorbed_h2po4_mol_p_per_megagram /
+        s.hydroxyl_site_mol_per_megagram;
     const hpo4_product =
         p.hpo4_exchange_constant *
         p.water_activity_product_mol2_per_m6 /
         p.h2po4_dissociation_constant_mol_per_m3;
     const hpo4_equilibrium =
-        hpo4_product * s.adsorbed_hpo4_mol_p_per_Mg /
-        s.hydroxyl_site_mol_per_Mg;
+        hpo4_product * s.adsorbed_hpo4_mol_p_per_megagram /
+        s.hydroxyl_site_mol_per_megagram;
     const dissociation_equilibrium =
         p.h2po4_dissociation_constant_mol_per_m3 *
         a.h2po4_activity_mol_p_per_m3 /
@@ -354,10 +354,10 @@ test "fixed-pH band exchange matches every source equation exactly" {
             a.h2po4_activity_mol_p_per_m3,
             protonated_equilibrium,
             inputs.coefficients.monovalent,
-            primary * s.adsorbed_h2po4_mol_p_per_Mg,
+            primary * s.adsorbed_h2po4_mol_p_per_megagram,
             primary * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.protonated_site_mol_per_Mg,
+                s.protonated_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -368,10 +368,10 @@ test "fixed-pH band exchange matches every source equation exactly" {
             a.h2po4_activity_mol_p_per_m3,
             hydroxyl_equilibrium,
             inputs.coefficients.monovalent,
-            secondary * s.adsorbed_h2po4_mol_p_per_Mg,
+            secondary * s.adsorbed_h2po4_mol_p_per_megagram,
             secondary * @min(
                 a.h2po4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -382,10 +382,10 @@ test "fixed-pH band exchange matches every source equation exactly" {
             a.hpo4_activity_mol_p_per_m3,
             hpo4_equilibrium,
             inputs.coefficients.divalent,
-            primary * s.adsorbed_hpo4_mol_p_per_Mg,
+            primary * s.adsorbed_hpo4_mol_p_per_megagram,
             primary * @min(
                 a.hpo4_concentration_mol_p_per_m3,
-                s.hydroxyl_site_mol_per_Mg,
+                s.hydroxyl_site_mol_per_megagram,
             ),
             maximum,
         ),
@@ -451,11 +451,11 @@ test "fixed-pH band exchange preserves independent H2PO4 fractions" {
     inputs.kinetics.hydroxyl_h2po4_substrate_limit_fraction = 0.25;
     const result = try calculateSourceOrder(inputs);
     try std.testing.expectEqual(
-        -inputs.sites.adsorbed_h2po4_mol_p_per_Mg,
+        -inputs.sites.adsorbed_h2po4_mol_p_per_megagram,
         result.extents.h2po4_with_protonated_site_source_extent_per_step,
     );
     try std.testing.expectEqual(
-        -0.25 * inputs.sites.adsorbed_h2po4_mol_p_per_Mg,
+        -0.25 * inputs.sites.adsorbed_h2po4_mol_p_per_megagram,
         result.extents.h2po4_with_hydroxyl_site_source_extent_per_step,
     );
 }
@@ -497,7 +497,7 @@ test "fixed-pH band water product can reverse the non-band exchange sign" {
 
 test "fixed-pH band exchange rejects invalid runtime input" {
     var inputs = validInputs();
-    inputs.sites.protonated_site_mol_per_Mg = 0;
+    inputs.sites.protonated_site_mol_per_megagram = 0;
     try std.testing.expectError(
         error.InvalidActiveBandPhosphateExchangeSite,
         calculateSourceOrder(inputs),

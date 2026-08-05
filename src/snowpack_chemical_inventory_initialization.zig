@@ -66,14 +66,14 @@ pub const PrecipitationConcentrations = struct {
 };
 
 pub const Parameters = struct {
-    ice_density_Mg_per_m3: f64,
+    ice_density_megagrams_per_m3: f64,
     nitrogen_molar_mass_g_per_mol: f64,
     phosphorus_molar_mass_g_per_mol: f64,
 };
 
 pub const LayerPhysicalState = struct {
-    heat_capacity_mj_per_k: f64,
-    active_heat_capacity_threshold_mj_per_k: f64,
+    heat_capacity_megajoules_per_k: f64,
+    active_heat_capacity_threshold_megajoules_per_k: f64,
     liquid_water_m3: f64,
     solid_snow_water_equivalent_m3: f64,
     ice_m3: f64,
@@ -111,11 +111,11 @@ fn validatePrecipitation(concentrations: PrecipitationConcentrations) !void {
 
 fn equivalentWaterVolume(
     physical: LayerPhysicalState,
-    ice_density_Mg_per_m3: f64,
+    ice_density_megagrams_per_m3: f64,
 ) f64 {
     return physical.liquid_water_m3 +
         physical.solid_snow_water_equivalent_m3 +
-        physical.ice_m3 * ice_density_Mg_per_m3;
+        physical.ice_m3 * ice_density_megagrams_per_m3;
 }
 
 /// Direct translation of STARTE lines 2072--2200 over a runtime snow-layer
@@ -133,7 +133,7 @@ pub fn initialize(
     if (layers.len == 0 or layers.len != physical_layers.len)
         return error.SnowpackChemicalDimensionMismatch;
     inline for (.{
-        parameters.ice_density_Mg_per_m3,
+        parameters.ice_density_megagrams_per_m3,
         parameters.nitrogen_molar_mass_g_per_mol,
         parameters.phosphorus_molar_mass_g_per_mol,
     }) |value| if (!std.math.isFinite(value) or value <= 0)
@@ -148,12 +148,12 @@ pub fn initialize(
         }
         const volume_m3 = equivalentWaterVolume(
             physical,
-            parameters.ice_density_Mg_per_m3,
+            parameters.ice_density_megagrams_per_m3,
         );
         if (!std.math.isFinite(volume_m3))
             return error.NonFiniteSnowpackEquivalentWaterVolume;
-        if (physical.heat_capacity_mj_per_k >
-            physical.active_heat_capacity_threshold_mj_per_k)
+        if (physical.heat_capacity_megajoules_per_k >
+            physical.active_heat_capacity_threshold_megajoules_per_k)
         {
             const checks = [_]f64{
                 volume_m3 * concentrations.carbon_dioxide_mol_per_m3,
@@ -183,8 +183,8 @@ pub fn initialize(
     }
 
     for (layers, physical_layers) |*layer, physical| {
-        const active = physical.heat_capacity_mj_per_k >
-            physical.active_heat_capacity_threshold_mj_per_k;
+        const active = physical.heat_capacity_megajoules_per_k >
+            physical.active_heat_capacity_threshold_megajoules_per_k;
         if (!active) {
             layer.primary = std.mem.zeroes(PrimaryInventories);
             if (mode == .dynamic) layer.ions_mol = [_]f64{0} ** ion_species_count;
@@ -192,7 +192,7 @@ pub fn initialize(
         }
         const volume_m3 = equivalentWaterVolume(
             physical,
-            parameters.ice_density_Mg_per_m3,
+            parameters.ice_density_megagrams_per_m3,
         );
         layer.primary = .{
             .carbon_dioxide_mol = volume_m3 * concentrations.carbon_dioxide_mol_per_m3,
@@ -237,7 +237,7 @@ fn testConcentrations() PrecipitationConcentrations {
 }
 
 const test_parameters: Parameters = .{
-    .ice_density_Mg_per_m3 = 0.9,
+    .ice_density_megagrams_per_m3 = 0.9,
     .nitrogen_molar_mass_g_per_mol = 14,
     .phosphorus_molar_mass_g_per_mol = 31,
 };
@@ -245,8 +245,8 @@ const test_parameters: Parameters = .{
 test "STARTE active snow layer uses total water-equivalent volume" {
     var layers = [_]LayerState{undefined};
     try initialize(&layers, &.{.{
-        .heat_capacity_mj_per_k = 2,
-        .active_heat_capacity_threshold_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k = 2,
+        .active_heat_capacity_threshold_megajoules_per_k = 1,
         .liquid_water_m3 = 1,
         .solid_snow_water_equivalent_m3 = 2,
         .ice_m3 = 10,
@@ -261,8 +261,8 @@ test "STARTE active snow layer uses total water-equivalent volume" {
 test "STARTE inactive layer zeros tracked chemistry in dynamic mode" {
     var layers = [_]LayerState{undefined};
     try initialize(&layers, &.{.{
-        .heat_capacity_mj_per_k = 1,
-        .active_heat_capacity_threshold_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k = 1,
+        .active_heat_capacity_threshold_megajoules_per_k = 1,
         .liquid_water_m3 = 4,
         .solid_snow_water_equivalent_m3 = 5,
         .ice_m3 = 6,
@@ -277,8 +277,8 @@ test "STARTE static salt mode retains caller ion inventories" {
         .ions_mol = [_]f64{7} ** ion_species_count,
     }};
     try initialize(&layers, &.{.{
-        .heat_capacity_mj_per_k = 0,
-        .active_heat_capacity_threshold_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k = 0,
+        .active_heat_capacity_threshold_megajoules_per_k = 1,
         .liquid_water_m3 = 0,
         .solid_snow_water_equivalent_m3 = 0,
         .ice_m3 = 0,

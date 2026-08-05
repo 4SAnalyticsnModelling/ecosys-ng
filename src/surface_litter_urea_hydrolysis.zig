@@ -4,26 +4,26 @@ pub const Inputs = struct {
     biologically_active_water_volume_m3: f64,
     active_biomass_respiration_g_c_per_step: f64,
     step_duration_h: f64,
-    minimum_urea_half_saturation_mol_n_per_Mg: f64,
+    minimum_urea_half_saturation_mol_n_per_megagram: f64,
     microbial_activity_inhibition_g_c_per_m3_h: f64,
     initial_urease_inhibition_fraction: f64,
     current_urease_inhibition_fraction: f64,
     inhibition_decline_fraction_per_step: f64,
     urea_fertilizer_mol_n: f64,
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
     microbial_temperature_response_fraction: f64,
     specific_urea_hydrolysis_mol_n_per_g_c: f64,
     active_water_volume_threshold_m3: f64,
     active_inhibition_threshold_fraction: f64,
     active_urea_threshold_mol_n: f64,
-    active_litter_dry_mass_threshold_Mg: f64,
+    active_litter_dry_mass_threshold_megagrams: f64,
 };
 
 pub const Result = struct {
     microbial_activity_g_c_per_m3_h: f64,
-    effective_urea_half_saturation_mol_n_per_Mg: f64,
+    effective_urea_half_saturation_mol_n_per_megagram: f64,
     updated_urease_inhibition_fraction: f64,
-    urea_concentration_mol_n_per_Mg: ?f64,
+    urea_concentration_mol_n_per_megagram: ?f64,
     urea_substrate_response_fraction: ?f64,
     urea_hydrolysis_mol_n_per_step: f64,
 };
@@ -52,7 +52,7 @@ pub fn calculate(inputs: Inputs) !Result {
         );
     } else 0.1e+06;
     const effective_half_saturation =
-        inputs.minimum_urea_half_saturation_mol_n_per_Mg *
+        inputs.minimum_urea_half_saturation_mol_n_per_megagram *
         (1.0 + microbial_activity /
             inputs.microbial_activity_inhibition_g_c_per_m3_h);
 
@@ -79,11 +79,11 @@ pub fn calculate(inputs: Inputs) !Result {
     var hydrolysis: f64 = 0;
     // SOLUTE.F 4088--4096. Threshold equality selects the inactive branch.
     if (inputs.urea_fertilizer_mol_n > inputs.active_urea_threshold_mol_n and
-        inputs.litter_dry_mass_Mg >
-            inputs.active_litter_dry_mass_threshold_Mg)
+        inputs.litter_dry_mass_megagrams >
+            inputs.active_litter_dry_mass_threshold_megagrams)
     {
         const concentration =
-            inputs.urea_fertilizer_mol_n / inputs.litter_dry_mass_Mg;
+            inputs.urea_fertilizer_mol_n / inputs.litter_dry_mass_megagrams;
         const response =
             concentration / (concentration + effective_half_saturation);
         const potential_hydrolysis =
@@ -104,9 +104,9 @@ pub fn calculate(inputs: Inputs) !Result {
 
     const result: Result = .{
         .microbial_activity_g_c_per_m3_h = microbial_activity,
-        .effective_urea_half_saturation_mol_n_per_Mg = effective_half_saturation,
+        .effective_urea_half_saturation_mol_n_per_megagram = effective_half_saturation,
         .updated_urease_inhibition_fraction = updated_inhibition,
-        .urea_concentration_mol_n_per_Mg = urea_concentration,
+        .urea_concentration_mol_n_per_megagram = urea_concentration,
         .urea_substrate_response_fraction = substrate_response,
         .urea_hydrolysis_mol_n_per_step = hydrolysis,
     };
@@ -121,7 +121,7 @@ fn validateInputs(inputs: Inputs) !void {
             return error.InvalidSurfaceLitterUreaHydrolysisInput;
     }
     if (inputs.step_duration_h == 0 or
-        inputs.minimum_urea_half_saturation_mol_n_per_Mg == 0 or
+        inputs.minimum_urea_half_saturation_mol_n_per_megagram == 0 or
         inputs.microbial_activity_inhibition_g_c_per_m3_h == 0 or
         inputs.initial_urease_inhibition_fraction > 1 or
         inputs.current_urease_inhibition_fraction > 1 or
@@ -136,7 +136,7 @@ fn validateInputs(inputs: Inputs) !void {
 fn validateResult(result: Result, available_urea_mol_n: f64) !void {
     inline for (.{
         result.microbial_activity_g_c_per_m3_h,
-        result.effective_urea_half_saturation_mol_n_per_Mg,
+        result.effective_urea_half_saturation_mol_n_per_megagram,
         result.updated_urease_inhibition_fraction,
         result.urea_hydrolysis_mol_n_per_step,
     }) |value| {
@@ -144,7 +144,7 @@ fn validateResult(result: Result, available_urea_mol_n: f64) !void {
             return error.NonFiniteSurfaceLitterUreaHydrolysis;
     }
     inline for (.{
-        result.urea_concentration_mol_n_per_Mg,
+        result.urea_concentration_mol_n_per_megagram,
         result.urea_substrate_response_fraction,
     }) |optional| if (optional) |value| {
         if (!std.math.isFinite(value))
@@ -164,19 +164,19 @@ fn testInputs() Inputs {
         .biologically_active_water_volume_m3 = 2,
         .active_biomass_respiration_g_c_per_step = 30,
         .step_duration_h = 0.5,
-        .minimum_urea_half_saturation_mol_n_per_Mg = 4,
+        .minimum_urea_half_saturation_mol_n_per_megagram = 4,
         .microbial_activity_inhibition_g_c_per_m3_h = 10,
         .initial_urease_inhibition_fraction = 0.8,
         .current_urease_inhibition_fraction = 0.6,
         .inhibition_decline_fraction_per_step = 0.1,
         .urea_fertilizer_mol_n = 12,
-        .litter_dry_mass_Mg = 3,
+        .litter_dry_mass_megagrams = 3,
         .microbial_temperature_response_fraction = 0.7,
         .specific_urea_hydrolysis_mol_n_per_g_c = 0.2,
         .active_water_volume_threshold_m3 = 1.0e-12,
         .active_inhibition_threshold_fraction = 1.0e-12,
         .active_urea_threshold_mol_n = 1.0e-12,
-        .active_litter_dry_mass_threshold_Mg = 1.0e-12,
+        .active_litter_dry_mass_threshold_megagrams = 1.0e-12,
     };
 }
 
@@ -191,7 +191,7 @@ test "SOLUTE surface urea hydrolysis preserves every source expression" {
                 inputs.step_duration_h),
     );
     const expected_half_saturation =
-        inputs.minimum_urea_half_saturation_mol_n_per_Mg *
+        inputs.minimum_urea_half_saturation_mol_n_per_megagram *
         (1.0 + expected_activity /
             inputs.microbial_activity_inhibition_g_c_per_m3_h);
     const expected_inhibition =
@@ -204,7 +204,7 @@ test "SOLUTE surface urea hydrolysis preserves every source expression" {
                     inputs.initial_urease_inhibition_fraction,
             );
     const expected_concentration =
-        inputs.urea_fertilizer_mol_n / inputs.litter_dry_mass_Mg;
+        inputs.urea_fertilizer_mol_n / inputs.litter_dry_mass_megagrams;
     const expected_response = expected_concentration /
         (expected_concentration + expected_half_saturation);
     const expected_hydrolysis = @min(
@@ -222,7 +222,7 @@ test "SOLUTE surface urea hydrolysis preserves every source expression" {
     );
     try std.testing.expectEqual(
         expected_half_saturation,
-        result.effective_urea_half_saturation_mol_n_per_Mg,
+        result.effective_urea_half_saturation_mol_n_per_megagram,
     );
     try std.testing.expectEqual(
         expected_inhibition,
@@ -230,7 +230,7 @@ test "SOLUTE surface urea hydrolysis preserves every source expression" {
     );
     try std.testing.expectEqual(
         expected_concentration,
-        result.urea_concentration_mol_n_per_Mg.?,
+        result.urea_concentration_mol_n_per_megagram.?,
     );
     try std.testing.expectEqual(
         expected_response,
@@ -277,15 +277,15 @@ test "surface urea thresholds are strict and donor transfer conserves nitrogen" 
     inputs = testInputs();
     inputs.urea_fertilizer_mol_n = inputs.active_urea_threshold_mol_n;
     const inactive_urea = try calculate(inputs);
-    try std.testing.expect(inactive_urea.urea_concentration_mol_n_per_Mg == null);
+    try std.testing.expect(inactive_urea.urea_concentration_mol_n_per_megagram == null);
     try std.testing.expectEqual(
         @as(f64, 0),
         inactive_urea.urea_hydrolysis_mol_n_per_step,
     );
 
     inputs = testInputs();
-    inputs.litter_dry_mass_Mg =
-        inputs.active_litter_dry_mass_threshold_Mg;
+    inputs.litter_dry_mass_megagrams =
+        inputs.active_litter_dry_mass_threshold_megagrams;
     const inactive_mass = try calculate(inputs);
     try std.testing.expect(inactive_mass.urea_substrate_response_fraction == null);
     try std.testing.expectEqual(
@@ -310,7 +310,7 @@ test "surface urea hydrolysis rejects invalid inputs and overflow" {
     );
 
     inputs = testInputs();
-    inputs.minimum_urea_half_saturation_mol_n_per_Mg =
+    inputs.minimum_urea_half_saturation_mol_n_per_megagram =
         std.math.floatMax(f64);
     try std.testing.expectError(
         error.NonFiniteSurfaceLitterUreaHydrolysis,

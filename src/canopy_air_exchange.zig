@@ -22,15 +22,15 @@ pub const Inputs = struct {
     atmospheric_vapor_fraction: f64,
     ground_air_temperature_k: f64,
     ground_air_vapor_fraction: f64,
-    heat_capacity_mj_per_k: f64,
+    heat_capacity_megajoules_per_k: f64,
     air_volume_m3: f64,
-    atmospheric_sensible_conductance_mj_per_h_k: f64,
+    atmospheric_sensible_conductance_megajoules_per_h_k: f64,
     atmospheric_vapor_conductance_m3_per_h: f64,
-    ground_sensible_conductance_mj_per_h_k: f64,
+    ground_sensible_conductance_megajoules_per_h_k: f64,
     ground_vapor_conductance_m3_per_h: f64,
-    canopy_surface_sensible_heat_flux_mj_per_h: f64,
+    canopy_surface_sensible_heat_flux_megajoules_per_h: f64,
     canopy_surface_vapor_flux_m3_per_h: f64,
-    lateral_sensible_heat_flux_mj_per_h: f64,
+    lateral_sensible_heat_flux_megajoules_per_h: f64,
     lateral_vapor_flux_m3_per_h: f64,
 };
 
@@ -95,7 +95,7 @@ pub fn solve(inputs: Inputs, parameters: Parameters, options: SolverOptions) !Re
         // this is a semismooth Newton derivative; the subsequent residual
         // check selects Picard damping if the active branch changes.
         const temperature_derivative = -1.0 -
-            (inputs.atmospheric_sensible_conductance_mj_per_h_k + inputs.ground_sensible_conductance_mj_per_h_k) / inputs.heat_capacity_mj_per_k;
+            (inputs.atmospheric_sensible_conductance_megajoules_per_h_k + inputs.ground_sensible_conductance_megajoules_per_h_k) / inputs.heat_capacity_megajoules_per_k;
         const vapor_derivative = -1.0 -
             (inputs.atmospheric_vapor_conductance_m3_per_h + inputs.ground_vapor_conductance_m3_per_h) / inputs.air_volume_m3;
         const candidate_temperature = temperature_k - temperature_residual / temperature_derivative;
@@ -124,12 +124,12 @@ pub fn solveInto(state: *State, cell: usize, species: usize, inputs: Inputs, par
 const Target = struct { temperature_k: f64, vapor_fraction: f64 };
 
 fn target(inputs: Inputs, parameters: Parameters, temperature_k: f64, vapor_fraction: f64) !Target {
-    const sensible_mj_per_h =
-        inputs.atmospheric_sensible_conductance_mj_per_h_k * (inputs.atmospheric_temperature_k - temperature_k) -
-        inputs.ground_sensible_conductance_mj_per_h_k * (temperature_k - inputs.ground_air_temperature_k) -
-        inputs.canopy_surface_sensible_heat_flux_mj_per_h +
-        inputs.lateral_sensible_heat_flux_mj_per_h;
-    const temperature_target_k = inputs.initial_temperature_k + sensible_mj_per_h / inputs.heat_capacity_mj_per_k;
+    const sensible_megajoules_per_h =
+        inputs.atmospheric_sensible_conductance_megajoules_per_h_k * (inputs.atmospheric_temperature_k - temperature_k) -
+        inputs.ground_sensible_conductance_megajoules_per_h_k * (temperature_k - inputs.ground_air_temperature_k) -
+        inputs.canopy_surface_sensible_heat_flux_megajoules_per_h +
+        inputs.lateral_sensible_heat_flux_megajoules_per_h;
+    const temperature_target_k = inputs.initial_temperature_k + sensible_megajoules_per_h / inputs.heat_capacity_megajoules_per_k;
     if (!std.math.isFinite(temperature_target_k) or temperature_target_k <= 0) return error.InvalidCanopyAirTemperatureTarget;
     const vapor_m3_per_h =
         inputs.atmospheric_vapor_conductance_m3_per_h * (inputs.atmospheric_vapor_fraction - vapor_fraction) -
@@ -152,8 +152,8 @@ fn converged(temperature_k: f64, vapor_fraction: f64, temperature_residual: f64,
 fn validate(inputs: Inputs, parameters: Parameters, options: SolverOptions) !void {
     inline for (@typeInfo(Inputs).@"struct".fields) |field| if (!std.math.isFinite(@field(inputs, field.name))) return error.NonFiniteCanopyAirInput;
     inline for (@typeInfo(Parameters).@"struct".fields) |field| if (!std.math.isFinite(@field(parameters, field.name))) return error.NonFiniteCanopyAirParameter;
-    if (inputs.initial_temperature_k <= 0 or inputs.atmospheric_temperature_k <= 0 or inputs.ground_air_temperature_k <= 0 or inputs.initial_vapor_fraction < 0 or inputs.atmospheric_vapor_fraction < 0 or inputs.ground_air_vapor_fraction < 0 or inputs.heat_capacity_mj_per_k <= 0 or inputs.air_volume_m3 <= 0) return error.InvalidCanopyAirInput;
-    inline for (.{ inputs.atmospheric_sensible_conductance_mj_per_h_k, inputs.atmospheric_vapor_conductance_m3_per_h, inputs.ground_sensible_conductance_mj_per_h_k, inputs.ground_vapor_conductance_m3_per_h }) |value| if (value < 0) return error.InvalidCanopyAirInput;
+    if (inputs.initial_temperature_k <= 0 or inputs.atmospheric_temperature_k <= 0 or inputs.ground_air_temperature_k <= 0 or inputs.initial_vapor_fraction < 0 or inputs.atmospheric_vapor_fraction < 0 or inputs.ground_air_vapor_fraction < 0 or inputs.heat_capacity_megajoules_per_k <= 0 or inputs.air_volume_m3 <= 0) return error.InvalidCanopyAirInput;
+    inline for (.{ inputs.atmospheric_sensible_conductance_megajoules_per_h_k, inputs.atmospheric_vapor_conductance_m3_per_h, inputs.ground_sensible_conductance_megajoules_per_h_k, inputs.ground_vapor_conductance_m3_per_h }) |value| if (value < 0) return error.InvalidCanopyAirInput;
     if (options.max_iterations == 0 or !std.math.isFinite(options.absolute_temperature_tolerance_k) or options.absolute_temperature_tolerance_k <= 0 or !std.math.isFinite(options.absolute_vapor_fraction_tolerance) or options.absolute_vapor_fraction_tolerance <= 0 or !std.math.isFinite(options.relative_tolerance) or options.relative_tolerance <= 0 or !std.math.isFinite(options.picard_relaxation) or options.picard_relaxation <= 0 or options.picard_relaxation > 1) return error.InvalidCanopyAirSolverOptions;
 }
 
@@ -167,15 +167,15 @@ test "UPTAKE canopy air balance supports runtime species and exits early" {
         .atmospheric_vapor_fraction = 0.01,
         .ground_air_temperature_k = 295,
         .ground_air_vapor_fraction = 0.007,
-        .heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k = 1,
         .air_volume_m3 = 10,
-        .atmospheric_sensible_conductance_mj_per_h_k = 0.1,
+        .atmospheric_sensible_conductance_megajoules_per_h_k = 0.1,
         .atmospheric_vapor_conductance_m3_per_h = 0.2,
-        .ground_sensible_conductance_mj_per_h_k = 0.05,
+        .ground_sensible_conductance_megajoules_per_h_k = 0.05,
         .ground_vapor_conductance_m3_per_h = 0.1,
-        .canopy_surface_sensible_heat_flux_mj_per_h = 0.1,
+        .canopy_surface_sensible_heat_flux_megajoules_per_h = 0.1,
         .canopy_surface_vapor_flux_m3_per_h = 0.001,
-        .lateral_sensible_heat_flux_mj_per_h = 0,
+        .lateral_sensible_heat_flux_megajoules_per_h = 0,
         .lateral_vapor_flux_m3_per_h = 0,
     }, .{}, .{});
     try std.testing.expect(result.iterations < 100);

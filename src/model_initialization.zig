@@ -106,7 +106,7 @@ test "resolved hydrology populates heap-backed grid state" {
     var hydrology = try SoilHydrology.init(allocator, profile, material, 1.0, @import("soil_water_retention.zig").compatibilityParameters());
     defer hydrology.deinit();
     const config = try @import("config.zig").SimulationConfig.init(
-        .{ .grid_columns = 2, .grid_rows = 1, .soil_layers = profile.total_layer_count, .plant_populations = 8 },
+        .{ .lon_count = 2, .lat_count = 1, .soil_layers = profile.total_layer_count, .plant_populations = 8 },
         .{ .worker_threads = 1, .tile_cells = 2 },
         .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 40 },
     );

@@ -11,7 +11,7 @@ pub const Inputs = struct {
     snow_air_temperature_k: f64,
     atmospheric_vapor_concentration_m3_per_m3: f64,
     emissivity: f64,
-    stefan_boltzmann_mj_per_m2_h_k4: f64,
+    stefan_boltzmann_megajoules_per_m2_h_k4: f64,
     canopy_radiation_fraction: f64,
     horizontal_cell_area_m2: f64,
     energy_timestep_h_per_step: f64,
@@ -33,26 +33,26 @@ pub const Inputs = struct {
 
 pub const Result = struct {
     intercepted_water_volume_m3: f64,
-    net_radiation_flux_mj_per_step: f64,
-    latent_heat_flux_mj_per_step: f64,
-    sensible_heat_flux_mj_per_step: f64,
-    storage_heat_flux_mj_per_step: f64,
-    convective_water_heat_flux_mj_per_step: f64,
+    net_radiation_flux_megajoules_per_step: f64,
+    latent_heat_flux_megajoules_per_step: f64,
+    sensible_heat_flux_megajoules_per_step: f64,
+    storage_heat_flux_megajoules_per_step: f64,
+    convective_water_heat_flux_megajoules_per_step: f64,
     intercepted_evaporation_m3_per_step: f64,
     transpiration_m3_per_step: f64,
     ground_vapor_flux_m3_per_step: f64,
-    ground_sensible_heat_flux_mj_per_step: f64,
+    ground_sensible_heat_flux_megajoules_per_step: f64,
     canopy_air_temperature_k: f64,
     canopy_surface_temperature_k: f64,
     canopy_surface_temperature_c: f64,
     canopy_air_vapor_concentration_m3_per_m3: f64,
-    longwave_emission_mj_per_step: f64,
+    longwave_emission_megajoules_per_step: f64,
     canopy_total_water_potential_mpa: f64,
     canopy_osmotic_water_potential_mpa: f64,
     canopy_turgor_water_potential_mpa: f64,
     stomatal_resistance_h_per_m: f64,
     aerodynamic_resistance_h_per_m: f64,
-    dry_canopy_heat_capacity_mj_per_k: f64,
+    dry_canopy_heat_capacity_megajoules_per_k: f64,
 };
 
 /// UPTAKE.F 1480--1516. Initializes the scientifically inactive/small-canopy
@@ -72,7 +72,7 @@ pub fn calculate(inputs: Inputs) !Result {
     const temperature_c = temperature - 273.15;
     const emitted_longwave_coefficient =
         inputs.emissivity *
-        inputs.stefan_boltzmann_mj_per_m2_h_k4 *
+        inputs.stefan_boltzmann_megajoules_per_m2_h_k4 *
         inputs.canopy_radiation_fraction *
         inputs.horizontal_cell_area_m2 *
         inputs.energy_timestep_h_per_step;
@@ -113,26 +113,26 @@ pub fn calculate(inputs: Inputs) !Result {
         inputs.stalk_volume_m3_per_g_c;
     const result = Result{
         .intercepted_water_volume_m3 = intercepted_water,
-        .net_radiation_flux_mj_per_step = 0,
-        .latent_heat_flux_mj_per_step = 0,
-        .sensible_heat_flux_mj_per_step = 0,
-        .storage_heat_flux_mj_per_step = 0,
-        .convective_water_heat_flux_mj_per_step = 0,
+        .net_radiation_flux_megajoules_per_step = 0,
+        .latent_heat_flux_megajoules_per_step = 0,
+        .sensible_heat_flux_megajoules_per_step = 0,
+        .storage_heat_flux_megajoules_per_step = 0,
+        .convective_water_heat_flux_megajoules_per_step = 0,
         .intercepted_evaporation_m3_per_step = 0,
         .transpiration_m3_per_step = 0,
         .ground_vapor_flux_m3_per_step = 0,
-        .ground_sensible_heat_flux_mj_per_step = 0,
+        .ground_sensible_heat_flux_megajoules_per_step = 0,
         .canopy_air_temperature_k = temperature,
         .canopy_surface_temperature_k = temperature,
         .canopy_surface_temperature_c = temperature_c,
         .canopy_air_vapor_concentration_m3_per_m3 = inputs.atmospheric_vapor_concentration_m3_per_m3,
-        .longwave_emission_mj_per_step = longwave_emission,
+        .longwave_emission_megajoules_per_step = longwave_emission,
         .canopy_total_water_potential_mpa = total_potential,
         .canopy_osmotic_water_potential_mpa = osmotic_potential,
         .canopy_turgor_water_potential_mpa = turgor_potential,
         .stomatal_resistance_h_per_m = stomatal_resistance,
         .aerodynamic_resistance_h_per_m = inputs.biome_boundary_resistance_h_per_m,
-        .dry_canopy_heat_capacity_mj_per_k = dry_heat_capacity,
+        .dry_canopy_heat_capacity_megajoules_per_k = dry_heat_capacity,
     };
     inline for (@typeInfo(Result).@"struct".fields) |field|
         if (!std.math.isFinite(@field(result, field.name)))
@@ -151,7 +151,7 @@ fn validate(inputs: Inputs) !void {
         inputs.snow_air_temperature_k <= 0 or
         inputs.atmospheric_vapor_concentration_m3_per_m3 < 0 or
         inputs.emissivity < 0 or
-        inputs.stefan_boltzmann_mj_per_m2_h_k4 < 0 or
+        inputs.stefan_boltzmann_megajoules_per_m2_h_k4 < 0 or
         inputs.canopy_radiation_fraction < 0 or
         inputs.horizontal_cell_area_m2 <= 0 or
         inputs.energy_timestep_h_per_step < 0 or
@@ -178,7 +178,7 @@ fn sourceInputs() Inputs {
         .snow_air_temperature_k = 270,
         .atmospheric_vapor_concentration_m3_per_m3 = 0.01,
         .emissivity = 0.95,
-        .stefan_boltzmann_mj_per_m2_h_k4 = 2.04e-10,
+        .stefan_boltzmann_megajoules_per_m2_h_k4 = 2.04e-10,
         .canopy_radiation_fraction = 0.2,
         .horizontal_cell_area_m2 = 10,
         .energy_timestep_h_per_step = 0.5,
@@ -216,7 +216,7 @@ test "inactive canopy below snow preserves snow temperature branch" {
     const result = try calculate(inputs);
     try std.testing.expectEqual(@as(f64, 270), result.canopy_air_temperature_k);
     try std.testing.expectEqual(@as(f64, 270), result.canopy_surface_temperature_k);
-    try std.testing.expect(result.longwave_emission_mj_per_step > 0);
+    try std.testing.expect(result.longwave_emission_megajoules_per_step > 0);
 }
 
 test "invalid runtime dry matter divisor fails explicitly" {

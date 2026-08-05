@@ -8,13 +8,13 @@ const DepthDisturbance = @import("soil_depth_disturbance.zig");
 pub fn buildOrganicAccumulationReset(
     reset_by_layer: []bool,
     geometry: *const Geometry.State,
-    organic_carbon_g_c_per_Mg: []const f64,
-    organic_horizon_threshold_g_c_per_Mg: f64,
+    organic_carbon_g_c_per_megagram: []const f64,
+    organic_horizon_threshold_g_c_per_megagram: f64,
 ) !void {
     const layer_count = geometry.cell_count * geometry.layer_capacity;
-    if (reset_by_layer.len != layer_count or organic_carbon_g_c_per_Mg.len != layer_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
-    if (!std.math.isFinite(organic_horizon_threshold_g_c_per_Mg) or organic_horizon_threshold_g_c_per_Mg < 0) return error.InvalidOrganicHorizonThreshold;
-    for (organic_carbon_g_c_per_Mg) |concentration| if (!std.math.isFinite(concentration) or concentration < 0) return error.InvalidOrganicCarbonConcentration;
+    if (reset_by_layer.len != layer_count or organic_carbon_g_c_per_megagram.len != layer_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
+    if (!std.math.isFinite(organic_horizon_threshold_g_c_per_megagram) or organic_horizon_threshold_g_c_per_megagram < 0) return error.InvalidOrganicHorizonThreshold;
+    for (organic_carbon_g_c_per_megagram) |concentration| if (!std.math.isFinite(concentration) or concentration < 0) return error.InvalidOrganicCarbonConcentration;
     for (0..geometry.cell_count) |cell| {
         const first = geometry.first_active_layer[cell];
         const active_count = geometry.active_layer_count[cell];
@@ -28,8 +28,8 @@ pub fn buildOrganicAccumulationReset(
         reset_by_layer[base + end - 1] = true;
         for (first..end - 1) |layer| {
             reset_by_layer[base + layer] =
-                organic_carbon_g_c_per_Mg[base + layer] >= organic_horizon_threshold_g_c_per_Mg and
-                organic_carbon_g_c_per_Mg[base + layer + 1] < organic_horizon_threshold_g_c_per_Mg;
+                organic_carbon_g_c_per_megagram[base + layer] >= organic_horizon_threshold_g_c_per_megagram and
+                organic_carbon_g_c_per_megagram[base + layer + 1] < organic_horizon_threshold_g_c_per_megagram;
         }
     }
 }
@@ -40,32 +40,32 @@ pub fn buildOrganicAccumulationReset(
 pub fn assembleErosionBoundaryChangeM(
     output_boundary_change_m: []f64,
     geometry: *const Geometry.State,
-    net_sediment_Mg_by_cell: []const f64,
-    snow_deposited_sediment_Mg_by_cell: []const f64,
+    net_sediment_megagrams_by_cell: []const f64,
+    snow_deposited_sediment_megagrams_by_cell: []const f64,
     horizontal_area_m2_by_cell: []const f64,
-    surface_soil_mass_Mg_by_cell: []const f64,
+    surface_soil_mass_megagrams_by_cell: []const f64,
     surface_soil_volume_m3_by_cell: []const f64,
-    receiving_soil_bulk_density_Mg_per_m3_by_cell: []const f64,
+    receiving_soil_bulk_density_megagrams_per_m3_by_cell: []const f64,
     enabled: bool,
-    negligible_sediment_Mg: f64,
+    negligible_sediment_megagrams: f64,
 ) !void {
     const boundary_count = geometry.cell_count * (geometry.layer_capacity + 1);
-    if (output_boundary_change_m.len != boundary_count or net_sediment_Mg_by_cell.len != geometry.cell_count or snow_deposited_sediment_Mg_by_cell.len != geometry.cell_count or horizontal_area_m2_by_cell.len != geometry.cell_count or surface_soil_mass_Mg_by_cell.len != geometry.cell_count or surface_soil_volume_m3_by_cell.len != geometry.cell_count or receiving_soil_bulk_density_Mg_per_m3_by_cell.len != geometry.cell_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
-    if (!std.math.isFinite(negligible_sediment_Mg) or negligible_sediment_Mg < 0) return error.InvalidErosionGeometryThreshold;
+    if (output_boundary_change_m.len != boundary_count or net_sediment_megagrams_by_cell.len != geometry.cell_count or snow_deposited_sediment_megagrams_by_cell.len != geometry.cell_count or horizontal_area_m2_by_cell.len != geometry.cell_count or surface_soil_mass_megagrams_by_cell.len != geometry.cell_count or surface_soil_volume_m3_by_cell.len != geometry.cell_count or receiving_soil_bulk_density_megagrams_per_m3_by_cell.len != geometry.cell_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
+    if (!std.math.isFinite(negligible_sediment_megagrams) or negligible_sediment_megagrams < 0) return error.InvalidErosionGeometryThreshold;
     for (0..geometry.cell_count) |cell| {
-        inline for (.{ net_sediment_Mg_by_cell[cell], snow_deposited_sediment_Mg_by_cell[cell], horizontal_area_m2_by_cell[cell], surface_soil_mass_Mg_by_cell[cell], surface_soil_volume_m3_by_cell[cell], receiving_soil_bulk_density_Mg_per_m3_by_cell[cell] }) |value| if (!std.math.isFinite(value)) return error.InvalidErosionGeometryInput;
-        if (horizontal_area_m2_by_cell[cell] <= 0 or surface_soil_mass_Mg_by_cell[cell] <= 0 or surface_soil_volume_m3_by_cell[cell] <= 0 or receiving_soil_bulk_density_Mg_per_m3_by_cell[cell] <= 0 or snow_deposited_sediment_Mg_by_cell[cell] < 0) return error.InvalidErosionGeometryInput;
+        inline for (.{ net_sediment_megagrams_by_cell[cell], snow_deposited_sediment_megagrams_by_cell[cell], horizontal_area_m2_by_cell[cell], surface_soil_mass_megagrams_by_cell[cell], surface_soil_volume_m3_by_cell[cell], receiving_soil_bulk_density_megagrams_per_m3_by_cell[cell] }) |value| if (!std.math.isFinite(value)) return error.InvalidErosionGeometryInput;
+        if (horizontal_area_m2_by_cell[cell] <= 0 or surface_soil_mass_megagrams_by_cell[cell] <= 0 or surface_soil_volume_m3_by_cell[cell] <= 0 or receiving_soil_bulk_density_megagrams_per_m3_by_cell[cell] <= 0 or snow_deposited_sediment_megagrams_by_cell[cell] < 0) return error.InvalidErosionGeometryInput;
         const first = geometry.first_active_layer[cell];
         const active_count = geometry.active_layer_count[cell];
         if (active_count == 0 or first + active_count > geometry.layer_capacity) return error.InvalidErosionActiveLayerRange;
-        if (enabled and (@abs(net_sediment_Mg_by_cell[cell]) > negligible_sediment_Mg or snow_deposited_sediment_Mg_by_cell[cell] > negligible_sediment_Mg)) {
+        if (enabled and (@abs(net_sediment_megagrams_by_cell[cell]) > negligible_sediment_megagrams or snow_deposited_sediment_megagrams_by_cell[cell] > negligible_sediment_megagrams)) {
             _ = try DepthDisturbance.erosionDepthChange_m(.{
-                .net_sediment_Mg = net_sediment_Mg_by_cell[cell],
-                .snow_deposited_sediment_Mg = snow_deposited_sediment_Mg_by_cell[cell],
+                .net_sediment_megagrams = net_sediment_megagrams_by_cell[cell],
+                .snow_deposited_sediment_megagrams = snow_deposited_sediment_megagrams_by_cell[cell],
                 .horizontal_area_m2 = horizontal_area_m2_by_cell[cell],
-                .surface_soil_mass_Mg = surface_soil_mass_Mg_by_cell[cell],
+                .surface_soil_mass_megagrams = surface_soil_mass_megagrams_by_cell[cell],
                 .surface_soil_volume_m3 = surface_soil_volume_m3_by_cell[cell],
-                .receiving_soil_bulk_density_Mg_per_m3 = receiving_soil_bulk_density_Mg_per_m3_by_cell[cell],
+                .receiving_soil_bulk_density_megagrams_per_m3 = receiving_soil_bulk_density_megagrams_per_m3_by_cell[cell],
             });
         }
     }
@@ -73,16 +73,16 @@ pub fn assembleErosionBoundaryChangeM(
     @memset(output_boundary_change_m, 0);
     if (!enabled) return;
     for (0..geometry.cell_count) |cell| {
-        const net_sediment_Mg = net_sediment_Mg_by_cell[cell];
-        const snow_sediment_Mg = snow_deposited_sediment_Mg_by_cell[cell];
-        if (@abs(net_sediment_Mg) <= negligible_sediment_Mg and snow_sediment_Mg <= negligible_sediment_Mg) continue;
+        const net_sediment_megagrams = net_sediment_megagrams_by_cell[cell];
+        const snow_sediment_megagrams = snow_deposited_sediment_megagrams_by_cell[cell];
+        if (@abs(net_sediment_megagrams) <= negligible_sediment_megagrams and snow_sediment_megagrams <= negligible_sediment_megagrams) continue;
         const change_m = try DepthDisturbance.erosionDepthChange_m(.{
-            .net_sediment_Mg = net_sediment_Mg,
-            .snow_deposited_sediment_Mg = snow_sediment_Mg,
+            .net_sediment_megagrams = net_sediment_megagrams,
+            .snow_deposited_sediment_megagrams = snow_sediment_megagrams,
             .horizontal_area_m2 = horizontal_area_m2_by_cell[cell],
-            .surface_soil_mass_Mg = surface_soil_mass_Mg_by_cell[cell],
+            .surface_soil_mass_megagrams = surface_soil_mass_megagrams_by_cell[cell],
             .surface_soil_volume_m3 = surface_soil_volume_m3_by_cell[cell],
-            .receiving_soil_bulk_density_Mg_per_m3 = receiving_soil_bulk_density_Mg_per_m3_by_cell[cell],
+            .receiving_soil_bulk_density_megagrams_per_m3 = receiving_soil_bulk_density_megagrams_per_m3_by_cell[cell],
         });
         const first = geometry.first_active_layer[cell];
         const end_boundary = first + geometry.active_layer_count[cell];
@@ -100,7 +100,7 @@ pub fn assembleOrganicCarbonBoundaryChangeM(
     geometry: *const Geometry.State,
     organic_carbon_change_g_c: []const f64,
     macropore_fraction: []const f64,
-    reference_bulk_density_Mg_per_m3: []const f64,
+    reference_bulk_density_megagrams_per_m3: []const f64,
     initial_layer_thickness_m: []const f64,
     current_layer_thickness_m: []const f64,
     reset_accumulation_by_layer: []const bool,
@@ -111,10 +111,10 @@ pub fn assembleOrganicCarbonBoundaryChangeM(
 ) !void {
     const layer_count = geometry.cell_count * geometry.layer_capacity;
     const boundary_count = geometry.cell_count * (geometry.layer_capacity + 1);
-    if (output_boundary_change_m.len != boundary_count or organic_carbon_change_g_c.len != layer_count or macropore_fraction.len != layer_count or reference_bulk_density_Mg_per_m3.len != layer_count or initial_layer_thickness_m.len != layer_count or current_layer_thickness_m.len != layer_count or reset_accumulation_by_layer.len != layer_count or horizontal_area_m2_by_cell.len != geometry.cell_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
+    if (output_boundary_change_m.len != boundary_count or organic_carbon_change_g_c.len != layer_count or macropore_fraction.len != layer_count or reference_bulk_density_megagrams_per_m3.len != layer_count or initial_layer_thickness_m.len != layer_count or current_layer_thickness_m.len != layer_count or reset_accumulation_by_layer.len != layer_count or horizontal_area_m2_by_cell.len != geometry.cell_count) return error.SoilGeometryChangeAssemblyDimensionMismatch;
     if (!std.math.isFinite(organic_carbon_specific_volume_m3_per_g) or organic_carbon_specific_volume_m3_per_g <= 0 or !std.math.isFinite(negligible_carbon_change_g_c) or negligible_carbon_change_g_c < 0) return error.InvalidOrganicCarbonGeometryParameter;
     for (horizontal_area_m2_by_cell) |area_m2| if (!std.math.isFinite(area_m2) or area_m2 <= 0) return error.InvalidOrganicCarbonGeometryArea;
-    for (organic_carbon_change_g_c, macropore_fraction, reference_bulk_density_Mg_per_m3, initial_layer_thickness_m, current_layer_thickness_m) |carbon_change_g_c, macro_fraction, bulk_density, initial_thickness, current_thickness| {
+    for (organic_carbon_change_g_c, macropore_fraction, reference_bulk_density_megagrams_per_m3, initial_layer_thickness_m, current_layer_thickness_m) |carbon_change_g_c, macro_fraction, bulk_density, initial_thickness, current_thickness| {
         inline for (.{ carbon_change_g_c, macro_fraction, bulk_density, initial_thickness, current_thickness }) |value| if (!std.math.isFinite(value)) return error.InvalidOrganicCarbonGeometryLayer;
         if (macro_fraction < 0 or macro_fraction >= 1 or bulk_density <= 0 or initial_thickness <= 0 or current_thickness <= 0) return error.InvalidOrganicCarbonGeometryLayer;
     }
@@ -145,7 +145,7 @@ pub fn assembleOrganicCarbonBoundaryChangeM(
                     .organic_carbon_change_g = carbon_change_g_c,
                     .horizontal_area_m2 = horizontal_area_m2_by_cell[cell],
                     .macropore_fraction = macropore_fraction[index],
-                    .reference_bulk_density_Mg_per_m3 = reference_bulk_density_Mg_per_m3[index],
+                    .reference_bulk_density_megagrams_per_m3 = reference_bulk_density_megagrams_per_m3[index],
                     .organic_carbon_specific_volume_m3_per_g = organic_carbon_specific_volume_m3_per_g,
                 });
                 if (reset_accumulation_by_layer[index]) {

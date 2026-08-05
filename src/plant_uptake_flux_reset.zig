@@ -27,12 +27,12 @@ pub const Dimensions = struct {
 };
 
 pub const SpeciesTotals = struct {
-    radiative_flux_mj_per_step: []f64,
-    latent_heat_flux_mj_per_step: []f64,
-    sensible_heat_flux_mj_per_step: []f64,
-    canopy_heat_flux_mj_per_step: []f64,
+    radiative_flux_megajoules_per_step: []f64,
+    latent_heat_flux_megajoules_per_step: []f64,
+    sensible_heat_flux_megajoules_per_step: []f64,
+    canopy_heat_flux_megajoules_per_step: []f64,
     water_vapor_flux_m3_per_step: []f64,
-    thermal_radiation_mj_per_step: []f64,
+    thermal_radiation_megajoules_per_step: []f64,
     transpiration_m3_per_step: []f64,
     evaporation_m3_per_step: []f64,
     organic_carbon_uptake_g_c_per_step: []f64,

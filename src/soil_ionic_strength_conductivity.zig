@@ -1,3 +1,25 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 4013--4078. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: architecturally superseded. Production stores the same physics in a
+//! different representation, deliberately, with the deviation recorded in
+//! `docs/model_changes.md`. Binding this kernel would reintroduce the
+//! formulation the project chose to leave behind, as a second writer.
+//!
+//! Superseded by: `solute_activity_coefficients` / `solute_ion_activities`, reached through `solute_chemistry_state.activityCoefficients`, which production already calls at `ecosys_ng.zig:7823`.
+//!
+//! The legacy form is a three-charge Debye-Huckel shortcut over a fixed
+//! species list. The solute activity network resolves activities over the full
+//! runtime species set, so binding this would publish a second, coarser set of
+//! activity coefficients into state the network already owns.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 /// Each slice is ordered exactly as the corresponding HOUR1 expression in

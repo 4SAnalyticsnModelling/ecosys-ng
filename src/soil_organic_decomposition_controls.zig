@@ -10,7 +10,7 @@ pub const Inputs = struct {
     colonized_soil_organic_carbon_g_c: []const f64,
     microbial_activity_respiration_g_c: []const f64,
     biologically_active_water_m3: []const f64,
-    soil_layer_mass_Mg: []const f64,
+    soil_layer_mass_megagrams: []const f64,
     soil_layer_volume_m3: []const f64,
     dissolved_activity_carbon_concentration_g_c_m3: []const f64,
     surface_zero_activity_half_saturation_g_c_m3: f64,
@@ -34,7 +34,7 @@ pub const State = struct {
     phosphorus_limitation_fraction: []f64,
     microbial_activity_concentration_g_c_m3_h: []f64,
     decomposition_half_saturation_g_c_m3: []f64,
-    effective_substrate_concentration_sqrt_g_c_per_Mg: []f64,
+    effective_substrate_concentration_sqrt_g_c_per_megagram: []f64,
     substrate_density_response: []f64,
     dissolved_carbon_product_response: []f64,
 
@@ -112,9 +112,9 @@ pub fn calculate(state: *State, inputs: Inputs) !void {
                 inputs.soil_zero_activity_half_saturation_g_c_m3 *
                     (1 + activity_concentration /
                         inputs.soil_activity_inhibition_rate_g_c_m3_h);
-            const divisor = if (inputs.soil_layer_mass_Mg[complex] >
+            const divisor = if (inputs.soil_layer_mass_megagrams[complex] >
                 inputs.negligible_biomass_g_c)
-                inputs.soil_layer_mass_Mg[complex]
+                inputs.soil_layer_mass_megagrams[complex]
             else
                 inputs.soil_layer_volume_m3[complex];
             if (divisor <= 0) return error.InvalidDecompositionLayerGeometry;
@@ -190,7 +190,7 @@ fn fixture() Inputs {
         .colonized_soil_organic_carbon_g_c = &.{ 100, 100 },
         .microbial_activity_respiration_g_c = &.{ 4, 4 },
         .biologically_active_water_m3 = &.{ 2, 2 },
-        .soil_layer_mass_Mg = &.{ 10, 10 },
+        .soil_layer_mass_megagrams = &.{ 10, 10 },
         .soil_layer_volume_m3 = &.{ 20, 20 },
         .dissolved_activity_carbon_concentration_g_c_m3 = &.{ 2, 2 },
         .surface_zero_activity_half_saturation_g_c_m3 = 1,
@@ -236,7 +236,7 @@ test "invalid late geometry leaves state unchanged" {
     defer state.deinit();
     state.substrate_density_response[0] = 7;
     var inputs = fixture();
-    inputs.soil_layer_mass_Mg = &.{ 0, 10 };
+    inputs.soil_layer_mass_megagrams = &.{ 0, 10 };
     inputs.soil_layer_volume_m3 = &.{ 0, 20 };
     try std.testing.expectError(error.InvalidDecompositionLayerGeometry, calculate(&state, inputs));
     try std.testing.expectEqual(7, state.substrate_density_response[0]);

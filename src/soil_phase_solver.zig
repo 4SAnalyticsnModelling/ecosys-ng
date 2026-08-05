@@ -12,7 +12,7 @@ pub const Properties = struct {
     macropore_mualem_van_genuchten_parameters: []const retention.MualemVanGenuchtenParameters = &.{},
     osmotic_potential_mpa: []const f64,
     saturation_water_potential_mpa: []const f64,
-    heat_capacity_mj_per_k: []const f64,
+    heat_capacity_megajoules_per_k: []const f64,
     saturated_lateral_matrix_conductivity_m2_per_h_mpa: []const f64,
     face_area_m2: []const f64,
     macropore_spacing_m: []const f64,
@@ -23,8 +23,8 @@ pub const Properties = struct {
     vapor: phase.VaporEquilibriumParameters,
     freeze_thaw: phase.FreezeThawParameters,
     gravitational_water_potential_mpa_per_m: f64 = 0.0098,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_heat_capacity_mj_per_m3_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 fn iceWaterEquivalentFactor(properties: Properties) f64 {
@@ -35,6 +35,7 @@ fn iceWaterEquivalentFactor(properties: Properties) f64 {
 pub const Options = struct {
     max_iterations: u16,
     absolute_tolerance_m3: f64 = 1e-14,
+    absolute_temperature_tolerance_k: f64 = 1e-10,
     relative_tolerance: f64 = 1e-9,
     picard_relaxation: f64 = 0.5,
     directional_probe_fraction: f64 = 0.5,
@@ -43,7 +44,7 @@ pub const Options = struct {
 };
 
 pub const Outputs = struct {
-    latent_heat_mj: []f64,
+    latent_heat_megajoules: []f64,
     macropore_to_matrix_water_m3: []f64,
 };
 
@@ -108,9 +109,9 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
     var iteration: u16 = 0;
     while (iteration < options.max_iterations) : (iteration += 1) {
         try residualAt(grid, properties, base, current, target, residual, scratch, trial_heat, trial_exchange);
-        const norm = try scaledNorm(current, residual, options);
+        const norm = try scaledNorm(base, current, residual, options);
         if (norm <= 1) {
-            try residualAt(grid, properties, base, current, target, residual, scratch, outputs.latent_heat_mj, outputs.macropore_to_matrix_water_m3);
+            try residualAt(grid, properties, base, current, target, residual, scratch, outputs.latent_heat_megajoules, outputs.macropore_to_matrix_water_m3);
             // `target` is the validated, pore-bounded phase transform. The
             // converged trial may differ by the allowed residual and can sit
             // microscopically above pore capacity; publishing the target
@@ -141,7 +142,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                             // substantial progress within NPH; requiring 80%
                             // removal rejected the useful step and forced six
                             // geometric Picard halvings in the Arctic case.
-                            if (try scaledNorm(candidate, candidate_residual, options) <= 0.5 * norm) {
+                            if (try scaledNorm(base, candidate, candidate_residual, options) <= 0.5 * norm) {
                                 @memcpy(current, candidate);
                                 newton_steps += 1;
                                 directional_newton_steps += 1;
@@ -259,7 +260,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                     continue;
                 };
                 if (residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange)) |_| {
-                    if (try scaledNorm(candidate, candidate_residual, options) < norm) {
+                    if (try scaledNorm(base, candidate, candidate_residual, options) < norm) {
                         @memcpy(current, candidate);
                         newton_steps += 1;
                         reduced_block_newton_steps += 1;
@@ -311,7 +312,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                             continue;
                         }
                         if (residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange)) |_| {
-                            if (try scaledNorm(candidate, candidate_residual, options) < norm) {
+                            if (try scaledNorm(base, candidate, candidate_residual, options) < norm) {
                                 @memcpy(current, candidate);
                                 newton_steps += 1;
                                 diagonal_newton_steps += 1;
@@ -360,7 +361,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                                     continue;
                                 }
                                 if (residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange)) |_| {
-                                    if (try scaledNorm(candidate, candidate_residual, options) < norm) {
+                                    if (try scaledNorm(base, candidate, candidate_residual, options) < norm) {
                                         @memcpy(current, candidate);
                                         newton_steps += 1;
                                         directional_newton_steps += 1;
@@ -384,7 +385,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
         while (picard_fraction >= 1.0e-6) : (picard_fraction = if (picard_fraction == 1) @min(options.picard_relaxation, 0.5) else picard_fraction * 0.5) {
             addDirection(current, residual, picard_fraction, candidate) catch continue;
             residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange) catch continue;
-            if (try scaledNorm(candidate, candidate_residual, options) >= norm) continue;
+            if (try scaledNorm(base, candidate, candidate_residual, options) >= norm) continue;
             @memcpy(current, candidate);
             accepted_picard = true;
             break;
@@ -420,7 +421,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                 }
                 if (!valid) continue;
                 residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange) catch continue;
-                if (try scaledNorm(candidate, candidate_residual, options) >= norm) continue;
+                if (try scaledNorm(base, candidate, candidate_residual, options) >= norm) continue;
                 @memcpy(current, candidate);
                 accepted_picard = true;
                 break;
@@ -446,7 +447,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                 candidate[coordinate_index] += coordinate_fraction * residual[coordinate_index];
                 if (!std.math.isFinite(candidate[coordinate_index]) or candidate[coordinate_index] < 0) continue;
                 residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange) catch continue;
-                if (try scaledNorm(candidate, candidate_residual, options) >= norm) continue;
+                if (try scaledNorm(base, candidate, candidate_residual, options) >= norm) continue;
                 @memcpy(current, candidate);
                 accepted_picard = true;
                 break;
@@ -504,7 +505,7 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
                 candidate[temperature_index] += fraction * local_rhs[1];
                 if (candidate[phase_index] < 0 or candidate[cell] < 0 or candidate[temperature_index] <= 0) continue;
                 residualAt(grid, properties, base, candidate, target, candidate_residual, scratch, trial_heat, trial_exchange) catch continue;
-                if (try scaledNorm(candidate, candidate_residual, options) >= norm) continue;
+                if (try scaledNorm(base, candidate, candidate_residual, options) >= norm) continue;
                 @memcpy(current, candidate);
                 accepted_picard = true;
                 newton_steps += 1;
@@ -534,9 +535,9 @@ pub fn solve(allocator: std.mem.Allocator, grid: *grid_module.GridState, propert
         picard_steps += 1;
     }
     try residualAt(grid, properties, base, current, target, residual, scratch, trial_heat, trial_exchange);
-    const final_norm = try scaledNorm(current, residual, options);
+    const final_norm = try scaledNorm(base, current, residual, options);
     if (final_norm <= 1) {
-        try residualAt(grid, properties, base, current, target, residual, scratch, outputs.latent_heat_mj, outputs.macropore_to_matrix_water_m3);
+        try residualAt(grid, properties, base, current, target, residual, scratch, outputs.latent_heat_megajoules, outputs.macropore_to_matrix_water_m3);
         try commit(grid, target);
         return .{ .iterations = options.max_iterations, .newton_raphson_steps = newton_steps, .picard_steps = picard_steps, .maximum_scaled_residual = final_norm };
     }
@@ -590,7 +591,7 @@ fn residualAt(grid: *const grid_module.GridState, properties: Properties, base: 
             const scale = matrix_air_before_phase_m3 / vapor_change.water_condensation_m3;
             vapor_change.water_condensation_m3 *= scale;
             vapor_change.vapor_change_m3 *= scale;
-            vapor_change.latent_heat_mj *= scale;
+            vapor_change.latent_heat_megajoules *= scale;
         }
         applyChange(scratch, target, matrix_water, vapor_change.water_condensation_m3);
         applyChange(scratch, target, vapor, vapor_change.vapor_change_m3);
@@ -598,7 +599,7 @@ fn residualAt(grid: *const grid_module.GridState, properties: Properties, base: 
             .freezing_temperature_k = properties.freeze_thaw.pure_water_freezing_temperature_k,
             .liquid_water_change_m3 = 0,
             .ice_volume_change_m3 = 0,
-            .latent_heat_mj = 0,
+            .latent_heat_megajoules = 0,
         };
         applyChange(scratch, target, matrix_water, matrix_freeze.liquid_water_change_m3);
         applyChange(scratch, target, matrix_ice, matrix_freeze.ice_volume_change_m3);
@@ -606,7 +607,7 @@ fn residualAt(grid: *const grid_module.GridState, properties: Properties, base: 
             .freezing_temperature_k = properties.freeze_thaw.pure_water_freezing_temperature_k,
             .liquid_water_change_m3 = 0,
             .ice_volume_change_m3 = 0,
-            .latent_heat_mj = 0,
+            .latent_heat_megajoules = 0,
         };
         applyChange(scratch, target, macro_water, macro_freeze.liquid_water_change_m3);
         applyChange(scratch, target, macro_ice, macro_freeze.ice_volume_change_m3);
@@ -632,15 +633,22 @@ fn residualAt(grid: *const grid_module.GridState, properties: Properties, base: 
             scratch[matrix_water] + scratch[matrix_ice];
         const macropore_occupancy_m3 =
             scratch[macro_water] + scratch[macro_ice];
+        // The layer's total pore capacity is the scale of the arithmetic that
+        // produced either domain's occupancy, so it bounds the roundoff both
+        // comparisons may legitimately carry.
+        const layer_pore_scale_m3 =
+            grid.matrix_pore_capacity_m3[cell] + grid.macropore_pore_capacity_m3[cell];
         if (matrix_occupancy_m3 >
             grid.matrix_pore_capacity_m3[cell] +
                 poreCapacityRoundoffToleranceM3(
                     grid.matrix_pore_capacity_m3[cell],
+                    layer_pore_scale_m3,
                 ) or
             macropore_occupancy_m3 >
                 grid.macropore_pore_capacity_m3[cell] +
                     poreCapacityRoundoffToleranceM3(
                         grid.macropore_pore_capacity_m3[cell],
+                        layer_pore_scale_m3,
                     ))
         {
             if (!builtin.is_test) std.log.err(
@@ -661,14 +669,14 @@ fn residualAt(grid: *const grid_module.GridState, properties: Properties, base: 
             );
             return error.SoilPhaseCandidateExceedsPoreCapacity;
         }
-        latent_heat[cell] = vapor_change.latent_heat_mj + matrix_freeze.latent_heat_mj + macro_freeze.latent_heat_mj;
+        latent_heat[cell] = vapor_change.latent_heat_megajoules + matrix_freeze.latent_heat_megajoules + macro_freeze.latent_heat_megajoules;
         target[temperature] = try phase.endpointTemperatureFromPhaseEnthalpy(
             grid.soil_temperature_k[cell],
-            properties.heat_capacity_mj_per_k[cell],
+            properties.heat_capacity_megajoules_per_k[cell],
             .{ .matrix_liquid_water_m3 = base[matrix_water], .water_vapor_volume_m3 = base[vapor], .matrix_ice_volume_m3 = base[matrix_ice], .macropore_liquid_water_m3 = base[macro_water], .macropore_ice_volume_m3 = base[macro_ice] },
             .{ .matrix_liquid_water_m3 = @max(0, target[matrix_water]), .water_vapor_volume_m3 = @max(0, target[vapor]), .matrix_ice_volume_m3 = @max(0, target[matrix_ice]), .macropore_liquid_water_m3 = @max(0, target[macro_water]), .macropore_ice_volume_m3 = @max(0, target[macro_ice]) },
             0,
-            .{ .liquid_heat_capacity_mj_per_m3_k = properties.liquid_water_heat_capacity_mj_per_m3_k, .ice_heat_capacity_mj_per_m3_k = properties.ice_heat_capacity_mj_per_m3_k, .vaporization_latent_heat_mj_per_m3 = properties.vapor.latent_heat_of_vaporization_mj_per_m3, .fusion_latent_heat_mj_per_m3 = properties.freeze_thaw.latent_heat_of_fusion_mj_per_m3, .ice_density_megagrams_per_m3 = iceWaterEquivalentFactor(properties) },
+            .{ .liquid_heat_capacity_megajoules_per_m3_k = properties.liquid_water_heat_capacity_megajoules_per_m3_k, .ice_heat_capacity_megajoules_per_m3_k = properties.ice_heat_capacity_megajoules_per_m3_k, .vaporization_latent_heat_megajoules_per_m3 = properties.vapor.latent_heat_of_vaporization_megajoules_per_m3, .fusion_latent_heat_megajoules_per_m3 = properties.freeze_thaw.latent_heat_of_fusion_megajoules_per_m3, .ice_density_megagrams_per_m3 = iceWaterEquivalentFactor(properties) },
         );
     }
     for (target, trial, residual) |*value, trial_value, *difference| {
@@ -698,7 +706,7 @@ fn dallAmicoChange(
             .freezing_temperature_k = freeze_thaw.pure_water_freezing_temperature_k,
             .liquid_water_change_m3 = ice_water_equivalent_m3,
             .ice_volume_change_m3 = -ice_water_equivalent_m3,
-            .latent_heat_mj = -freeze_thaw.latent_heat_of_fusion_mj_per_m3 *
+            .latent_heat_megajoules = -freeze_thaw.latent_heat_of_fusion_megajoules_per_m3 *
                 ice_water_equivalent_m3,
         };
     }
@@ -714,7 +722,7 @@ fn dallAmicoChange(
         .porous_medium_volume_m3 = porous_medium_volume_m3,
         .unfrozen_pressure_head_m = unfrozen_pressure_head_m,
         .gravitational_water_potential_mpa_per_m = gravitational_water_potential_mpa_per_m,
-        .latent_heat_of_fusion_mj_per_m3 = freeze_thaw.latent_heat_of_fusion_mj_per_m3,
+        .latent_heat_of_fusion_megajoules_per_m3 = freeze_thaw.latent_heat_of_fusion_megajoules_per_m3,
         .pure_water_melting_temperature_k = freeze_thaw.pure_water_freezing_temperature_k,
         .mualem_van_genuchten = parameters,
     });
@@ -726,7 +734,7 @@ fn dallAmicoChange(
         .freezing_temperature_k = equilibrium.depressed_melting_temperature_k,
         .liquid_water_change_m3 = liquid_change_m3,
         .ice_volume_change_m3 = ice_change_m3,
-        .latent_heat_mj = freeze_thaw.latent_heat_of_fusion_mj_per_m3 * ice_change_m3,
+        .latent_heat_megajoules = freeze_thaw.latent_heat_of_fusion_megajoules_per_m3 * ice_change_m3,
     };
 }
 
@@ -742,15 +750,39 @@ fn limitFreezingExpansion(change: anytype, liquid_water_m3: f64, ice_volume_m3: 
     const scale = available_air_m3 / volume_expansion_m3;
     change.liquid_water_change_m3 *= scale;
     change.ice_volume_change_m3 *= scale;
-    change.latent_heat_mj *= scale;
+    change.latent_heat_megajoules *= scale;
 }
 
-fn poreCapacityRoundoffToleranceM3(capacity_m3: f64) f64 {
+/// Roundoff allowance for a pore-occupancy comparison.
+///
+/// `capacity_m3` is the domain's own capacity and `domain_scale_m3` is the
+/// scale of the arithmetic that produced the occupancy. They differ for a
+/// zero-capacity macropore: its residual ice arrives from transfers and phase
+/// changes scaled to the whole layer, so scaling the allowance by its own zero
+/// capacity would compare a layer-scale rounding residual against an absolute
+/// `1e-12` floor. On the Ottawa example that rejected a `6.06e-12` m3 macropore
+/// ice residual in a layer of `8.9e6` m3, a relative magnitude of 7e-19.
+fn poreCapacityRoundoffToleranceM3(capacity_m3: f64, domain_scale_m3: f64) f64 {
     return @max(
         1.0e-12,
         64.0 * std.math.floatEps(f64) *
-            @max(1.0, @abs(capacity_m3)),
+            @max(1.0, @max(@abs(capacity_m3), @abs(domain_scale_m3))),
     );
+}
+
+test "pore roundoff allowance scales with the layer, not a zero domain capacity" {
+    // A zero-capacity macropore receives residual ice from transfers scaled to
+    // the whole layer. Ottawa produced 6.06e-12 m3 in an 8.9e6 m3 layer.
+    const layer_scale_m3: f64 = 8.9e6;
+    const residual_m3: f64 = 6.055454452393339e-12;
+    try std.testing.expect(residual_m3 <= poreCapacityRoundoffToleranceM3(0, layer_scale_m3));
+    // Without the layer scale the same residual is rejected against the floor.
+    try std.testing.expect(residual_m3 > poreCapacityRoundoffToleranceM3(0, 0));
+    // The allowance must stay far below any physically meaningful overfill: a
+    // millilitre of excess is still an error at this layer scale.
+    try std.testing.expect(1.0e-6 > poreCapacityRoundoffToleranceM3(0, layer_scale_m3));
+    // It never shrinks below the absolute floor for small layers.
+    try std.testing.expectEqual(@as(f64, 1.0e-12), poreCapacityRoundoffToleranceM3(0, 1));
 }
 
 fn applyChange(scratch: []f64, target: []f64, index: usize, change: f64) void {
@@ -850,13 +882,108 @@ fn addCellFeasibleBlockDirection(
     }
 }
 
-fn scaledNorm(state: []const f64, residual: []const f64, options: Options) !f64 {
+/// Forward-error bound for one cell's phase residual.
+///
+/// A component's residual is assembled from that cell's whole water and air
+/// inventory: the vapor equilibrium reads matrix water, matrix air, and
+/// macropore air, and the freeze-thaw terms read both domains' liquid and ice.
+/// Each of those is independently rounded before the residual is formed, so the
+/// smallest residual the arithmetic can distinguish is set by the largest of
+/// them, not by the component's own magnitude. Without this term a cell whose
+/// carriers are ~1e6 m3 can never satisfy a relative tolerance on a vapor
+/// volume of ~1 m3: the sub-ULP residual of the large carriers is thousands of
+/// times the scale allowed for the small component.
+///
+/// This mirrors `mass_balance_audit.representationFloorPerArea`, which solves
+/// the same problem for the landscape census.
+fn cellRepresentationFloorM3(state: []const f64, cells: usize, cell: usize) f64 {
+    var largest: f64 = 0;
+    // Components zero through four are volumes; five is temperature and is not
+    // a carrier of these volume residuals.
+    for (0..5) |component| largest = @max(largest, @abs(state[component * cells + cell]));
+    return 64.0 * std.math.floatEps(f64) * largest;
+}
+
+fn scaledNorm(base: []const f64, state: []const f64, residual: []const f64, options: Options) !f64 {
+    if (base.len != state.len or residual.len != state.len or state.len == 0 or state.len % 6 != 0)
+        return error.SoilPhaseSolverDimensionMismatch;
     var maximum: f64 = 0;
-    for (state, residual) |value, difference| {
-        if (!std.math.isFinite(value) or value < 0 or !std.math.isFinite(difference)) return error.NonFiniteSoilPhaseSolverState;
-        maximum = @max(maximum, @abs(difference) / (options.absolute_tolerance_m3 + options.relative_tolerance * @max(1.0, @abs(value))));
+    const cells = state.len / 6;
+    for (base, state, residual, 0..) |base_value, value, difference, index| {
+        if (!std.math.isFinite(base_value) or !std.math.isFinite(value) or value < 0 or !std.math.isFinite(difference)) return error.NonFiniteSoilPhaseSolverState;
+        const requested_change = @max(
+            @abs(value - base_value),
+            @abs(value + difference - base_value),
+        );
+        const component = index / cells;
+        const absolute_tolerance = if (component == 5)
+            options.absolute_temperature_tolerance_k
+        else
+            options.absolute_tolerance_m3;
+        const representation_floor = if (component == 5)
+            0
+        else
+            cellRepresentationFloorM3(state, cells, index % cells);
+        const scale = absolute_tolerance +
+            options.relative_tolerance * requested_change +
+            representation_floor;
+        maximum = @max(maximum, @abs(difference) / scale);
     }
     return maximum;
+}
+
+test "phase convergence admits sub-ULP carrier roundoff but rejects real error" {
+    const options: Options = .{
+        .max_iterations = 20,
+        .absolute_tolerance_m3 = 1e-11,
+        .relative_tolerance = 1e-8,
+    };
+    // The Ottawa hour-12 stagnation: a vapor volume near 1.44 m3 in a cell whose
+    // matrix water and ice carriers are ~1.4e5 m3. The residual is 1.57e-10 m3,
+    // which is 1.09e-10 of the vapor state and far below the rounding floor of
+    // the carriers that produced it.
+    const base = [_]f64{ 1.4847370138721637e5, 1.4381965962775536, 1.3078211093884993e5, 5.478311123604301e-4, 2.9426803598478693e2, 261.8846954490114 };
+    var state = base;
+    state[1] -= 9.548578e-3;
+    const residual = [_]f64{ 0, -1.5698331523594788e-10, 0, 0, 0, 0 };
+    const norm = try scaledNorm(&base, &state, &residual, options);
+    try std.testing.expect(norm <= 1);
+
+    // A residual that is physically meaningful at this cell's scale must still
+    // fail. One cubic metre of unexplained vapor is not roundoff.
+    const real_error = [_]f64{ 0, 1.0, 0, 0, 0, 0 };
+    try std.testing.expect(try scaledNorm(&base, &state, &real_error, options) > 1);
+
+    // The floor is proportional to the carriers, so a small cell keeps a tight
+    // convergence requirement: the same absolute residual fails there.
+    const small_base = [_]f64{ 0.1, 0.01, 0.02, 0.0, 0.0, 275.0 };
+    try std.testing.expect(try scaledNorm(&small_base, &small_base, &residual, options) > 1);
+}
+
+test "phase convergence scales material correction independently of inventory size" {
+    const options: Options = .{
+        .max_iterations = 20,
+        .absolute_tolerance_m3 = 1e-11,
+        .relative_tolerance = 1e-8,
+    };
+    const base = [_]f64{ 1e10, 0, 0, 0, 0, 280 };
+    const initial = base;
+    const material_residual = [_]f64{ 100, 0, 0, 0, 0, 0 };
+    const norm = try scaledNorm(&base, &initial, &material_residual, options);
+    // A 100 m3 residual is a real material error at any scale and must be
+    // rejected by orders of magnitude. The threshold is 1e5 rather than 1e7
+    // because the scale now also carries the carrier representation floor,
+    // which for a 1e10 m3 inventory is 1.42e-4 m3. That floor is what lets a
+    // genuinely sub-ULP residual converge; it is still 700000x smaller than
+    // this residual.
+    try std.testing.expect(norm > 1e5);
+    const converged = try scaledNorm(
+        &base,
+        &.{ 1e10 + 100, 0, 0, 0, 0, 280 },
+        &.{ 5e-7, 0, 0, 0, 0, 5e-11 },
+        options,
+    );
+    try std.testing.expect(converged <= 1);
 }
 
 fn validateInputs(grid: *const grid_module.GridState, properties: Properties, outputs: Outputs, options: Options) !void {
@@ -879,13 +1006,13 @@ fn validateInputs(grid: *const grid_module.GridState, properties: Properties, ou
     if (!std.math.isFinite(properties.gravitational_water_potential_mpa_per_m) or
         properties.gravitational_water_potential_mpa_per_m <= 0)
         return error.InvalidSoilPhaseInput;
-    if (!std.math.isFinite(properties.liquid_water_heat_capacity_mj_per_m3_k) or properties.liquid_water_heat_capacity_mj_per_m3_k <= 0 or !std.math.isFinite(properties.ice_heat_capacity_mj_per_m3_k) or properties.ice_heat_capacity_mj_per_m3_k <= 0) return error.InvalidSoilPhaseInput;
+    if (!std.math.isFinite(properties.liquid_water_heat_capacity_megajoules_per_m3_k) or properties.liquid_water_heat_capacity_megajoules_per_m3_k <= 0 or !std.math.isFinite(properties.ice_heat_capacity_megajoules_per_m3_k) or properties.ice_heat_capacity_megajoules_per_m3_k <= 0) return error.InvalidSoilPhaseInput;
     for (properties.matrix_bulk_volume_m3, properties.retention_curve) |bulk_volume_m3, curve| {
         if (!std.math.isFinite(bulk_volume_m3) or bulk_volume_m3 <= 0) return error.InvalidSoilPhaseInput;
         if (!std.math.isFinite(curve.porosity_fraction) or curve.porosity_fraction <= 0) return error.InvalidSoilPhaseInput;
     }
-    if (outputs.latent_heat_mj.len != cells or outputs.macropore_to_matrix_water_m3.len != cells) return error.SoilPhaseSolverDimensionMismatch;
-    if (options.max_iterations == 0 or !std.math.isFinite(options.absolute_tolerance_m3) or options.absolute_tolerance_m3 <= 0 or !std.math.isFinite(options.relative_tolerance) or options.relative_tolerance <= 0 or !std.math.isFinite(options.picard_relaxation) or options.picard_relaxation <= 0 or options.picard_relaxation > 1 or !std.math.isFinite(options.directional_probe_fraction) or options.directional_probe_fraction <= 0 or !std.math.isFinite(options.minimum_newton_fraction) or options.minimum_newton_fraction <= 0 or !std.math.isFinite(options.maximum_newton_fraction) or options.maximum_newton_fraction < options.minimum_newton_fraction) return error.InvalidSoilPhaseSolverOptions;
+    if (outputs.latent_heat_megajoules.len != cells or outputs.macropore_to_matrix_water_m3.len != cells) return error.SoilPhaseSolverDimensionMismatch;
+    if (options.max_iterations == 0 or !std.math.isFinite(options.absolute_tolerance_m3) or options.absolute_tolerance_m3 <= 0 or !std.math.isFinite(options.absolute_temperature_tolerance_k) or options.absolute_temperature_tolerance_k <= 0 or !std.math.isFinite(options.relative_tolerance) or options.relative_tolerance <= 0 or !std.math.isFinite(options.picard_relaxation) or options.picard_relaxation <= 0 or options.picard_relaxation > 1 or !std.math.isFinite(options.directional_probe_fraction) or options.directional_probe_fraction <= 0 or !std.math.isFinite(options.minimum_newton_fraction) or options.minimum_newton_fraction <= 0 or !std.math.isFinite(options.maximum_newton_fraction) or options.maximum_newton_fraction < options.minimum_newton_fraction) return error.InvalidSoilPhaseSolverOptions;
 }
 
 fn testProperties() Properties {
@@ -915,7 +1042,7 @@ fn testProperties() Properties {
             .saturated_hydraulic_conductivity_m_per_h = 0.1,
         }};
     };
-    return .{ .matrix_bulk_volume_m3 = &values.bulk, .retention_curve = &values.curves, .mualem_van_genuchten_parameters = &values.matrix, .macropore_mualem_van_genuchten_parameters = &values.macropore, .osmotic_potential_mpa = &values.osmotic, .saturation_water_potential_mpa = &values.saturation_potential, .heat_capacity_mj_per_k = &values.capacity, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = &values.one, .face_area_m2 = &values.one, .macropore_spacing_m = &values.spacing, .macropore_radius_m = &values.radius, .pore_exchange_enabled = &values.disabled, .vapor = .{ .vapor_density_temperature_coefficient = 2.173e-3, .molecular_weight_ratio = 0.61, .clausius_clapeyron_coefficient_k = 5360, .reference_inverse_temperature_per_k = 3.661e-3, .water_molar_mass_g_per_mol = 18, .gas_constant_j_per_mol_k = 8.3143, .latent_heat_of_vaporization_mj_per_m3 = 2450 }, .freeze_thaw = .{ .freezing_potential_numerator_k_mpa = 9.0959e4, .latent_heat_of_fusion_mj_per_m3 = 333, .ice_density_megagrams_per_m3 = 0.917, .heat_capacity_temperature_feedback_per_k = 6.2913e-3, .pure_water_freezing_temperature_k = 273.15 }, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .ice_heat_capacity_mj_per_m3_k = 1.9274 };
+    return .{ .matrix_bulk_volume_m3 = &values.bulk, .retention_curve = &values.curves, .mualem_van_genuchten_parameters = &values.matrix, .macropore_mualem_van_genuchten_parameters = &values.macropore, .osmotic_potential_mpa = &values.osmotic, .saturation_water_potential_mpa = &values.saturation_potential, .heat_capacity_megajoules_per_k = &values.capacity, .saturated_lateral_matrix_conductivity_m2_per_h_mpa = &values.one, .face_area_m2 = &values.one, .macropore_spacing_m = &values.spacing, .macropore_radius_m = &values.radius, .pore_exchange_enabled = &values.disabled, .vapor = .{ .vapor_density_temperature_coefficient = 2.173e-3, .molecular_weight_ratio = 0.61, .clausius_clapeyron_coefficient_k = 5360, .reference_inverse_temperature_per_k = 3.661e-3, .water_molar_mass_g_per_mol = 18, .gas_constant_j_per_mol_k = 8.3143, .latent_heat_of_vaporization_megajoules_per_m3 = 2450 }, .freeze_thaw = .{ .freezing_potential_numerator_k_mpa = 9.0959e4, .latent_heat_of_fusion_megajoules_per_m3 = 333, .ice_density_megagrams_per_m3 = 0.917, .heat_capacity_temperature_feedback_per_k = 6.2913e-3, .pure_water_freezing_temperature_k = 273.15 }, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .ice_heat_capacity_megajoules_per_m3_k = 1.9274 };
 }
 
 fn dallAmicoTestProperties() Properties {
@@ -942,7 +1069,7 @@ fn dallAmicoTestProperties() Properties {
 }
 
 test "phase hybrid converges vapor without duplicating heat-enthalpy freeze thaw" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 1;
@@ -952,7 +1079,7 @@ test "phase hybrid converges vapor without duplicating heat-enthalpy freeze thaw
     var heat_output = [_]f64{0};
     var exchange = [_]f64{0};
     const before = grid.matrix_liquid_water_m3[0] + grid.matrix_ice_water_m3[0] + grid.water_vapor_volume_m3[0];
-    const result = try solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_mj = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 40 });
+    const result = try solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_megajoules = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 40 });
     const after = grid.matrix_liquid_water_m3[0] + grid.matrix_ice_water_m3[0] + grid.water_vapor_volume_m3[0];
     try std.testing.expect(result.iterations < 40);
     try std.testing.expectApproxEqAbs(before, after, 1e-10);
@@ -961,7 +1088,7 @@ test "phase hybrid converges vapor without duplicating heat-enthalpy freeze thaw
 }
 
 test "phase hybrid leaves Dall'Amico state for the coupled enthalpy solver" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     const properties = dallAmicoTestProperties();
@@ -972,7 +1099,7 @@ test "phase hybrid leaves Dall'Amico state for the coupled enthalpy solver" {
     const before = grid.matrix_liquid_water_m3[0] + grid.matrix_ice_water_m3[0] + grid.water_vapor_volume_m3[0];
     var heat_output = [_]f64{0};
     var exchange = [_]f64{0};
-    const result = try solve(std.testing.allocator, &grid, properties, .{ .latent_heat_mj = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 80 });
+    const result = try solve(std.testing.allocator, &grid, properties, .{ .latent_heat_megajoules = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 80 });
     const after = grid.matrix_liquid_water_m3[0] + grid.matrix_ice_water_m3[0] + grid.water_vapor_volume_m3[0];
     try std.testing.expect(result.iterations < 80);
     try std.testing.expectApproxEqAbs(before, after, 1e-10);
@@ -981,7 +1108,7 @@ test "phase hybrid leaves Dall'Amico state for the coupled enthalpy solver" {
 }
 
 test "phase solve cannot independently create ice at saturated pore capacity" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 1;
@@ -990,13 +1117,13 @@ test "phase solve cannot independently create ice at saturated pore capacity" {
     grid.soil_temperature_k[0] = 260;
     var heat_output = [_]f64{0};
     var exchange = [_]f64{0};
-    _ = try solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_mj = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 40 });
+    _ = try solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_megajoules = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 40 });
     try std.testing.expectEqual(@as(f64, 0), grid.matrix_ice_water_m3[0]);
     try std.testing.expect(grid.matrix_liquid_water_m3[0] + grid.matrix_ice_water_m3[0] <= grid.matrix_pore_capacity_m3[0] + 1e-12);
 }
 
 test "rejected phase solve leaves grid and outputs unchanged" {
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, cfg);
     defer grid.deinit();
     grid.matrix_liquid_water_m3[0] = 1;
@@ -1005,7 +1132,7 @@ test "rejected phase solve leaves grid and outputs unchanged" {
     grid.soil_temperature_k[0] = 260;
     var heat_output = [_]f64{99};
     var exchange = [_]f64{88};
-    try std.testing.expectError(error.InvalidSoilPhaseSolverOptions, solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_mj = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 0 }));
+    try std.testing.expectError(error.InvalidSoilPhaseSolverOptions, solve(std.testing.allocator, &grid, testProperties(), .{ .latent_heat_megajoules = &heat_output, .macropore_to_matrix_water_m3 = &exchange }, .{ .max_iterations = 0 }));
     try std.testing.expectEqual(@as(f64, 1), grid.matrix_liquid_water_m3[0]);
     try std.testing.expectEqual(@as(f64, 99), heat_output[0]);
     try std.testing.expectEqual(@as(f64, 88), exchange[0]);

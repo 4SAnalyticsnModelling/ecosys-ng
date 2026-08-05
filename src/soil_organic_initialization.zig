@@ -28,6 +28,62 @@ pub const ProfileOrganicComplexMasses = struct {
     humus_phosphorus_g_p: f64,
 };
 
+/// STARTS 1297--1304 and 1328--1340: the carrier that organic concentrations are
+/// multiplied by is chosen per layer, not fixed.
+///
+/// ```fortran
+///       IF(BKVL(L,NY,NX).GT.ZEROS(NY,NX))THEN
+///       OSCI(K)=CORGCX(K)*BKVL(L,NY,NX)
+///       ...
+///       ELSE
+///       OSCI(K)=CORGCX(K)*VOLT(L,NY,NX)
+/// ```
+///
+/// `BKVL` is mineral mass in Mg (`starts.f:579`, `BKDS*VOLX`) and `VOLT` is
+/// total layer volume in m3 (`:575`). The `ELSE` branch is the source's explicit
+/// statement about a layer with **no mineral matrix**: a ponded layer of open
+/// water still carries organic matter, so its concentrations are carried on
+/// volume instead of on a mineral mass that does not exist. The same two-branch
+/// selection is repeated for the microbial seed `OSCM` at 1328--1340, so both
+/// uses of the carrier in this module must move together.
+///
+/// This is a *carrier substitution*, not a fallback constant and not a floor.
+/// The numerical value is a real physical quantity in both branches, which is
+/// why the ponded case does not need, and must not be given, a fabricated bulk
+/// density. `examples-ng/Meditteranean Pond CA` declares `bulk_density` `0.00`
+/// for its upper seven layers, which is the correct physical statement that
+/// those layers are open water.
+///
+/// Units differ between the two branches (Mg against m3), which is deliberate in
+/// the source: `CORGCX` is a concentration per carrier unit, and the legacy
+/// comment at `starts.f:1281` writes it as `g unit-1` precisely because the unit
+/// is carrier-dependent. Callers must therefore treat the result as an extensive
+/// mass in g and never re-divide it by a mineral mass.
+pub const OrganicCarrier = struct {
+    /// The multiplier applied to organic concentrations for this layer.
+    amount: f64,
+    /// True when `amount` is a mineral mass in Mg, false when it is a layer
+    /// volume in m3 because the layer holds no mineral matrix.
+    mineral_matrix_present: bool,
+};
+
+/// Selects the STARTS organic carrier for one layer. `negligible_mineral_mass_megagrams`
+/// is the runtime `ZEROS` analogue: the source compares against `ZEROS(NY,NX)`,
+/// an area-scaled floor, not against exact zero.
+pub fn selectOrganicCarrier(mineral_mass_megagrams: f64, total_layer_volume_m3: f64, negligible_mineral_mass_megagrams: f64) !OrganicCarrier {
+    inline for (.{ mineral_mass_megagrams, total_layer_volume_m3, negligible_mineral_mass_megagrams }) |value| {
+        if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicInitializationParameter;
+    }
+    if (mineral_mass_megagrams > negligible_mineral_mass_megagrams)
+        return .{ .amount = mineral_mass_megagrams, .mineral_matrix_present = true };
+    // A layer with no mineral matrix must still have a volume to carry its
+    // organic matter. A zero-volume, zero-mass layer carries nothing and cannot
+    // be given a meaningful concentration, so it stays an explicit error rather
+    // than silently becoming a zero-mass soil layer.
+    if (total_layer_volume_m3 <= 0) return error.InvalidOrganicInitializationParameter;
+    return .{ .amount = total_layer_volume_m3, .mineral_matrix_present = false };
+}
+
 /// STARTS 807--812: split mineral-soil organic matter into particulate
 /// substrate 3 and humus substrate 4. Carbon inputs are kg C Mg-1; N and P
 /// inputs are g element Mg-1.
@@ -110,6 +166,17 @@ pub const MappedRuntimeParameters = struct {
     less_resistant_humus_fraction_at_surface: f64,
     nutrient_protection_exponent: f64,
     phosphorus_nutrient_weight: f64,
+    /// Runtime `ZEROS` analogue for the `starts.f:1297` mineral-mass test
+    /// `IF(BKVL(L,NY,NX).GT.ZEROS(NY,NX))`. Mineral mass at or below this is
+    /// treated as "no mineral matrix" and the organic carrier becomes the total
+    /// layer volume, which is the source's ponded/wetland branch.
+    ///
+    /// Defaults to `0`, which reproduces the strict `> 0` reading and keeps every
+    /// existing caller and every mineral profile bit-identical. It is a separate
+    /// runtime control rather than a reuse of `config.absolute_tolerance` because
+    /// this floor is a *mass* in Mg, and `INIT-006` (A0) is still deciding
+    /// whether such floors carry the source's cell-area scaling.
+    negligible_mineral_mass_megagrams: f64 = 0,
 };
 
 pub const SurfaceRuntimeParameters = struct {
@@ -207,8 +274,17 @@ pub fn deriveMappedDepthPartition(
         defer allocator.free(humus);
         for (0..profile.total_layer_count) |layer| {
             const layer_cell = try grid.layerIndex(cell, layer);
-            const soil_mass_megagrams = properties.matrix_bulk_volume_m3[layer_cell] * properties.bulk_density_megagrams_per_m3[layer_cell];
-            humus[layer] = @max(0.0, entry.material.total_organic_carbon_g_per_megagram[layer] - entry.material.particulate_organic_carbon_g_per_megagram[layer]) * soil_mass_megagrams;
+            // Same STARTS carrier selection as `initializeMappedInPlace`. This
+            // is the humus inventory the depth partition is weighted by, so a
+            // ponded layer must contribute its volume-carried humus rather than
+            // a spurious zero that would shift the partition of every layer
+            // below it. `starts.f` 1297--1304.
+            const carrier = try selectOrganicCarrier(
+                properties.matrix_bulk_volume_m3[layer_cell] * properties.bulk_density_megagrams_per_m3[layer_cell],
+                properties.layer_volume_m3[layer_cell],
+                0,
+            );
+            humus[layer] = @max(0.0, entry.material.total_organic_carbon_g_per_megagram[layer] - entry.material.particulate_organic_carbon_g_per_megagram[layer]) * carrier.amount;
         }
         const reference_layer = profile.maximum_rooting_layer_index - profile.surface_layer_index;
         try deriveNaturalDrylandDepthPartition(humus, area_m2, reference_layer, parameters, cell_result);
@@ -229,7 +305,15 @@ pub fn deriveMappedDepthPartition(
 pub fn deriveMineralAllocations(initial_complex: []const ElementPool, soil_mass_megagrams: f64, complex_nitrogen_to_carbon: []const f64, complex_phosphorus_to_carbon: []const f64, parameters: MineralAllocationDerivationParameters) !MineralAllocationDerivation {
     if (initial_complex.len != substrate_count or complex_nitrogen_to_carbon.len != substrate_count or complex_phosphorus_to_carbon.len != substrate_count or parameters.microbial_budget_fraction.len != substrate_count or parameters.residue_budget_fraction.len != substrate_count or parameters.dissolved_budget_fraction.len != substrate_count or parameters.adsorbed_budget_fraction.len != substrate_count or parameters.microbial_kinetic_fraction.len != substrate_count * kinetic_fraction_count or parameters.microbial_nitrogen_to_carbon.len != substrate_count * microbial_population_count * kinetic_fraction_count or parameters.microbial_phosphorus_to_carbon.len != substrate_count * microbial_population_count * kinetic_fraction_count or parameters.residue_nitrogen_to_carbon.len != substrate_count or parameters.residue_phosphorus_to_carbon.len != substrate_count) return error.OrganicInitializationDimensionMismatch;
     inline for (.{ soil_mass_megagrams, parameters.residue_microbial_fraction, parameters.humus_microbial_half_saturation_g_c_per_megagram, parameters.depth_partition_factor }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicInitializationParameter;
-    if (soil_mass_megagrams <= 0 or parameters.humus_microbial_half_saturation_g_c_per_megagram <= 0 or parameters.depth_partition_factor > 1) return error.InvalidOrganicInitializationParameter;
+    if (parameters.humus_microbial_half_saturation_g_c_per_megagram <= 0 or parameters.depth_partition_factor > 1) return error.InvalidOrganicInitializationParameter;
+    // `soil_mass_megagrams` is the STARTS organic *carrier*, chosen per layer by
+    // `selectOrganicCarrier`: mineral mass `BKVL` where a mineral matrix exists,
+    // total layer volume `VOLT` where it does not (`starts.f` 1297--1304,
+    // 1328--1340). A ponded layer of open water legitimately arrives on the
+    // volume branch, so rejecting a non-positive value here would reject the
+    // source's own wetland case. Only a carrier that is absent in *both* senses
+    // is invalid, and `selectOrganicCarrier` has already rejected that.
+    if (soil_mass_megagrams <= 0) return error.InvalidOrganicInitializationParameter;
     for (initial_complex) |pool| try validatePool(pool);
     inline for (.{ complex_nitrogen_to_carbon, complex_phosphorus_to_carbon, parameters.microbial_budget_fraction, parameters.residue_budget_fraction, parameters.dissolved_budget_fraction, parameters.adsorbed_budget_fraction, parameters.microbial_kinetic_fraction, parameters.microbial_nitrogen_to_carbon, parameters.microbial_phosphorus_to_carbon, parameters.residue_nitrogen_to_carbon, parameters.residue_phosphorus_to_carbon }) |values| for (values) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidOrganicInitializationParameter;
 
@@ -398,7 +482,14 @@ pub const State = struct {
             if (profile.total_layer_count != grid.active_soil_layer_count[cell]) return error.SoilLayerCountMismatch;
             for (0..profile.total_layer_count) |layer| {
                 const layer_cell = try grid.layerIndex(cell, layer);
-                const soil_mass_megagrams = properties.matrix_bulk_volume_m3[layer_cell] * properties.bulk_density_megagrams_per_m3[layer_cell];
+                // STARTS 1297--1304: mineral mass where a matrix exists, total
+                // layer volume where it does not. A ponded layer is the latter.
+                const carrier = try selectOrganicCarrier(
+                    properties.matrix_bulk_volume_m3[layer_cell] * properties.bulk_density_megagrams_per_m3[layer_cell],
+                    properties.layer_volume_m3[layer_cell],
+                    parameters.negligible_mineral_mass_megagrams,
+                );
+                const soil_mass_megagrams = carrier.amount;
                 const masses = try profileOrganicComplexMasses(1.0e-3 * material.total_organic_carbon_g_per_megagram[layer], 1.0e-3 * material.particulate_organic_carbon_g_per_megagram[layer], material.organic_nitrogen_g_per_megagram[layer], material.organic_phosphorus_g_per_megagram[layer], soil_mass_megagrams, parameters.microbial_derivation.residue_nitrogen_to_carbon[3], parameters.microbial_derivation.residue_phosphorus_to_carbon[3]);
                 var initial_complex = [_]ElementPool{.{}} ** substrate_count;
                 initial_complex[3] = .{ .carbon_g_c = masses.particulate_carbon_g_c, .nitrogen_g_n = masses.particulate_nitrogen_g_n, .phosphorus_g_p = masses.particulate_phosphorus_g_p };
@@ -844,7 +935,7 @@ test "mapped STARTS organic initialization uses runtime profile selection and ge
     var catalog = @import("soil_catalog.zig").Catalog.init(allocator);
     defer catalog.deinit();
     _ = try catalog.appendFromSource("soil", fixture, @import("soil_water_retention.zig").compatibilityParameters(), @import("soil_profile_derivation.zig").compatibilityParameters());
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 20 });
     var grid = try GridState.init(allocator, config);
     defer grid.deinit();
     try @import("model_initialization.zig").initializeCellHydrology(&grid, 0, catalog.entries.items[0].hydrology_per_m2);
@@ -966,4 +1057,76 @@ test "STARTS natural dryland humus depth partition uses midpoint accumulation" {
     try std.testing.expectApproxEqAbs(@as(f64, std.math.pow(f64, 0.5, 50.0 / 112.5)), factors[0], 1.0e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0625), factors[2], 1.0e-15);
     try std.testing.expect(factors[0] > factors[1] and factors[1] > factors[2]);
+}
+
+test "STARTS organic carrier is mineral mass where a matrix exists" {
+    // starts.f:1297 IF(BKVL.GT.ZEROS) -> OSCI(K)=CORGCX(K)*BKVL
+    const carrier = try selectOrganicCarrier(12.5, 40.0, 0);
+    try std.testing.expect(carrier.mineral_matrix_present);
+    try std.testing.expectEqual(@as(f64, 12.5), carrier.amount);
+}
+
+test "STARTS organic carrier falls to total layer volume for a ponded layer" {
+    // starts.f:1301 ELSE -> OSCI(K)=CORGCX(K)*VOLT. This is the
+    // Meditteranean Pond CA case: bulk_density 0.00 in the upper layers is the
+    // correct physical statement that they are open water, so the layer is
+    // carried on volume. Before this owner existed the layer was REJECTED with
+    // InvalidOrganicInitializationParameter.
+    const carrier = try selectOrganicCarrier(0, 40.0, 0);
+    try std.testing.expect(!carrier.mineral_matrix_present);
+    try std.testing.expectEqual(@as(f64, 40.0), carrier.amount);
+}
+
+test "STARTS organic carrier honours the runtime ZEROS mineral-mass floor" {
+    // The source test is against ZEROS, not against exact zero, so a mass at or
+    // below the floor takes the volume branch. This pins the comparison as
+    // strictly-greater, matching the `IF(...GT...)` semantics.
+    const below = try selectOrganicCarrier(0.5, 40.0, 1.0);
+    try std.testing.expect(!below.mineral_matrix_present);
+    const at = try selectOrganicCarrier(1.0, 40.0, 1.0);
+    try std.testing.expect(!at.mineral_matrix_present);
+    const above = try selectOrganicCarrier(1.5, 40.0, 1.0);
+    try std.testing.expect(above.mineral_matrix_present);
+    try std.testing.expectEqual(@as(f64, 1.5), above.amount);
+}
+
+test "STARTS organic carrier still rejects a layer with neither mass nor volume" {
+    // The correction must not become a blanket relaxation. A layer with no
+    // mineral matrix AND no volume carries nothing, so no concentration can be
+    // made extensive against it and it stays a hard error.
+    try std.testing.expectError(error.InvalidOrganicInitializationParameter, selectOrganicCarrier(0, 0, 0));
+    try std.testing.expectError(error.InvalidOrganicInitializationParameter, selectOrganicCarrier(-1, 40, 0));
+    try std.testing.expectError(error.InvalidOrganicInitializationParameter, selectOrganicCarrier(1, std.math.nan(f64), 0));
+}
+
+test "deriveMineralAllocations accepts a volume-carried ponded layer" {
+    // The end-to-end statement of the defect. `deriveMineralAllocations` holds
+    // the predicate that rejected the pond. With the carrier selected per
+    // STARTS, a ponded layer reaches it with a positive volume-based carrier and
+    // is accepted, producing finite allocations. This assertion is what fails if
+    // the guard is restored to rejecting a zero mineral mass.
+    var initial = [_]ElementPool{.{}} ** substrate_count;
+    initial[3] = .{ .carbon_g_c = 400, .nitrogen_g_n = 40, .phosphorus_g_p = 4 };
+    initial[4] = .{ .carbon_g_c = 1600, .nitrogen_g_n = 160, .phosphorus_g_p = 16 };
+    const ratios_n = [_]f64{ 0.1, 0.1, 0.1, 0.1, 0.1 };
+    const ratios_p = [_]f64{ 0.01, 0.01, 0.01, 0.01, 0.01 };
+    const carrier = try selectOrganicCarrier(0, 40.0, 0);
+    const derived = try deriveMineralAllocations(&initial, carrier.amount, &ratios_n, &ratios_p, .{
+        .residue_microbial_fraction = 0.01,
+        .humus_microbial_half_saturation_g_c_per_megagram = 100,
+        .depth_partition_factor = 1,
+        .microbial_budget_fraction = &.{ 0.1, 0.1, 0.1, 0.1, 0.1 },
+        .residue_budget_fraction = &.{ 0.1, 0.1, 0.1, 0.1, 0.1 },
+        .dissolved_budget_fraction = &.{ 0.1, 0.1, 0.1, 0.1, 0.1 },
+        .adsorbed_budget_fraction = &.{ 0.1, 0.1, 0.1, 0.1, 0.1 },
+        .microbial_kinetic_fraction = &(.{0.1} ** (substrate_count * kinetic_fraction_count)),
+        .microbial_nitrogen_to_carbon = &(.{0.1} ** (substrate_count * microbial_population_count * kinetic_fraction_count)),
+        .microbial_phosphorus_to_carbon = &(.{0.01} ** (substrate_count * microbial_population_count * kinetic_fraction_count)),
+        .residue_nitrogen_to_carbon = &ratios_n,
+        .residue_phosphorus_to_carbon = &ratios_p,
+    });
+    for (derived.microbial_carbon_g_c) |value| try std.testing.expect(std.math.isFinite(value) and value >= 0);
+    // The humus microbial seed is strictly positive, so the ponded layer is
+    // genuinely initialized rather than accepted-but-empty.
+    try std.testing.expect(derived.microbial_carbon_g_c[4] > 0);
 }

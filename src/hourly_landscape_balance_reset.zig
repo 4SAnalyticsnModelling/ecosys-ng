@@ -2,10 +2,10 @@ const std = @import("std");
 
 pub const State = struct {
     soil_water_volume_m3: f64,
-    soil_heat_mj: f64,
+    soil_heat_megajoules: f64,
     soil_oxygen_mass_g_o: f64,
     total_hydrogen_gas_mass_g_h: f64,
-    soil_sediment_mass_mg: f64,
+    soil_sediment_mass_megagrams: f64,
     residue_carbon_mass_g_c: f64,
     soil_organic_carbon_mass_g_c: f64,
     soil_co2_carbon_mass_g_c: f64,
@@ -26,10 +26,10 @@ pub const State = struct {
 /// Exact HOUR1 lines 136--155 reset in source assignment order.
 pub fn apply(state: *State) void {
     state.soil_water_volume_m3 = 0;
-    state.soil_heat_mj = 0;
+    state.soil_heat_megajoules = 0;
     state.soil_oxygen_mass_g_o = 0;
     state.total_hydrogen_gas_mass_g_h = 0;
-    state.soil_sediment_mass_mg = 0;
+    state.soil_sediment_mass_megagrams = 0;
     state.residue_carbon_mass_g_c = 0;
     state.soil_organic_carbon_mass_g_c = 0;
     state.soil_co2_carbon_mass_g_c = 0;

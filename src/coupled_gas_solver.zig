@@ -14,6 +14,11 @@ pub const Inputs = struct {
     gas_water_exchange_rate_per_step: []const f64,
     band_gas_water_exchange_rate_per_step: []const f64,
     bubbling_enabled: []const bool,
+    /// REDIST `LL=MIN(L,LG)` destination for gas released by bubbling. A
+    /// null entry means no gas-phase route exists, so the released mass is a
+    /// landscape boundary flux. Omitting the map conservatively releases
+    /// bubbles into their source cell.
+    bubble_receiver_cell_by_cell: ?[]const ?usize = null,
     /// Optional caller-owned exact accepted atmospheric flux ledger, indexed
     /// cell × species. It is written only at successful commit.
     atmospheric_flux_g_by_component: ?[]f64 = null,
@@ -2121,9 +2126,14 @@ fn residualAtCapturing(allocator: std.mem.Allocator, scratch: *gas.State, base: 
         const solubility = inputs.mass_solubility_ratio[start..][0..gas.species_count];
         for (0..gas.species_count) |species| {
             const index = start + species;
-            const requested_phase = try gas.phaseExchangeFluxG(scratch.gaseous_mass_g[index], scratch.dissolved_mass_g[index], scratch.air_volume_m3[cell], inputs.water_volume_m3[cell], solubility[species], inputs.gas_water_exchange_rate_per_step[index]);
+            // Phase exchange target uses base dissolved (dissolved_target before this loop
+            // body modifies it) as the Picard departure point so that the fixed-point
+            // equation is target_d = base_d + rate*(D_eq - base_d), which converges to
+            // D_eq for rate=1.  Using trial dissolved instead gives a fixed point of
+            // (base_d + rate*D_eq)/(1+rate) = D_eq/2 when base_d=0, causing oscillation.
+            const requested_phase = try gas.phaseExchangeFluxG(scratch.gaseous_mass_g[index], dissolved_target[index], scratch.air_volume_m3[cell], inputs.water_volume_m3[cell], solubility[species], inputs.gas_water_exchange_rate_per_step[index]);
             const phase = std.math.clamp(requested_phase, -dissolved_target[index], gas_target[index]);
-            const requested_band_phase = try gas.phaseExchangeFluxG(scratch.gaseous_mass_g[index] - @min(scratch.gaseous_mass_g[index], @max(0, phase)), scratch.band_dissolved_mass_g[index], scratch.air_volume_m3[cell], inputs.band_water_volume_m3[cell], solubility[species], inputs.band_gas_water_exchange_rate_per_step[index]);
+            const requested_band_phase = try gas.phaseExchangeFluxG(scratch.gaseous_mass_g[index] - @min(scratch.gaseous_mass_g[index], @max(0, phase)), band_target[index], scratch.air_volume_m3[cell], inputs.band_water_volume_m3[cell], solubility[species], inputs.band_gas_water_exchange_rate_per_step[index]);
             const band_phase = std.math.clamp(requested_band_phase, -band_target[index], gas_target[index] - phase);
             gas_target[index] -= phase + band_phase;
             dissolved_target[index] += phase;
@@ -2133,8 +2143,22 @@ fn residualAtCapturing(allocator: std.mem.Allocator, scratch: *gas.State, base: 
             try gas.bubblingFluxesG(inputs.water_volume_m3[cell], scratch.temperature_k[cell], scratch.dissolved_mass_g[start..][0..gas.species_count], solubility, transport_iteration_fraction, &bubble);
             try gas.bubblingFluxesG(inputs.band_water_volume_m3[cell], scratch.temperature_k[cell], scratch.band_dissolved_mass_g[start..][0..gas.species_count], solubility, transport_iteration_fraction, &band_bubble);
             for (bubble, band_bubble, 0..) |nonband, band, species| {
-                dissolved_target[start + species] += @max(-dissolved_target[start + species], nonband);
-                band_target[start + species] += @max(-band_target[start + species], band);
+                const accepted_nonband = @max(-dissolved_target[start + species], nonband);
+                const accepted_band = @max(-band_target[start + species], band);
+                dissolved_target[start + species] += accepted_nonband;
+                band_target[start + species] += accepted_band;
+                const released_g = -(accepted_nonband + accepted_band);
+                if (released_g == 0) continue;
+                const receiver = if (inputs.bubble_receiver_cell_by_cell) |receivers|
+                    receivers[cell]
+                else
+                    cell;
+                if (receiver) |receiver_cell| {
+                    gas_target[receiver_cell * gas.species_count + species] += released_g;
+                } else if (capture_boundaries) {
+                    if (inputs.subsurface_flux_g_by_component) |fluxes|
+                        fluxes[start + species] -= released_g;
+                }
             }
         }
     }
@@ -2551,6 +2575,11 @@ fn validate(state: *const gas.State, inputs: Inputs, options: Options) !void {
         return error.CoupledGasStateSizeMismatch;
     if (inputs.face_conductance_m3_per_step.len != try std.math.mul(usize, inputs.faces.len, gas.species_count)) return error.GasFaceParameterSizeMismatch;
     if (inputs.water_volume_m3.len != state.cell_count or inputs.band_water_volume_m3.len != state.cell_count or inputs.bubbling_enabled.len != state.cell_count or inputs.mass_solubility_ratio.len != n or inputs.gas_water_exchange_rate_per_step.len != n or inputs.band_gas_water_exchange_rate_per_step.len != n) return error.CoupledGasInputSizeMismatch;
+    if (inputs.bubble_receiver_cell_by_cell) |receivers| {
+        if (receivers.len != state.cell_count) return error.CoupledGasInputSizeMismatch;
+        for (receivers) |receiver| if (receiver) |cell|
+            if (cell >= state.cell_count) return error.GasBubbleReceiverOutOfBounds;
+    }
     if (inputs.atmospheric_flux_g_by_component) |fluxes| if (fluxes.len != n) return error.GasBoundaryFluxSizeMismatch;
     if (inputs.subsurface_flux_g_by_component) |fluxes| if (fluxes.len != n) return error.GasBoundaryFluxSizeMismatch;
     if (inputs.face_flux_g_by_component) |fluxes| if (fluxes.len !=
@@ -3473,6 +3502,78 @@ test "surface and subsurface boundary fluxes remain independently classified" {
     try std.testing.expectApproxEqAbs(
         initial_mass_g + surface_flux[carbon_dioxide] + subsurface_flux[carbon_dioxide],
         state.gaseous_mass_g[carbon_dioxide],
+        1e-9,
+    );
+}
+
+test "TRNSFRS bubbling transfers dissolved mass to the REDIST release layer" {
+    var state = try gas.State.init(std.testing.allocator, 2);
+    defer state.deinit();
+    @memset(state.air_volume_m3, 1);
+    @memset(state.temperature_k, 300);
+    const carbon_dioxide = @intFromEnum(gas.Species.carbon_dioxide);
+    const source = gas.species_count + carbon_dioxide;
+    state.dissolved_mass_g[source] = 600;
+    const initial_total_g = state.dissolved_mass_g[source];
+    const n = 2 * gas.species_count;
+    const water = [_]f64{ 1, 1 };
+    const no_band_water = [_]f64{ 0, 0 };
+    const solubility = [_]f64{1} ** n;
+    const no_exchange = [_]f64{0} ** n;
+    const bubbling = [_]bool{ false, true };
+    const receivers = [_]?usize{ 0, 0 };
+    _ = try solve(std.testing.allocator, &state, .{
+        .faces = &.{},
+        .face_conductance_m3_per_step = &.{},
+        .atmospheric_boundaries = &.{},
+        .water_volume_m3 = &water,
+        .band_water_volume_m3 = &no_band_water,
+        .mass_solubility_ratio = &solubility,
+        .gas_water_exchange_rate_per_step = &no_exchange,
+        .band_gas_water_exchange_rate_per_step = &no_exchange,
+        .bubbling_enabled = &bubbling,
+        .bubble_receiver_cell_by_cell = &receivers,
+    }, .{ .max_iterations = 200 });
+    try std.testing.expect(state.gaseous_mass_g[carbon_dioxide] > 0);
+    try std.testing.expectApproxEqAbs(
+        initial_total_g,
+        state.gaseous_mass_g[carbon_dioxide] + state.dissolved_mass_g[source],
+        1e-9,
+    );
+}
+
+test "bubble without a gas release layer is published as a boundary loss" {
+    var state = try gas.State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.air_volume_m3[0] = 1;
+    state.temperature_k[0] = 300;
+    const carbon_dioxide = @intFromEnum(gas.Species.carbon_dioxide);
+    state.dissolved_mass_g[carbon_dioxide] = 600;
+    const initial_total_g = state.dissolved_mass_g[carbon_dioxide];
+    const water = [_]f64{1};
+    const no_band_water = [_]f64{0};
+    const solubility = [_]f64{1} ** gas.species_count;
+    const no_exchange = [_]f64{0} ** gas.species_count;
+    const bubbling = [_]bool{true};
+    const receivers = [_]?usize{null};
+    var boundary_flux = [_]f64{0} ** gas.species_count;
+    _ = try solve(std.testing.allocator, &state, .{
+        .faces = &.{},
+        .face_conductance_m3_per_step = &.{},
+        .atmospheric_boundaries = &.{},
+        .water_volume_m3 = &water,
+        .band_water_volume_m3 = &no_band_water,
+        .mass_solubility_ratio = &solubility,
+        .gas_water_exchange_rate_per_step = &no_exchange,
+        .band_gas_water_exchange_rate_per_step = &no_exchange,
+        .bubbling_enabled = &bubbling,
+        .bubble_receiver_cell_by_cell = &receivers,
+        .subsurface_flux_g_by_component = &boundary_flux,
+    }, .{ .max_iterations = 200 });
+    try std.testing.expect(boundary_flux[carbon_dioxide] < 0);
+    try std.testing.expectApproxEqAbs(
+        initial_total_g + boundary_flux[carbon_dioxide],
+        state.dissolved_mass_g[carbon_dioxide],
         1e-9,
     );
 }

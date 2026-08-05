@@ -77,7 +77,7 @@ test "CO2 and CH4 boundary losses retain tracked-carbon grams and source sign" {
     gas_state.dissolved_mass_g[@intFromEnum(gas.Species.methane)] = 4;
     var state = try State.init(std.testing.allocator, 1);
     defer state.deinit();
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var model_grid = try @import("grid.zig").GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     @memset(model_grid.active_soil_layer_count, 1);

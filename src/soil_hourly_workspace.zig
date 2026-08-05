@@ -52,12 +52,26 @@ pub const State = struct {
     liquid_water_fraction: []f64,
     ice_fraction: []f64,
     fraction_of_pore_volume_air_filled: []f64,
-    heat_capacity_mj_per_k: []f64,
-    minimum_heat_capacity_mj_per_k: []f64,
-    top_snow_heat_capacity_mj_per_k: []f64,
-    maximum_negligible_snow_heat_capacity_mj_per_k: []f64,
-    snow_storage_heat_flux_mj: []f64,
-    cell_heat_source_mj: []f64,
+    heat_capacity_megajoules_per_k: []f64,
+    minimum_heat_capacity_megajoules_per_k: []f64,
+    top_snow_heat_capacity_megajoules_per_k: []f64,
+    maximum_negligible_snow_heat_capacity_megajoules_per_k: []f64,
+    snow_storage_heat_flux_megajoules: []f64,
+    cell_heat_source_megajoules: []f64,
+    /// HEAT-001. The surface-to-soil conductive transfer exactly as
+    /// `bindSurfaceHeatFlux` published it, before production adds the three
+    /// later, legitimate top-cell heat sources
+    /// (`surface_precipitation.bindSoilHeatIngress`,
+    /// `subsurface_irrigation_heat.addToLayerHeatSources`, and the delayed
+    /// subsurface combustion heat).
+    ///
+    /// The `surface soil conduction pairing` instrument used to read
+    /// `cell_heat_source_megajoules[top]` *after* those additions and so
+    /// reported a mismatch where none exists; the conduction transaction
+    /// itself is bit-exact. This is the slot the instrument must read
+    /// instead. Indexed by layer for dimensional uniformity; only top-of-cell
+    /// entries are ever nonzero.
+    published_surface_conduction_heat_megajoules: []f64,
     macropore_radius_m: []f64,
     macropore_spacing_m: []f64,
     macropore_hydraulic_conductivity_m2_per_h_mpa: []f64,
@@ -93,7 +107,7 @@ pub const State = struct {
                 allocated += 1;
             }
         }
-        @memset(result.heat_capacity_mj_per_k, 1);
+        @memset(result.heat_capacity_megajoules_per_k, 1);
         return result;
     }
 
@@ -101,7 +115,7 @@ pub const State = struct {
     /// temperature, layer geometry, or terrain elevation.
     pub fn refresh(self: *State, grid: *const grid_module.GridState, properties: *const property_module.State, thermal: *const thermal_module.State, terrain: *const terrain_module.State, parameters: RuntimeParameters) !void {
         try validateRuntimeParameters(parameters);
-        if (grid.layer_count != self.layer_count or properties.layer_count != self.layer_count or thermal.total_heat_capacity_mj_per_m3_k.len != self.layer_count or terrain.columns * terrain.rows != grid.cell_count) return error.SoilHourlyWorkspaceDimensionMismatch;
+        if (grid.layer_count != self.layer_count or properties.layer_count != self.layer_count or thermal.total_heat_capacity_megajoules_per_m3_k.len != self.layer_count or terrain.columns * terrain.rows != grid.cell_count) return error.SoilHourlyWorkspaceDimensionMismatch;
         @memset(self.is_top_soil_layer, false);
         @memset(self.macropore_exchange_enabled, false);
         self.dual_domain_geometry_factor = parameters.dual_domain_geometry_factor;
@@ -139,7 +153,7 @@ pub const State = struct {
                 self.liquid_water_fraction[index] = @max(0.0, grid.matrix_liquid_water_m3[index] / matrix_volume_m3);
                 self.ice_fraction[index] = @max(0.0, grid.matrix_ice_water_m3[index] / matrix_volume_m3);
                 self.fraction_of_pore_volume_air_filled[index] = if (matrix_pore_m3 > 0) std.math.clamp(grid.matrix_air_volume_m3[index] / matrix_pore_m3, 0, 1) else 0;
-                self.heat_capacity_mj_per_k[index] = thermal.total_heat_capacity_mj_per_m3_k[index] * layer_volume_m3;
+                self.heat_capacity_megajoules_per_k[index] = thermal.total_heat_capacity_megajoules_per_m3_k[index] * layer_volume_m3;
                 self.macropore_radius_m[index] = parameters.macropore_radius_m;
                 const macropore_count_per_m2: usize = @intFromFloat(@floor(grid.macropore_pore_capacity_m3[index] / (3.1416 * parameters.macropore_radius_m * parameters.macropore_radius_m * layer_volume_m3)));
                 self.macropore_spacing_m[index] = if (macropore_count_per_m2 > 0) 1.0 / @sqrt(3.1416 * @as(f64, @floatFromInt(macropore_count_per_m2))) else 1.0;
@@ -178,17 +192,21 @@ pub const State = struct {
     }
 
     /// Binds the converged surface energy flux as an extensive top-cell heat
-    /// source. Surface flux is positive upward, hence the sign reversal.
+    /// source. Surface flux is positive upward, hence the sign reversal. The
+    /// accepted flux must be committed without clipping: any alteration here
+    /// would destroy the equal-and-opposite surface/soil energy transaction.
+    /// The implicit soil heat solve owns stability and reports non-convergence.
     pub fn bindSurfaceHeatFlux(self: *State, grid: *const grid_module.GridState, surface: *const surface_temperature_module.State) !void {
         if (surface.cell_count != grid.cell_count or self.layer_count != grid.layer_count) return error.SoilHourlyWorkspaceDimensionMismatch;
-        @memset(self.cell_heat_source_mj, 0);
+        @memset(self.cell_heat_source_megajoules, 0);
+        @memset(self.published_surface_conduction_heat_megajoules, 0);
         for (0..grid.cell_count) |cell| {
             if (grid.active_soil_layer_count[cell] == 0) return error.InvalidActiveSoilLayerCount;
             const top = cell * grid.soil_layer_capacity;
-            const requested_surface_to_soil_mj = -surface.conductive_heat_flux_mj_per_m2[cell] * self.horizontal_face_area_m2[top];
-            const available_sensible_heat_mj = @abs(grid.surface_temperature_k[cell] - grid.soil_temperature_k[top]) * self.heat_capacity_mj_per_k[top];
-            self.cell_heat_source_mj[top] = std.math.clamp(requested_surface_to_soil_mj, -available_sensible_heat_mj, available_sensible_heat_mj);
-            if (!std.math.isFinite(self.cell_heat_source_mj[top])) return error.NonFiniteSoilSurfaceHeatFlux;
+            const requested_surface_to_soil_megajoules = -surface.conductive_heat_flux_megajoules_per_m2[cell] * self.horizontal_face_area_m2[top];
+            self.cell_heat_source_megajoules[top] = requested_surface_to_soil_megajoules;
+            self.published_surface_conduction_heat_megajoules[top] = requested_surface_to_soil_megajoules;
+            if (!std.math.isFinite(self.cell_heat_source_megajoules[top])) return error.NonFiniteSoilSurfaceHeatFlux;
         }
     }
 
@@ -199,7 +217,7 @@ pub const State = struct {
 
     pub fn validateFinite(self: *const State) !void {
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) for (@field(self, field.name)) |value| if (!std.math.isFinite(value)) return error.NonFiniteSoilHourlyWorkspace;
-        for (self.heat_capacity_mj_per_k) |capacity| if (capacity <= 0) return error.InvalidSoilHourlyHeatCapacity;
+        for (self.heat_capacity_megajoules_per_k) |capacity| if (capacity <= 0) return error.InvalidSoilHourlyHeatCapacity;
     }
 
     fn freeAllocated(self: *State, count: usize) void {
@@ -223,7 +241,7 @@ test "hourly workspace refreshes gravity vapor fractions and extensive heat capa
     var catalog = @import("soil_catalog.zig").Catalog.init(allocator);
     defer catalog.deinit();
     _ = try catalog.appendFromSource("soil", fixture, @import("soil_water_retention.zig").compatibilityParameters(), @import("soil_profile_derivation.zig").compatibilityParameters());
-    const cfg = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const cfg = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(allocator, cfg);
     defer grid.deinit();
     try @import("model_initialization.zig").initializeCellHydrology(&grid, 0, catalog.entries.items[0].hydrology_per_m2);
@@ -232,7 +250,7 @@ test "hourly workspace refreshes gravity vapor fractions and extensive heat capa
     defer properties.deinit();
     var thermal = try thermal_module.State.initMapped(allocator, grid, catalog.entries.items, &.{0}, &.{1}, &.{1});
     defer thermal.deinit();
-    var thermal_context: thermal_module.UpdateContext = .{ .thermal = &thermal, .grid = &grid, .liquid_water_heat_capacity_mj_per_m3_k = 4.19, .ice_heat_capacity_mj_per_m3_k = 1.9274 };
+    var thermal_context: thermal_module.UpdateContext = .{ .thermal = &thermal, .grid = &grid, .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19, .ice_heat_capacity_megajoules_per_m3_k = 1.9274 };
     try thermal_module.updateTile(&thermal_context, .{ .first = 0, .end = 1 });
     const topo_source = "1 1 1 1 0 0 0 0\nsoil\n";
     var topography = try @import("topography.zig").parse(allocator, topo_source);
@@ -251,7 +269,7 @@ test "hourly workspace refreshes gravity vapor fractions and extensive heat capa
         workspace.root_referenced_total_water_potential_mpa[0],
         1e-14,
     );
-    try std.testing.expectApproxEqAbs(thermal.total_heat_capacity_mj_per_m3_k[0] * properties.layer_volume_m3[0], workspace.heat_capacity_mj_per_k[0], 1e-12);
+    try std.testing.expectApproxEqAbs(thermal.total_heat_capacity_megajoules_per_m3_k[0] * properties.layer_volume_m3[0], workspace.heat_capacity_megajoules_per_k[0], 1e-12);
     try std.testing.expect(workspace.is_top_soil_layer[0]);
     const parameters = compatibilityParameters();
     const count: usize = @intFromFloat(@floor(grid.macropore_pore_capacity_m3[0] / (3.1416 * parameters.macropore_radius_m * parameters.macropore_radius_m * properties.layer_volume_m3[0])));

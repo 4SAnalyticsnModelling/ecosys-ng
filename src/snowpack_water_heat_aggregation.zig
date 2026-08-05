@@ -7,7 +7,7 @@ pub const LayerFlux = struct {
     liquid_water_m3_per_step: f64 = 0,
     water_vapor_m3_per_step: f64 = 0,
     ice_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 /// Transfers from a snow layer to the residue and soil surface. These are
@@ -18,15 +18,15 @@ pub const GroundTransfer = struct {
     liquid_to_soil_macropore_m3_per_step: f64 = 0,
     vapor_to_residue_m3_per_step: f64 = 0,
     vapor_to_soil_m3_per_step: f64 = 0,
-    heat_to_residue_mj_per_step: f64 = 0,
-    heat_to_soil_mj_per_step: f64 = 0,
+    heat_to_residue_megajoules_per_step: f64 = 0,
+    heat_to_soil_megajoules_per_step: f64 = 0,
 };
 
 pub const Inputs = struct {
     /// Current snow heat capacity [snow_layer], MJ K^-1.
-    heat_capacity_mj_per_k_by_layer: []const f64,
+    heat_capacity_megajoules_per_k_by_layer: []const f64,
     /// The source presence threshold, MJ K^-1.
-    minimum_heat_capacity_mj_per_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     /// `XFLW*(LS)` at each layer's upper face [snow_layer].
     upper_face_transfer_by_layer: []const LayerFlux,
     /// `FLS*` and `HFLS*` losses [snow_layer].
@@ -58,17 +58,17 @@ pub fn aggregate(inputs: Inputs, state: *State, workspace: Workspace) !void {
     @memcpy(workspace.net_flux_by_layer, state.net_flux_by_layer);
 
     for (
-        inputs.heat_capacity_mj_per_k_by_layer,
+        inputs.heat_capacity_megajoules_per_k_by_layer,
         inputs.upper_face_transfer_by_layer,
         inputs.ground_transfer_by_layer,
         0..,
     ) |heat_capacity, upper_transfer, ground_transfer, layer| {
-        if (heat_capacity <= inputs.minimum_heat_capacity_mj_per_k) continue;
+        if (heat_capacity <= inputs.minimum_heat_capacity_megajoules_per_k) continue;
 
         const lower_transfer: ?LayerFlux =
-            if (layer + 1 < inputs.heat_capacity_mj_per_k_by_layer.len and
-            inputs.heat_capacity_mj_per_k_by_layer[layer + 1] >
-                inputs.minimum_heat_capacity_mj_per_k)
+            if (layer + 1 < inputs.heat_capacity_megajoules_per_k_by_layer.len and
+            inputs.heat_capacity_megajoules_per_k_by_layer[layer + 1] >
+                inputs.minimum_heat_capacity_megajoules_per_k)
                 inputs.upper_face_transfer_by_layer[layer + 1]
             else
                 null;
@@ -84,7 +84,7 @@ pub fn aggregate(inputs: Inputs, state: *State, workspace: Workspace) !void {
 }
 
 fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !void {
-    const layer_count = inputs.heat_capacity_mj_per_k_by_layer.len;
+    const layer_count = inputs.heat_capacity_megajoules_per_k_by_layer.len;
     if (layer_count == 0) return error.InvalidSnowpackAggregationDimensions;
     if (inputs.upper_face_transfer_by_layer.len != layer_count or
         inputs.ground_transfer_by_layer.len != layer_count or
@@ -96,12 +96,12 @@ fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !void 
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.minimum_heat_capacity_mj_per_k))
+    if (!std.math.isFinite(inputs.minimum_heat_capacity_megajoules_per_k))
         return error.NonFiniteSnowpackAggregationInput;
-    if (inputs.minimum_heat_capacity_mj_per_k < 0)
+    if (inputs.minimum_heat_capacity_megajoules_per_k < 0)
         return error.InvalidSnowpackHeatCapacity;
 
-    for (inputs.heat_capacity_mj_per_k_by_layer) |capacity| {
+    for (inputs.heat_capacity_megajoules_per_k_by_layer) |capacity| {
         if (!std.math.isFinite(capacity))
             return error.NonFiniteSnowpackAggregationInput;
         if (capacity < 0) return error.InvalidSnowpackHeatCapacity;
@@ -195,23 +195,23 @@ fn updateLayer(
         );
     }
 
-    candidate.convective_heat_mj_per_step = try add(
-        candidate.convective_heat_mj_per_step,
-        upper.convective_heat_mj_per_step,
+    candidate.convective_heat_megajoules_per_step = try add(
+        candidate.convective_heat_megajoules_per_step,
+        upper.convective_heat_megajoules_per_step,
     );
     if (lower) |flux| {
-        candidate.convective_heat_mj_per_step = try subtract(
-            candidate.convective_heat_mj_per_step,
-            flux.convective_heat_mj_per_step,
+        candidate.convective_heat_megajoules_per_step = try subtract(
+            candidate.convective_heat_megajoules_per_step,
+            flux.convective_heat_megajoules_per_step,
         );
     }
-    candidate.convective_heat_mj_per_step = try subtract(
-        candidate.convective_heat_mj_per_step,
-        ground.heat_to_residue_mj_per_step,
+    candidate.convective_heat_megajoules_per_step = try subtract(
+        candidate.convective_heat_megajoules_per_step,
+        ground.heat_to_residue_megajoules_per_step,
     );
-    candidate.convective_heat_mj_per_step = try subtract(
-        candidate.convective_heat_mj_per_step,
-        ground.heat_to_soil_mj_per_step,
+    candidate.convective_heat_megajoules_per_step = try subtract(
+        candidate.convective_heat_megajoules_per_step,
+        ground.heat_to_soil_megajoules_per_step,
     );
 }
 
@@ -247,7 +247,7 @@ fn filledFlux(value: f64) LayerFlux {
         .liquid_water_m3_per_step = value,
         .water_vapor_m3_per_step = value,
         .ice_m3_per_step = value,
-        .convective_heat_mj_per_step = value,
+        .convective_heat_megajoules_per_step = value,
     };
 }
 
@@ -269,8 +269,8 @@ test "active snow layers retain source divergence and update order" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_transfer_by_layer = &transfers,
         .ground_transfer_by_layer = &ground,
     }, &state, .{ .net_flux_by_layer = &scratch });
@@ -296,8 +296,8 @@ test "column water and heat balances close exactly at ground interfaces" {
             .liquid_to_soil_macropore_m3_per_step = 3,
             .vapor_to_residue_m3_per_step = 1,
             .vapor_to_soil_m3_per_step = 2,
-            .heat_to_residue_mj_per_step = 1,
-            .heat_to_soil_mj_per_step = 2,
+            .heat_to_residue_megajoules_per_step = 1,
+            .heat_to_soil_megajoules_per_step = 2,
         },
     };
     var totals = [_]LayerFlux{.{}} ** 3;
@@ -305,8 +305,8 @@ test "column water and heat balances close exactly at ground interfaces" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_transfer_by_layer = &transfers,
         .ground_transfer_by_layer = &ground,
     }, &state, .{ .net_flux_by_layer = &scratch });
@@ -320,7 +320,7 @@ test "column water and heat balances close exactly at ground interfaces" {
     try std.testing.expectEqual(@as(f64, 4), column.liquid_water_m3_per_step);
     try std.testing.expectEqual(@as(f64, 7), column.water_vapor_m3_per_step);
     try std.testing.expectEqual(@as(f64, 10), column.ice_m3_per_step);
-    try std.testing.expectEqual(@as(f64, 7), column.convective_heat_mj_per_step);
+    try std.testing.expectEqual(@as(f64, 7), column.convective_heat_megajoules_per_step);
 }
 
 test "inactive layers and gaps preserve REDIST capacity gates" {
@@ -336,8 +336,8 @@ test "inactive layers and gaps preserve REDIST capacity gates" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_transfer_by_layer = &transfers,
         .ground_transfer_by_layer = &ground,
     }, &state, .{ .net_flux_by_layer = &scratch });
@@ -356,8 +356,8 @@ test "runtime snow layer extent is not a compile-time model parameter" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_transfer_by_layer = &transfers,
         .ground_transfer_by_layer = &ground,
     }, &state, .{ .net_flux_by_layer = &scratch });
@@ -375,8 +375,8 @@ test "source arithmetic association is retained" {
     var state = State{ .net_flux_by_layer = &totals };
 
     try aggregate(.{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_transfer_by_layer = &transfers,
         .ground_transfer_by_layer = &ground,
     }, &state, .{ .net_flux_by_layer = &scratch });
@@ -387,7 +387,7 @@ test "source arithmetic association is retained" {
 test "nonfinite input and overflow preserve state atomically" {
     const capacities = [_]f64{ 2, 2 };
     var transfers = [_]LayerFlux{ filledFlux(1), filledFlux(1) };
-    transfers[1].convective_heat_mj_per_step = std.math.nan(f64);
+    transfers[1].convective_heat_megajoules_per_step = std.math.nan(f64);
     const ground = [_]GroundTransfer{.{}} ** 2;
     var totals = [_]LayerFlux{filledFlux(3)} ** 2;
     var scratch: [2]LayerFlux = undefined;
@@ -397,8 +397,8 @@ test "nonfinite input and overflow preserve state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackAggregationInput,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_transfer_by_layer = &transfers,
             .ground_transfer_by_layer = &ground,
         }, &state, workspace),
@@ -411,8 +411,8 @@ test "nonfinite input and overflow preserve state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackAggregationResult,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_transfer_by_layer = &transfers,
             .ground_transfer_by_layer = &ground,
         }, &state, workspace),
@@ -431,8 +431,8 @@ test "dimension and workspace alias failures precede mutation" {
     try std.testing.expectError(
         error.SnowpackAggregationWorkspaceOverlap,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_transfer_by_layer = &transfers,
             .ground_transfer_by_layer = &ground,
         }, &state, .{ .net_flux_by_layer = &totals }),
@@ -443,8 +443,8 @@ test "dimension and workspace alias failures precede mutation" {
     try std.testing.expectError(
         error.SnowpackAggregationDimensionMismatch,
         aggregate(.{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_transfer_by_layer = &transfers,
             .ground_transfer_by_layer = &ground,
         }, &state, .{ .net_flux_by_layer = &short_scratch }),

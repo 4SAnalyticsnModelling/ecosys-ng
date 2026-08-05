@@ -140,8 +140,60 @@ pub fn applyOrganic(context: *OrganicApplyContext, cell: usize, event: *const fe
         .nitrogen_g_n = event.manure_g_per_m2.nitrogen * area_m2,
         .phosphorus_g_p = event.manure_g_per_m2.phosphorus * area_m2,
     };
-    try organic_application.apply(destination, destination_layer, .plant_residue, event.plant_residue_type, plant, context.parameters);
-    try organic_application.apply(destination, destination_layer, .manure, event.manure_type, manure, context.parameters);
+    const owner_microbial_stride: usize = organic.microbial_substrate_count *
+        organic.microbial_population_count *
+        organic.kinetic_fraction_count;
+    const owner_dissolved_stride: usize = organic.substrate_count;
+    const owner_structural_stride: usize = organic.substrate_count * organic.structural_fraction_count;
+
+    const owner_microbial_start = destination_layer * owner_microbial_stride;
+    const owner_dissolved_start = destination_layer * owner_dissolved_stride;
+    const owner_structural_start = destination_layer * owner_structural_stride;
+
+    var owner_microbial_before: [organic.microbial_substrate_count * organic.microbial_population_count * organic.kinetic_fraction_count]organic.ElementPool = undefined;
+    var owner_dissolved_before: [organic.substrate_count]organic.ElementPool = undefined;
+    var owner_structural_before: [organic.substrate_count * organic.structural_fraction_count]organic.ElementPool = undefined;
+    var owner_colonized_before: [organic.substrate_count * organic.structural_fraction_count]f64 = undefined;
+
+    @memcpy(&owner_microbial_before, destination.microbial[owner_microbial_start .. owner_microbial_start + owner_microbial_stride]);
+    @memcpy(&owner_dissolved_before, destination.dissolved[owner_dissolved_start .. owner_dissolved_start + owner_dissolved_stride]);
+    @memcpy(&owner_structural_before, destination.structural[owner_structural_start .. owner_structural_start + owner_structural_stride]);
+    @memcpy(&owner_colonized_before, destination.colonized_structural_carbon_g_c[owner_structural_start .. owner_structural_start + owner_structural_stride]);
+
+    const rollback = struct {
+        fn restore(
+            target: *organic.State,
+            microbial_start_from: usize,
+            dissolved_start_from: usize,
+            structural_start_from: usize,
+            microbial_stride_from: usize,
+            dissolved_stride_from: usize,
+            structural_stride_from: usize,
+            microbial_before: [*]const organic.ElementPool,
+            dissolved_before: [*]const organic.ElementPool,
+            structural_before: [*]const organic.ElementPool,
+            colonized_before: []const f64,
+        ) void {
+            @memcpy(target.microbial[microbial_start_from .. microbial_start_from + microbial_stride_from], microbial_before[0..microbial_stride_from]);
+            @memcpy(target.dissolved[dissolved_start_from .. dissolved_start_from + dissolved_stride_from], dissolved_before[0..dissolved_stride_from]);
+            @memcpy(target.structural[structural_start_from .. structural_start_from + structural_stride_from], structural_before[0..structural_stride_from]);
+            @memcpy(target.colonized_structural_carbon_g_c[structural_start_from .. structural_start_from + structural_stride_from], colonized_before);
+        }
+    };
+
+    if (organic_application.apply(destination, destination_layer, .plant_residue, event.plant_residue_type, plant, context.parameters)) |_| {
+        // Continue.
+    } else |err| {
+        rollback.restore(destination, owner_microbial_start, owner_dissolved_start, owner_structural_start, owner_microbial_stride, owner_dissolved_stride, owner_structural_stride, &owner_microbial_before, &owner_dissolved_before, &owner_structural_before, &owner_colonized_before);
+        return err;
+    }
+    if (organic_application.apply(destination, destination_layer, .manure, event.manure_type, manure, context.parameters)) |_| {
+        // Continue.
+    } else |err| {
+        rollback.restore(destination, owner_microbial_start, owner_dissolved_start, owner_structural_start, owner_microbial_stride, owner_dissolved_stride, owner_structural_stride, &owner_microbial_before, &owner_dissolved_before, &owner_structural_before, &owner_colonized_before);
+        return err;
+    }
+
     const next = context.daily_organic_carbon_input_g_c[cell] + plant.carbon_g_c + manure.carbon_g_c;
     if (!std.math.isFinite(next)) return error.OrganicFertilizerApplicationOverflow;
     context.daily_organic_carbon_input_g_c[cell] = next;
@@ -276,4 +328,67 @@ test "organic dispatch resolves runtime depth and publishes UORGF and eligible T
     for (soil.dissolved[organic.substrate_count .. 2 * organic.substrate_count]) |pool| lower_dissolved_carbon_g_c += pool.carbon_g_c;
     try std.testing.expectEqual(@as(f64, 0), upper_dissolved_carbon_g_c);
     try std.testing.expect(lower_dissolved_carbon_g_c > 0);
+}
+
+test "organic dispatch rolls back full state change when manure application fails" {
+    const allocator = std.testing.allocator;
+    var soil = try organic.State.init(allocator, 2);
+    defer soil.deinit();
+    var surface = try organic.State.init(allocator, 1);
+    defer surface.deinit();
+    var parameters = try organic_parameters.sourceParameters(allocator);
+    defer parameters.deinit();
+
+    var daily_organic = [_]f64{0};
+    var daily_biome = [_]f64{0};
+    var daily_phosphorus = [_]f64{0};
+    var daily_nitrogen = [_]f64{0};
+    var context: OrganicApplyContext = .{
+        .soil = &soil,
+        .surface = &surface,
+        .parameters = &parameters,
+        .cell_area_m2 = &.{10},
+        .active_soil_layer_count = &.{2},
+        .soil_layer_capacity = 2,
+        .soil_layer_thickness_m = &.{ 0.1, 0.2 },
+        .daily_organic_carbon_input_g_c = &daily_organic,
+        .daily_biome_carbon_input_g_c = &daily_biome,
+        .daily_organic_phosphorus_input_g_p = &daily_phosphorus,
+        .daily_organic_nitrogen_input_g_n = &daily_nitrogen,
+        .source_hour_one_through_twenty_four = 12,
+        .solar_noon_hour_by_cell = &.{12},
+    };
+    const event: fertilizer_schedule.Event = .{
+        .date = .{ .day = 1, .month = 5, .year = 0 },
+        .nitrogen_g_per_m2 = .{ .broadcast_ammonium = 0, .broadcast_ammonia = 0, .broadcast_urea = 0, .broadcast_nitrate = 0, .banded_ammonium = 0, .banded_ammonia = 0, .banded_urea = 0, .banded_nitrate = 0 },
+        .phosphorus_g_per_m2 = .{ .broadcast_monocalcium_phosphate = 0, .banded_monocalcium_phosphate = 0, .broadcast_hydroxyapatite = 0 },
+        .calcium_carbonate_g_ca_per_m2 = 0,
+        .calcium_sulfate_g_ca_per_m2 = 0,
+        .plant_residue_g_per_m2 = .{ .carbon = 2, .nitrogen = 0.2, .phosphorus = 0.02 },
+        .manure_g_per_m2 = .{ .carbon = -1, .nitrogen = -0.1, .phosphorus = -0.01 },
+        .application_depth_m = 0.15,
+        .band_row_width_m = 0,
+        .fertilizer_formulation = 0,
+        .plant_residue_type = 2,
+        .manure_type = 2,
+    };
+
+    const before_microbial = try allocator.dupe(organic.ElementPool, soil.microbial);
+    defer allocator.free(before_microbial);
+    const before_dissolved = try allocator.dupe(organic.ElementPool, soil.dissolved);
+    defer allocator.free(before_dissolved);
+    const before_structural = try allocator.dupe(organic.ElementPool, soil.structural);
+    defer allocator.free(before_structural);
+    const before_colonized = try allocator.dupe(f64, soil.colonized_structural_carbon_g_c);
+    defer allocator.free(before_colonized);
+
+    try std.testing.expectError(error.InvalidOrganicFertilizerInput, applyOrganic(&context, 0, &event));
+    try std.testing.expectEqualSlices(organic.ElementPool, before_microbial, soil.microbial);
+    try std.testing.expectEqualSlices(organic.ElementPool, before_dissolved, soil.dissolved);
+    try std.testing.expectEqualSlices(organic.ElementPool, before_structural, soil.structural);
+    try std.testing.expectEqualSlices(f64, before_colonized, soil.colonized_structural_carbon_g_c);
+    try std.testing.expectEqual(@as(f64, 0), daily_organic[0]);
+    try std.testing.expectEqual(@as(f64, 0), daily_biome[0]);
+    try std.testing.expectEqual(@as(f64, 0), daily_phosphorus[0]);
+    try std.testing.expectEqual(@as(f64, 0), daily_nitrogen[0]);
 }

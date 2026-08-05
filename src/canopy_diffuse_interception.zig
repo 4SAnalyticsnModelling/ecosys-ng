@@ -28,7 +28,7 @@ pub const SurfaceAreas = struct {
 };
 
 pub const Inputs = struct {
-    working_diffuse_shortwave_mj_per_m2_h: f64,
+    working_diffuse_shortwave_megajoules_per_m2_h: f64,
     working_diffuse_par_umol_per_m2_s: f64,
     sky_incidence_fraction: []const f64,
     horizontal_sky_incidence_fraction: []const f64,
@@ -55,11 +55,11 @@ pub fn apply(inputs: Inputs, accumulators: *Accumulators) !void {
         inputs.horizontal_sky_incidence_fraction,
         inputs.is_backscattered,
     ) |incidence, horizontal_incidence, is_backscattered| {
-        const leaf_shortwave = inputs.working_diffuse_shortwave_mj_per_m2_h *
+        const leaf_shortwave = inputs.working_diffuse_shortwave_megajoules_per_m2_h *
             incidence * inputs.absorptivity.leaf_shortwave;
-        const stalk_shortwave = inputs.working_diffuse_shortwave_mj_per_m2_h *
+        const stalk_shortwave = inputs.working_diffuse_shortwave_megajoules_per_m2_h *
             incidence * inputs.absorptivity.stalk_shortwave;
-        const dead_shortwave = inputs.working_diffuse_shortwave_mj_per_m2_h *
+        const dead_shortwave = inputs.working_diffuse_shortwave_megajoules_per_m2_h *
             incidence * inputs.absorptivity.standing_dead_shortwave;
         const leaf_par = inputs.working_diffuse_par_umol_per_m2_s *
             incidence * inputs.absorptivity.leaf_par;
@@ -136,7 +136,7 @@ fn validate(inputs: Inputs, accumulators: Accumulators) !void {
         inputs.is_backscattered.len != zone_count)
         return error.CanopyDiffuseInterceptionDimensionMismatch;
     inline for (.{
-        inputs.working_diffuse_shortwave_mj_per_m2_h,
+        inputs.working_diffuse_shortwave_megajoules_per_m2_h,
         inputs.working_diffuse_par_umol_per_m2_s,
         accumulators.diffuse_leaf_par_umol_per_m2_s,
         accumulators.total_leaf_par_umol_per_m2_s,
@@ -171,7 +171,7 @@ test "diffuse sky zones preserve absorption and scattering order" {
         .intercepted_horizontal_area_fraction = 0,
     };
     try apply(.{
-        .working_diffuse_shortwave_mj_per_m2_h = 2,
+        .working_diffuse_shortwave_megajoules_per_m2_h = 2,
         .working_diffuse_par_umol_per_m2_s = 100,
         .sky_incidence_fraction = &.{ 0.25, 0.75 },
         .horizontal_sky_incidence_fraction = &.{ 0.4, 0.6 },
@@ -217,7 +217,7 @@ test "zone mismatch leaves accumulators unchanged" {
     try std.testing.expectError(
         error.CanopyDiffuseInterceptionDimensionMismatch,
         apply(.{
-            .working_diffuse_shortwave_mj_per_m2_h = 1,
+            .working_diffuse_shortwave_megajoules_per_m2_h = 1,
             .working_diffuse_par_umol_per_m2_s = 1,
             .sky_incidence_fraction = &.{ 0.5, 0.5 },
             .horizontal_sky_incidence_fraction = &.{0.5},

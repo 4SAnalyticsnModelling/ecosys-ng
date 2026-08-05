@@ -13,10 +13,10 @@ pub const Inputs = struct {
     canopy_total_water_potential_mpa: f64,
     minimum_dry_matter_fraction: f64,
     canopy_surface_water_m3: f64,
-    dry_carbon_heat_capacity_mj_per_m3_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    high_heat_capacity_threshold_mj_per_m2_k: f64,
-    low_heat_capacity_threshold_mj_per_m2_k: f64,
+    dry_carbon_heat_capacity_megajoules_per_m3_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    high_heat_capacity_threshold_megajoules_per_m2_k: f64,
+    low_heat_capacity_threshold_megajoules_per_m2_k: f64,
     cell_area_m2: f64,
     current_canopy_temperature_k: f64,
     high_capacity_temperature_step_k: f64,
@@ -36,10 +36,10 @@ pub const Result = struct {
     dry_matter_fraction: f64,
     canopy_water_capacity_m3: f64,
     trial_canopy_water_capacity_m3: f64,
-    dry_canopy_heat_capacity_mj_per_k: f64,
-    wet_canopy_heat_capacity_mj_per_k: f64,
-    high_heat_capacity_threshold_mj_per_k: f64,
-    low_heat_capacity_threshold_mj_per_k: f64,
+    dry_canopy_heat_capacity_megajoules_per_k: f64,
+    wet_canopy_heat_capacity_megajoules_per_k: f64,
+    high_heat_capacity_threshold_megajoules_per_k: f64,
+    low_heat_capacity_threshold_megajoules_per_k: f64,
     previous_canopy_temperature_k: f64,
     trial_canopy_temperature_k: f64,
     canopy_temperature_step_k: f64,
@@ -76,17 +76,17 @@ pub fn calculate(inputs: Inputs) !Result {
         dry_matter_fraction;
     const trial_water_capacity = water_capacity;
     const dry_heat_capacity =
-        inputs.dry_carbon_heat_capacity_mj_per_m3_k *
+        inputs.dry_carbon_heat_capacity_megajoules_per_m3_k *
         active_carbon *
         inputs.stalk_volume_per_carbon_m3_per_g_c;
     const wet_heat_capacity = dry_heat_capacity +
-        inputs.liquid_water_heat_capacity_mj_per_m3_k *
+        inputs.liquid_water_heat_capacity_megajoules_per_m3_k *
             (@max(0, inputs.canopy_surface_water_m3) +
                 @max(0, inputs.current_canopy_water_m3));
     const high_threshold =
-        inputs.high_heat_capacity_threshold_mj_per_m2_k * inputs.cell_area_m2;
+        inputs.high_heat_capacity_threshold_megajoules_per_m2_k * inputs.cell_area_m2;
     const low_threshold =
-        inputs.low_heat_capacity_threshold_mj_per_m2_k * inputs.cell_area_m2;
+        inputs.low_heat_capacity_threshold_megajoules_per_m2_k * inputs.cell_area_m2;
     const previous_temperature = inputs.current_canopy_temperature_k;
     const trial_temperature = previous_temperature;
     const temperature_step = if (dry_heat_capacity > high_threshold)
@@ -102,10 +102,10 @@ pub fn calculate(inputs: Inputs) !Result {
         .dry_matter_fraction = dry_matter_fraction,
         .canopy_water_capacity_m3 = water_capacity,
         .trial_canopy_water_capacity_m3 = trial_water_capacity,
-        .dry_canopy_heat_capacity_mj_per_k = dry_heat_capacity,
-        .wet_canopy_heat_capacity_mj_per_k = wet_heat_capacity,
-        .high_heat_capacity_threshold_mj_per_k = high_threshold,
-        .low_heat_capacity_threshold_mj_per_k = low_threshold,
+        .dry_canopy_heat_capacity_megajoules_per_k = dry_heat_capacity,
+        .wet_canopy_heat_capacity_megajoules_per_k = wet_heat_capacity,
+        .high_heat_capacity_threshold_megajoules_per_k = high_threshold,
+        .low_heat_capacity_threshold_megajoules_per_k = low_threshold,
         .previous_canopy_temperature_k = previous_temperature,
         .trial_canopy_temperature_k = trial_temperature,
         .canopy_temperature_step_k = temperature_step,
@@ -125,10 +125,10 @@ fn validateInputs(inputs: Inputs) !void {
     if (inputs.water_flux_timestep_h < 0 or
         inputs.stalk_volume_per_carbon_m3_per_g_c <= 0 or
         inputs.minimum_dry_matter_fraction <= 0 or
-        inputs.dry_carbon_heat_capacity_mj_per_m3_k < 0 or
-        inputs.liquid_water_heat_capacity_mj_per_m3_k < 0 or
-        inputs.high_heat_capacity_threshold_mj_per_m2_k < 0 or
-        inputs.low_heat_capacity_threshold_mj_per_m2_k < 0 or
+        inputs.dry_carbon_heat_capacity_megajoules_per_m3_k < 0 or
+        inputs.liquid_water_heat_capacity_megajoules_per_m3_k < 0 or
+        inputs.high_heat_capacity_threshold_megajoules_per_m2_k < 0 or
+        inputs.low_heat_capacity_threshold_megajoules_per_m2_k < 0 or
         inputs.cell_area_m2 <= 0 or
         inputs.current_canopy_temperature_k <= 0 or
         inputs.high_capacity_temperature_step_k <= 0 or
@@ -152,10 +152,10 @@ fn sourceInputs() Inputs {
         .canopy_total_water_potential_mpa = -2,
         .minimum_dry_matter_fraction = 0.2,
         .canopy_surface_water_m3 = 0.1,
-        .dry_carbon_heat_capacity_mj_per_m3_k = 2.496,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-        .high_heat_capacity_threshold_mj_per_m2_k = 0.838e-3,
-        .low_heat_capacity_threshold_mj_per_m2_k = 0.838e-4,
+        .dry_carbon_heat_capacity_megajoules_per_m3_k = 2.496,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+        .high_heat_capacity_threshold_megajoules_per_m2_k = 0.838e-3,
+        .low_heat_capacity_threshold_megajoules_per_m2_k = 0.838e-4,
         .cell_area_m2 = 100,
         .current_canopy_temperature_k = 295,
         .high_capacity_temperature_step_k = 0.125,
@@ -187,7 +187,7 @@ test "low dry heat capacity selects source low-capacity temperature step" {
     inputs.stalk_carbon_g_c = 0;
     const result = try calculate(inputs);
     try std.testing.expectEqual(@as(f64, 0), result.hydrologically_active_carbon_g_c);
-    try std.testing.expectEqual(@as(f64, 0), result.dry_canopy_heat_capacity_mj_per_k);
+    try std.testing.expectEqual(@as(f64, 0), result.dry_canopy_heat_capacity_megajoules_per_k);
     try std.testing.expectEqual(@as(f64, 0.025), result.canopy_temperature_step_k);
 }
 

@@ -10,15 +10,15 @@ pub const Inputs = struct {
     residue_nitrogen_g_n_per_m2: []const f64,
     residue_phosphorus_g_p_per_m2: []const f64,
     horizontal_area_m2: f64,
-    dry_layer_mass_Mg: f64,
+    dry_layer_mass_megagrams: f64,
     total_layer_volume_m3: f64,
     area_scaled_calculation_floor: f64,
     calculation_floor: f64,
     layer_kind: LayerKind,
-    soil_organic_carbon_g_c_per_Mg: f64,
-    particulate_organic_carbon_g_c_per_Mg: f64,
-    soil_organic_nitrogen_g_n_per_Mg: f64,
-    soil_organic_phosphorus_g_p_per_Mg: f64,
+    soil_organic_carbon_g_c_per_megagram: f64,
+    particulate_organic_carbon_g_c_per_megagram: f64,
+    soil_organic_nitrogen_g_n_per_megagram: f64,
+    soil_organic_phosphorus_g_p_per_megagram: f64,
     particulate_nitrogen_to_carbon_g_n_per_g_c: f64,
     particulate_phosphorus_to_carbon_g_p_per_g_c: f64,
 };
@@ -54,18 +54,18 @@ pub fn initialize(result: Result, inputs: Inputs) !void {
         }
     }
     if (inputs.horizontal_area_m2 <= 0 or
-        inputs.dry_layer_mass_Mg < 0 or
+        inputs.dry_layer_mass_megagrams < 0 or
         inputs.total_layer_volume_m3 < 0 or
         inputs.area_scaled_calculation_floor < 0 or
         inputs.calculation_floor < 0 or
-        inputs.soil_organic_carbon_g_c_per_Mg < 0 or
-        inputs.particulate_organic_carbon_g_c_per_Mg < 0 or
-        inputs.soil_organic_nitrogen_g_n_per_Mg < 0 or
-        inputs.soil_organic_phosphorus_g_p_per_Mg < 0 or
+        inputs.soil_organic_carbon_g_c_per_megagram < 0 or
+        inputs.particulate_organic_carbon_g_c_per_megagram < 0 or
+        inputs.soil_organic_nitrogen_g_n_per_megagram < 0 or
+        inputs.soil_organic_phosphorus_g_p_per_megagram < 0 or
         inputs.particulate_nitrogen_to_carbon_g_n_per_g_c < 0 or
         inputs.particulate_phosphorus_to_carbon_g_p_per_g_c < 0)
         return error.InvalidResidueSoilConcentrationInput;
-    const use_mass = inputs.dry_layer_mass_Mg >
+    const use_mass = inputs.dry_layer_mass_megagrams >
         inputs.area_scaled_calculation_floor;
     if (!use_mass and inputs.total_layer_volume_m3 <= 0)
         return error.InvalidResidueSoilConcentrationInput;
@@ -80,7 +80,7 @@ pub fn initialize(result: Result, inputs: Inputs) !void {
             if (value < 0) return error.InvalidResidueSoilConcentrationInput;
             const candidate = value * inputs.horizontal_area_m2 /
                 (if (use_mass)
-                    inputs.dry_layer_mass_Mg
+                    inputs.dry_layer_mass_megagrams
                 else
                     inputs.total_layer_volume_m3);
             if (!std.math.isFinite(candidate))
@@ -88,18 +88,18 @@ pub fn initialize(result: Result, inputs: Inputs) !void {
         }
     }
     if (inputs.layer_kind == .mineral_soil and
-        inputs.soil_organic_carbon_g_c_per_Mg > inputs.calculation_floor)
+        inputs.soil_organic_carbon_g_c_per_megagram > inputs.calculation_floor)
     {
         inline for (.{
             @min(
                 inputs.particulate_nitrogen_to_carbon_g_n_per_g_c *
-                    inputs.particulate_organic_carbon_g_c_per_Mg,
-                inputs.soil_organic_nitrogen_g_n_per_Mg,
+                    inputs.particulate_organic_carbon_g_c_per_megagram,
+                inputs.soil_organic_nitrogen_g_n_per_megagram,
             ),
             @min(
                 inputs.particulate_phosphorus_to_carbon_g_p_per_g_c *
-                    inputs.particulate_organic_carbon_g_c_per_Mg,
-                inputs.soil_organic_phosphorus_g_p_per_Mg,
+                    inputs.particulate_organic_carbon_g_c_per_megagram,
+                inputs.soil_organic_phosphorus_g_p_per_megagram,
             ),
         }) |candidate| if (!std.math.isFinite(candidate))
             return error.ResidueSoilConcentrationOverflow;
@@ -107,7 +107,7 @@ pub fn initialize(result: Result, inputs: Inputs) !void {
 
     const denominator =
         if (use_mass)
-            inputs.dry_layer_mass_Mg
+            inputs.dry_layer_mass_megagrams
         else
             inputs.total_layer_volume_m3;
     for (0..residue_pool_count) |pool| {
@@ -128,11 +128,11 @@ pub fn initialize(result: Result, inputs: Inputs) !void {
     const particulate = residue_pool_count;
     const humus = residue_pool_count + 1;
     if (inputs.layer_kind == .mineral_soil) {
-        const soil_carbon = inputs.soil_organic_carbon_g_c_per_Mg;
+        const soil_carbon = inputs.soil_organic_carbon_g_c_per_megagram;
         const particulate_carbon =
-            inputs.particulate_organic_carbon_g_c_per_Mg;
-        const soil_nitrogen = inputs.soil_organic_nitrogen_g_n_per_Mg;
-        const soil_phosphorus = inputs.soil_organic_phosphorus_g_p_per_Mg;
+            inputs.particulate_organic_carbon_g_c_per_megagram;
+        const soil_nitrogen = inputs.soil_organic_nitrogen_g_n_per_megagram;
+        const soil_phosphorus = inputs.soil_organic_phosphorus_g_p_per_megagram;
         if (soil_carbon > inputs.calculation_floor) {
             result.carbon_concentration[particulate] = particulate_carbon;
             result.carbon_concentration[humus] =
@@ -185,15 +185,15 @@ test "STARTS mass branch converts residues then conserves mineral C N P" {
         .residue_nitrogen_g_n_per_m2 = &.{ 0.1, 0.2, 0.3 },
         .residue_phosphorus_g_p_per_m2 = &.{ 0.01, 0.02, 0.03 },
         .horizontal_area_m2 = 100,
-        .dry_layer_mass_Mg = 10,
+        .dry_layer_mass_megagrams = 10,
         .total_layer_volume_m3 = 20,
         .area_scaled_calculation_floor = 1e-13,
         .calculation_floor = 1e-15,
         .layer_kind = .mineral_soil,
-        .soil_organic_carbon_g_c_per_Mg = 100,
-        .particulate_organic_carbon_g_c_per_Mg = 30,
-        .soil_organic_nitrogen_g_n_per_Mg = 8,
-        .soil_organic_phosphorus_g_p_per_Mg = 0.8,
+        .soil_organic_carbon_g_c_per_megagram = 100,
+        .particulate_organic_carbon_g_c_per_megagram = 30,
+        .soil_organic_nitrogen_g_n_per_megagram = 8,
+        .soil_organic_phosphorus_g_p_per_megagram = 0.8,
         .particulate_nitrogen_to_carbon_g_n_per_g_c = 0.1,
         .particulate_phosphorus_to_carbon_g_p_per_g_c = 0.01,
     });
@@ -215,15 +215,15 @@ test "surface volume branch zeros particulate and humus slots" {
         .residue_nitrogen_g_n_per_m2 = &.{ 0.1, 0.2 },
         .residue_phosphorus_g_p_per_m2 = &.{ 0.01, 0.02 },
         .horizontal_area_m2 = 10,
-        .dry_layer_mass_Mg = 0,
+        .dry_layer_mass_megagrams = 0,
         .total_layer_volume_m3 = 2,
         .area_scaled_calculation_floor = 1e-14,
         .calculation_floor = 1e-15,
         .layer_kind = .surface_litter,
-        .soil_organic_carbon_g_c_per_Mg = 0,
-        .particulate_organic_carbon_g_c_per_Mg = 0,
-        .soil_organic_nitrogen_g_n_per_Mg = 0,
-        .soil_organic_phosphorus_g_p_per_Mg = 0,
+        .soil_organic_carbon_g_c_per_megagram = 0,
+        .particulate_organic_carbon_g_c_per_megagram = 0,
+        .soil_organic_nitrogen_g_n_per_megagram = 0,
+        .soil_organic_phosphorus_g_p_per_megagram = 0,
         .particulate_nitrogen_to_carbon_g_n_per_g_c = 0.1,
         .particulate_phosphorus_to_carbon_g_p_per_g_c = 0.01,
     });

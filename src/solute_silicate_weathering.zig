@@ -46,6 +46,58 @@ pub fn calculate(state: State, mineral: Mineral, metal_activity_mol_per_m3: f64,
     };
 }
 
+/// Source-order magnitude of SOLUTE.F 1908--1937. Natural and ground rock
+/// losses are independently clipped against the same activity difference;
+/// the source does not share an aqueous-hydrogen budget between them.
+pub fn calculateSourceOrder(
+    state: State,
+    mineral: Mineral,
+    metal_activity_mol_per_m3: f64,
+    hydrogen_activity_mol_per_m3: f64,
+    hydrogen_silicate_concentration_mol_per_m3: f64,
+    natural_maximum_mol_per_m3_step: f64,
+    ground_maximum_mol_per_m3_step: f64,
+) !Rates {
+    try validate(
+        state,
+        mineral,
+        metal_activity_mol_per_m3,
+        hydrogen_activity_mol_per_m3,
+        hydrogen_silicate_concentration_mol_per_m3,
+        natural_maximum_mol_per_m3_step,
+        ground_maximum_mol_per_m3_step,
+    );
+    const charge: f64 = @floatFromInt(mineral.metal_charge);
+    const equilibrium_activity = if (hydrogen_silicate_concentration_mol_per_m3 == 0)
+        std.math.inf(f64)
+    else
+        mineral.solubility_product *
+            std.math.pow(f64, hydrogen_activity_mol_per_m3, charge) /
+            std.math.pow(
+                f64,
+                hydrogen_silicate_concentration_mol_per_m3,
+                mineral.hydrogen_silicate_mol_per_mol_metal,
+            );
+    if (std.math.isNan(equilibrium_activity) or equilibrium_activity < 0)
+        return error.NonFiniteSilicateEquilibrium;
+    const source_loss_magnitude = @max(
+        0,
+        equilibrium_activity - metal_activity_mol_per_m3,
+    );
+    return .{
+        .natural_rock_dissolution_mol_per_m3_step = @min(
+            state.natural_rock_mol_per_m3,
+            natural_maximum_mol_per_m3_step,
+            source_loss_magnitude,
+        ),
+        .ground_rock_dissolution_mol_per_m3_step = @min(
+            state.ground_rock_mol_per_m3,
+            ground_maximum_mol_per_m3_step,
+            source_loss_magnitude,
+        ),
+    };
+}
+
 pub fn commit(state: *State, mineral: Mineral, rates: Rates) !void {
     try validateState(state.*);
     try validateMineral(mineral);
@@ -171,4 +223,42 @@ test "all silicate valence classes match source weathering magnitudes" {
             1e-15,
         );
     }
+}
+
+test "source-order natural and ground weathering have independent limits" {
+    const state = State{
+        .natural_rock_mol_per_m3 = 0.8,
+        .ground_rock_mol_per_m3 = 0.6,
+        .dissolved_metal_mol_per_m3 = 0.1,
+        .dissolved_hydrogen_silicate_mol_per_m3 = 0.4,
+        .hydrogen_mol_per_m3 = 0.003,
+    };
+    const mineral = Mineral{
+        .metal_charge = 3,
+        .hydrogen_silicate_mol_per_mol_metal = 0.75,
+        .solubility_product = 10,
+    };
+    const source = try calculateSourceOrder(
+        state,
+        mineral,
+        0.1,
+        0.7,
+        0.4,
+        0.12,
+        0.08,
+    );
+    try std.testing.expectEqual(@as(f64, 0.12), source.natural_rock_dissolution_mol_per_m3_step);
+    try std.testing.expectEqual(@as(f64, 0.08), source.ground_rock_dissolution_mol_per_m3_step);
+
+    const conservative = try calculate(
+        state,
+        mineral,
+        0.1,
+        0.7,
+        0.4,
+        0.12,
+        0.08,
+    );
+    try std.testing.expectEqual(@as(f64, 0.001), conservative.natural_rock_dissolution_mol_per_m3_step);
+    try std.testing.expectEqual(@as(f64, 0), conservative.ground_rock_dissolution_mol_per_m3_step);
 }

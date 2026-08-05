@@ -20,7 +20,7 @@ pub const Inputs = struct {
     clay_mass_fraction: f64,
     organic_carbon_mass_fraction: f64,
     root_length_density_m_m3: f64,
-    water_viscosity_mg_m_s: f64,
+    water_viscosity_megagrams_m_s: f64,
     surface_temperature_c: f64,
 };
 
@@ -30,8 +30,8 @@ pub const Properties = struct {
     rainfall_detachability_g_j: f64,
     soil_cohesion_kpa: f64,
     detachability_coefficient: f64,
-    particle_density_mg_m3: f64,
-    water_viscosity_mg_m_s: f64,
+    particle_density_megagrams_m3: f64,
+    water_viscosity_megagrams_m_s: f64,
     sediment_settling_rate_m_h: f64,
 };
 
@@ -70,7 +70,7 @@ pub fn calculate(
         return error.InvalidMassFraction;
     }
     if (inputs.root_length_density_m_m3 < 0.0) return error.InvalidRootLengthDensity;
-    if (inputs.water_viscosity_mg_m_s <= 0.0) return error.InvalidWaterViscosity;
+    if (inputs.water_viscosity_megagrams_m_s <= 0.0) return error.InvalidWaterViscosity;
     if (inputs.surface_temperature_c <= -273.15) return error.InvalidSurfaceTemperature;
 
     const runoff_capacity_coefficient = std.math.pow(
@@ -92,14 +92,14 @@ pub fn calculate(
         5.0 * inputs.clay_mass_fraction +
         5.0 * (1.0 - @exp(-1.0e-5 * inputs.root_length_density_m_m3));
     const detachability_coefficient = 0.79 * @exp(-0.85 * soil_cohesion_kpa);
-    const particle_density_mg_m3 = 1.30 * inputs.organic_carbon_mass_fraction +
+    const particle_density_megagrams_m3 = 1.30 * inputs.organic_carbon_mass_fraction +
         2.66 * (1.0 - inputs.organic_carbon_mass_fraction);
-    const water_viscosity_mg_m_s = inputs.water_viscosity_mg_m_s *
+    const water_viscosity_megagrams_m_s = inputs.water_viscosity_megagrams_m_s *
         @exp(0.533 - 0.0267 * inputs.surface_temperature_c);
     const sediment_settling_rate_m_h = 3.6e3 * 9.8 *
-        (particle_density_mg_m3 - 1.0) *
+        (particle_density_megagrams_m3 - 1.0) *
         std.math.pow(f64, 1.0e-6 * inputs.characteristic_particle_size_um, 2.0) /
-        (18.0 * water_viscosity_mg_m_s);
+        (18.0 * water_viscosity_megagrams_m_s);
 
     const properties = Properties{
         .runoff_capacity_coefficient = runoff_capacity_coefficient,
@@ -107,8 +107,8 @@ pub fn calculate(
         .rainfall_detachability_g_j = rainfall_detachability_g_j,
         .soil_cohesion_kpa = soil_cohesion_kpa,
         .detachability_coefficient = detachability_coefficient,
-        .particle_density_mg_m3 = particle_density_mg_m3,
-        .water_viscosity_mg_m_s = water_viscosity_mg_m_s,
+        .particle_density_megagrams_m3 = particle_density_megagrams_m3,
+        .water_viscosity_megagrams_m_s = water_viscosity_megagrams_m_s,
         .sediment_settling_rate_m_h = sediment_settling_rate_m_h,
     };
     inline for (std.meta.fields(Properties)) |field| {
@@ -128,7 +128,7 @@ test "enabled disturbance preserves erosion pedotransfer equations" {
         .clay_mass_fraction = 0.2,
         .organic_carbon_mass_fraction = 0.15,
         .root_length_density_m_m3 = 10_000.0,
-        .water_viscosity_mg_m_s = 1.0e-6,
+        .water_viscosity_megagrams_m_s = 1.0e-6,
         .surface_temperature_c = 20.0,
     })).?;
     const expected_detachability = 1.0e-6 * (1.5 + 2.5 * (1.0 - 0.3 - 0.05));

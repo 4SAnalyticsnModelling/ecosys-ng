@@ -79,6 +79,11 @@ pub const Transformations = struct {
 
 pub const State = Transformations;
 
+pub const SourceIterationStage = enum {
+    before_iteration_ceiling,
+    iteration_ceiling,
+};
+
 pub fn commit(state: *State, transformations: Transformations) !void {
     try validateState(state.*);
     var next = state.*;
@@ -89,6 +94,109 @@ pub fn commit(state: *State, transformations: Transformations) !void {
     }
     try validateState(next);
     state.* = next;
+}
+
+/// Direct state-generation diagnostic for SOLUTE.F 2330--2346. The source
+/// updates H, OH, Al, and Fe even at `M == MRXN`; all remaining primary ions
+/// in this span are skipped at that terminal iteration.
+pub fn applySourceOrderPrimaryUpdate(
+    current: State,
+    transformations: Transformations,
+    minimum_concentration_mol_per_m3: f64,
+    stage: SourceIterationStage,
+) !State {
+    try validateState(current);
+    if (!std.math.isFinite(minimum_concentration_mol_per_m3) or
+        minimum_concentration_mol_per_m3 <= 0)
+        return error.InvalidAqueousConcentrationFloor;
+    inline for (@typeInfo(Transformations).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(transformations, field.name)))
+            return error.NonFiniteAqueousTransformation;
+
+    var next = current;
+    next.hydrogen = current.hydrogen + transformations.hydrogen;
+    next.hydroxide = current.hydroxide + transformations.hydroxide;
+    if (!std.math.isFinite(next.hydrogen) or !std.math.isFinite(next.hydroxide))
+        return error.NonFiniteAqueousState;
+    next.aluminum = @max(
+        minimum_concentration_mol_per_m3,
+        current.aluminum + transformations.aluminum,
+    );
+    next.iron = @max(
+        minimum_concentration_mol_per_m3,
+        current.iron + transformations.iron,
+    );
+    if (stage == .iteration_ceiling) return next;
+
+    inline for (.{
+        "ammonium_non_band",
+        "ammonium_band",
+        "ammonia_non_band",
+        "ammonia_band",
+        "calcium",
+        "magnesium",
+        "sodium",
+        "potassium",
+        "sulfate",
+        "carbonate",
+        "bicarbonate",
+        "carbon_dioxide",
+    }) |name| {
+        @field(next, name) = @max(
+            minimum_concentration_mol_per_m3,
+            @field(current, name) + @field(transformations, name),
+        );
+    }
+    return next;
+}
+
+/// Direct complex-species update for SOLUTE.F 2347--2367. This block is
+/// entirely inside `M .NE. MRXN` and therefore leaves terminal state intact.
+pub fn applySourceOrderComplexUpdate(
+    current: State,
+    transformations: Transformations,
+    minimum_concentration_mol_per_m3: f64,
+    stage: SourceIterationStage,
+) !State {
+    try validateState(current);
+    if (!std.math.isFinite(minimum_concentration_mol_per_m3) or
+        minimum_concentration_mol_per_m3 <= 0)
+        return error.InvalidAqueousConcentrationFloor;
+    inline for (@typeInfo(Transformations).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(transformations, field.name)))
+            return error.NonFiniteAqueousTransformation;
+    if (stage == .iteration_ceiling) return current;
+
+    var next = current;
+    inline for (.{
+        "aluminum_hydroxide_1",
+        "aluminum_hydroxide_2",
+        "aluminum_hydroxide_3",
+        "aluminum_hydroxide_4",
+        "aluminum_sulfate",
+        "iron_hydroxide_1",
+        "iron_hydroxide_2",
+        "iron_hydroxide_3",
+        "iron_hydroxide_4",
+        "iron_sulfate",
+        "calcium_hydroxide",
+        "calcium_carbonate",
+        "calcium_bicarbonate",
+        "calcium_sulfate",
+        "magnesium_hydroxide",
+        "magnesium_carbonate",
+        "magnesium_bicarbonate",
+        "magnesium_sulfate",
+        "sodium_carbonate",
+        "sodium_sulfate",
+        "potassium_sulfate",
+    }) |name| {
+        @field(next, name) = @max(
+            minimum_concentration_mol_per_m3,
+            @field(current, name) + @field(transformations, name),
+        );
+    }
+    return next;
 }
 
 /// Exact non-phosphate ion-pairing portion of SOLUTE.F's transformation block.
@@ -202,4 +310,73 @@ test "aqueous state transaction rolls back all species on failure" {
     transformations.calcium_sulfate = 2;
     try std.testing.expectError(error.NegativeAqueousState, commit(&state, transformations));
     try std.testing.expectEqualDeep(before, state);
+}
+
+test "source primary update preserves terminal gate and floor order" {
+    const floor = 0.01;
+    const current = filledState(1);
+    var changes = filledState(0);
+    changes.hydrogen = -0.25;
+    changes.hydroxide = 0.5;
+    changes.aluminum = -2;
+    changes.iron = -0.25;
+    changes.calcium = -2;
+    changes.ammonium_non_band = 0.4;
+
+    const terminal = try applySourceOrderPrimaryUpdate(
+        current,
+        changes,
+        floor,
+        .iteration_ceiling,
+    );
+    try std.testing.expectEqual(@as(f64, 0.75), terminal.hydrogen);
+    try std.testing.expectEqual(@as(f64, 1.5), terminal.hydroxide);
+    try std.testing.expectEqual(floor, terminal.aluminum);
+    try std.testing.expectEqual(@as(f64, 0.75), terminal.iron);
+    try std.testing.expectEqual(current.calcium, terminal.calcium);
+    try std.testing.expectEqual(
+        current.ammonium_non_band,
+        terminal.ammonium_non_band,
+    );
+
+    const continuing = try applySourceOrderPrimaryUpdate(
+        current,
+        changes,
+        floor,
+        .before_iteration_ceiling,
+    );
+    try std.testing.expectEqual(floor, continuing.calcium);
+    try std.testing.expectEqual(
+        @as(f64, 1.4),
+        continuing.ammonium_non_band,
+    );
+}
+
+test "source complex update is floor clamped only before ceiling" {
+    const current = filledState(1);
+    var changes = filledState(0);
+    changes.aluminum_hydroxide_1 = -2;
+    changes.magnesium_sulfate = 0.25;
+    changes.potassium_sulfate = -0.5;
+
+    const terminal = try applySourceOrderComplexUpdate(
+        current,
+        changes,
+        0.01,
+        .iteration_ceiling,
+    );
+    try std.testing.expectEqualDeep(current, terminal);
+
+    const continuing = try applySourceOrderComplexUpdate(
+        current,
+        changes,
+        0.01,
+        .before_iteration_ceiling,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.01),
+        continuing.aluminum_hydroxide_1,
+    );
+    try std.testing.expectEqual(@as(f64, 1.25), continuing.magnesium_sulfate);
+    try std.testing.expectEqual(@as(f64, 0.5), continuing.potassium_sulfate);
 }

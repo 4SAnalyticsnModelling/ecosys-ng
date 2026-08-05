@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const State = struct {
-    solar_radiation_mj_per_m2: f64,
+    solar_radiation_megajoules_per_m2: f64,
     maximum_air_temperature_c: f64,
     minimum_air_temperature_c: f64,
     maximum_vapor_pressure_kpa: f64,
@@ -18,7 +18,7 @@ pub fn reset(state: *State) !void {
         state.maximum_soil_temperature_c_by_layer.len !=
             state.minimum_soil_temperature_c_by_layer.len)
         return error.DailyWeatherResetLayerDimensionMismatch;
-    state.solar_radiation_mj_per_m2 = 0;
+    state.solar_radiation_megajoules_per_m2 = 0;
     state.maximum_air_temperature_c = -100;
     state.minimum_air_temperature_c = 100;
     state.maximum_vapor_pressure_kpa = 0;
@@ -33,7 +33,7 @@ test "DAY resets weather diagnostics to exact source sentinels" {
     var maximum = [_]f64{ 1, 2, 3 };
     var minimum = [_]f64{ -1, -2, -3 };
     var state: State = .{
-        .solar_radiation_mj_per_m2 = 10,
+        .solar_radiation_megajoules_per_m2 = 10,
         .maximum_air_temperature_c = 30,
         .minimum_air_temperature_c = 10,
         .maximum_vapor_pressure_kpa = 2,
@@ -44,7 +44,7 @@ test "DAY resets weather diagnostics to exact source sentinels" {
         .minimum_soil_temperature_c_by_layer = &minimum,
     };
     try reset(&state);
-    try std.testing.expectEqual(@as(f64, 0), state.solar_radiation_mj_per_m2);
+    try std.testing.expectEqual(@as(f64, 0), state.solar_radiation_megajoules_per_m2);
     try std.testing.expectEqual(@as(f64, -100), state.maximum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, 100), state.minimum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, 0), state.maximum_vapor_pressure_kpa);
@@ -67,7 +67,7 @@ test "runtime layer count has no source JZ ceiling" {
     @memset(maximum, 0);
     @memset(minimum, 0);
     var state: State = .{
-        .solar_radiation_mj_per_m2 = 0,
+        .solar_radiation_megajoules_per_m2 = 0,
         .maximum_air_temperature_c = 0,
         .minimum_air_temperature_c = 0,
         .maximum_vapor_pressure_kpa = 0,
@@ -88,7 +88,7 @@ test "dimension failure leaves scalar and layer state unchanged" {
     const maximum_before = maximum;
     const minimum_before = minimum;
     var state: State = .{
-        .solar_radiation_mj_per_m2 = 10,
+        .solar_radiation_megajoules_per_m2 = 10,
         .maximum_air_temperature_c = 30,
         .minimum_air_temperature_c = 10,
         .maximum_vapor_pressure_kpa = 2,
@@ -102,7 +102,7 @@ test "dimension failure leaves scalar and layer state unchanged" {
         error.DailyWeatherResetLayerDimensionMismatch,
         reset(&state),
     );
-    try std.testing.expectEqual(@as(f64, 10), state.solar_radiation_mj_per_m2);
+    try std.testing.expectEqual(@as(f64, 10), state.solar_radiation_megajoules_per_m2);
     try std.testing.expectEqualSlices(f64, &maximum_before, &maximum);
     try std.testing.expectEqualSlices(f64, &minimum_before, &minimum);
 }

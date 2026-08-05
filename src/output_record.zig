@@ -32,8 +32,13 @@ pub const Timestamp = struct {
 
 pub const Record = struct {
     timestamp: Timestamp,
-    grid_column: usize,
-    grid_row: usize,
+    /// Site longitude in degrees east, from the site file's
+    /// `longitude_degrees_east`. This is the physical coordinate the user
+    /// entered, not a grid index: an output row must be locatable on the earth
+    /// without knowing the grid layout.
+    longitude_degrees_east: f64,
+    /// Site latitude in degrees north, from `latitude_degrees_north`.
+    latitude_degrees_north: f64,
     values: []const f64,
 };
 
@@ -42,7 +47,7 @@ pub const Record = struct {
 pub fn writeHeader(writer: *std.Io.Writer, variables: []const Variable, enabled: []const bool, delimiter: Delimiter) !void {
     if (variables.len != enabled.len) return error.OutputSelectionDimensionMismatch;
     const separator = delimiter.byte();
-    const fixed = [_][]const u8{ "year", "day_of_year", "month", "day", "hour", "grid_column", "grid_row" };
+    const fixed = [_][]const u8{ "year", "day_of_year", "month", "day", "hour", "longitude", "latitude" };
     for (fixed, 0..) |heading, index| {
         if (index != 0) try writer.writeByte(separator);
         try writer.writeAll(heading);
@@ -62,13 +67,19 @@ pub fn writeHeader(writer: *std.Io.Writer, variables: []const Variable, enabled:
 pub fn writeRecord(writer: *std.Io.Writer, record: Record, enabled: []const bool, delimiter: Delimiter) !void {
     if (record.values.len != enabled.len) return error.OutputSelectionDimensionMismatch;
     try validateTimestamp(record.timestamp);
-    if (record.grid_column == 0 or record.grid_row == 0)
-        return error.InvalidOutputGridCoordinate;
+    // Physical coordinate ranges, matching `site.zig`'s own validation. A grid
+    // index could only be zero-checked; a real coordinate can be checked against
+    // the earth, which also catches a caller still passing an index.
+    if (!std.math.isFinite(record.longitude_degrees_east) or
+        record.longitude_degrees_east < -180 or record.longitude_degrees_east > 180 or
+        !std.math.isFinite(record.latitude_degrees_north) or
+        record.latitude_degrees_north < -90 or record.latitude_degrees_north > 90)
+        return error.InvalidOutputSiteCoordinate;
     for (record.values, enabled) |value, selected|
         if (selected and !std.math.isFinite(value))
             return error.NonFiniteOutputValue;
     const separator = delimiter.byte();
-    try writer.print("{d}{c}{d}{c}{d}{c}{d}{c}{d}{c}{d}{c}{d}", .{ record.timestamp.year, separator, record.timestamp.day_of_year, separator, record.timestamp.month, separator, record.timestamp.day, separator, record.timestamp.hour, separator, record.grid_column, separator, record.grid_row });
+    try writer.print("{d}{c}{d}{c}{d}{c}{d}{c}{d}{c}{d}{c}{d}", .{ record.timestamp.year, separator, record.timestamp.day_of_year, separator, record.timestamp.month, separator, record.timestamp.day, separator, record.timestamp.hour, separator, record.longitude_degrees_east, separator, record.latitude_degrees_north });
     for (record.values, enabled) |value, selected| {
         if (!selected) continue;
         try writer.writeByte(separator);
@@ -77,25 +88,68 @@ pub fn writeRecord(writer: *std.Io.Writer, record: Record, enabled: []const bool
     try writer.writeByte('\n');
 }
 
-/// FOUTS-compatible per-cell/year stem, without a compile-time grid width.
-pub fn buildCellFileName(allocator: std.mem.Allocator, grid_column: usize, grid_row: usize, year: i32, editor_name: []const u8) ![]u8 {
-    if (grid_column == 0 or grid_row == 0 or year <= 0 or year > 9999 or
-        !safeEditorName(editor_name))
+/// Subject of an output file: the whole soil/ecosystem column, or one plant
+/// species. The source model encoded this as a digit in the file name, `0` for
+/// FOUTS soil output and `1..5` for FOUTP per-plant output.
+pub const Subject = union(enum) {
+    /// Whole-column soil and ecosystem output, the source model's `0`.
+    soil_or_eco,
+    /// One plant species, named by its species input file rather than numbered.
+    species: []const u8,
+};
+
+/// Builds a self-describing output file name:
+///
+///     lat_<latitude>_lon_<longitude>_<subject>_<year>_<editor>.txt
+///
+/// for example `lat_45.30_lon_-75.70_soil_or_eco_1998_f25ed1.txt`.
+///
+/// This replaces the source model's positional stem (`010101998f25ed1.txt`), whose
+/// leading digits were grid column, grid row and a species digit. That encoding
+/// could not be read without knowing the grid layout, capped species at one digit,
+/// and gave no hint of the site's real location. Every
+/// (latitude, longitude, subject, year, editor) combination gets its own file, so
+/// the name is a complete key for the row set it contains.
+///
+/// Coordinates are printed to two decimal places, which distinguishes sites about
+/// a kilometre apart and keeps the name short. A site file supplying more precision
+/// than that would collide, which is why `latitude_degrees_north` and
+/// `longitude_degrees_east` are validated to real ranges by the caller.
+pub fn buildOutputFileName(
+    allocator: std.mem.Allocator,
+    latitude_degrees_north: f64,
+    longitude_degrees_east: f64,
+    subject: Subject,
+    year: i32,
+    editor_name: []const u8,
+) ![]u8 {
+    if (year <= 0 or year > 9999 or !safeEditorName(editor_name))
         return error.InvalidOutputFileName;
-    if (hasTextExtension(editor_name))
-        return std.fmt.allocPrint(allocator, "{d:0>2}{d:0>2}0{d:0>4}{s}", .{ grid_column, grid_row, @as(u32, @intCast(year)), editor_name });
-    return std.fmt.allocPrint(allocator, "{d:0>2}{d:0>2}0{d:0>4}{s}.txt", .{ grid_column, grid_row, @as(u32, @intCast(year)), editor_name });
+    if (!std.math.isFinite(latitude_degrees_north) or
+        latitude_degrees_north < -90 or latitude_degrees_north > 90 or
+        !std.math.isFinite(longitude_degrees_east) or
+        longitude_degrees_east < -180 or longitude_degrees_east > 180)
+        return error.InvalidOutputFileName;
+    const subject_text = switch (subject) {
+        .soil_or_eco => "soil_or_eco",
+        .species => |name| name,
+    };
+    // A species name becomes a path component, so it needs the same safety check
+    // as the editor name: no separators, no parent traversal, no empty name.
+    if (!safeEditorName(subject_text)) return error.InvalidOutputFileName;
+    const stem = trimTextExtension(editor_name);
+    if (stem.len == 0) return error.InvalidOutputFileName;
+    return std.fmt.allocPrint(
+        allocator,
+        "lat_{d:.2}_lon_{d:.2}_{s}_{d:0>4}_{s}.txt",
+        .{ latitude_degrees_north, longitude_degrees_east, subject_text, @as(u32, @intCast(year)), stem },
+    );
 }
 
-/// FOUTP-compatible per-plant/year stem. Species is runtime-sized and
-/// one-based, so populations are not restricted to the source model's five.
-pub fn buildPlantFileName(allocator: std.mem.Allocator, grid_column: usize, grid_row: usize, one_based_species: usize, year: i32, editor_name: []const u8) ![]u8 {
-    if (grid_column == 0 or grid_row == 0 or one_based_species == 0 or
-        year <= 0 or year > 9999 or !safeEditorName(editor_name))
-        return error.InvalidOutputFileName;
-    if (hasTextExtension(editor_name))
-        return std.fmt.allocPrint(allocator, "{d:0>2}{d:0>2}{d}{d:0>4}{s}", .{ grid_column, grid_row, one_based_species, @as(u32, @intCast(year)), editor_name });
-    return std.fmt.allocPrint(allocator, "{d:0>2}{d:0>2}{d}{d:0>4}{s}.txt", .{ grid_column, grid_row, one_based_species, @as(u32, @intCast(year)), editor_name });
+/// Drops a trailing `.txt` so an editor name that already carries one does not
+/// produce `..._f25ed1.txt.txt`.
+fn trimTextExtension(name: []const u8) []const u8 {
+    return if (hasTextExtension(name)) name[0 .. name.len - 4] else name;
 }
 
 fn hasTextExtension(name: []const u8) bool {
@@ -141,36 +195,127 @@ test "selected output record streams headings units and finite values" {
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer bytes.deinit();
     try writeHeader(&bytes.writer, &variables, &enabled, .pipe);
-    try writeRecord(&bytes.writer, .{ .timestamp = .{ .year = 2001, .day_of_year = 32, .month = 2, .day = 1, .hour = 5 }, .grid_column = 12, .grid_row = 3, .values = &.{ 1.25, 99, 2.5 } }, &enabled, .pipe);
-    try std.testing.expectEqualStrings("year|day_of_year|month|day|hour|grid_column|grid_row|runoff[mm]|water_table_depth[m]\n2001|32|2|1|5|12|3|1.25e0|2.5e0\n", bytes.written());
+    try writeRecord(&bytes.writer, .{ .timestamp = .{ .year = 2001, .day_of_year = 32, .month = 2, .day = 1, .hour = 5 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{ 1.25, 99, 2.5 } }, &enabled, .pipe);
+    try std.testing.expectEqualStrings("year|day_of_year|month|day|hour|longitude|latitude|runoff[mm]|water_table_depth[m]\n2001|32|2|1|5|-75.7|45.3|1.25e0|2.5e0\n", bytes.written());
+}
+
+test "SI unit labels with spaces stream under tab and are rejected under space" {
+    const variables = [_]Variable{
+        .{ .name = "litter_water_vapor_density", .unit = "g m-3" },
+        .{ .name = "nitrous_oxide_emission", .unit = "g N m-2 h-1" },
+    };
+    const enabled = [_]bool{ true, true };
+    var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer bytes.deinit();
+    try writeHeader(&bytes.writer, &variables, &enabled, .tab);
+    try std.testing.expectEqualStrings(
+        "year\tday_of_year\tmonth\tday\thour\tlongitude\tlatitude\tlitter_water_vapor_density[g m-3]\tnitrous_oxide_emission[g N m-2 h-1]\n",
+        bytes.written(),
+    );
+
+    // A space-delimited stream cannot carry a unit that contains spaces, so the
+    // heading is rejected instead of producing ambiguous columns.
+    var space_bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer space_bytes.deinit();
+    try std.testing.expectError(
+        error.InvalidOutputLabel,
+        writeHeader(&space_bytes.writer, &variables, &enabled, .space),
+    );
 }
 
 test "output writer rejects nonfinite selected values" {
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer bytes.deinit();
-    try std.testing.expectError(error.NonFiniteOutputValue, writeRecord(&bytes.writer, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 0 }, .grid_column = 1, .grid_row = 1, .values = &.{std.math.nan(f64)} }, &.{true}, .comma));
+    try std.testing.expectError(error.NonFiniteOutputValue, writeRecord(&bytes.writer, .{ .timestamp = .{ .year = 2001, .day_of_year = 1, .month = 1, .day = 1, .hour = 0 }, .longitude_degrees_east = -75.7, .latitude_degrees_north = 45.3, .values = &.{std.math.nan(f64)} }, &.{true}, .comma));
 }
 
-test "cell output name retains source coordinate and year convention" {
-    const name = try buildCellFileName(std.testing.allocator, 3, 7, 2001, "hourly_water.txt");
+test "output name is self describing: lat, lon, subject, year, editor" {
+    const name = try buildOutputFileName(std.testing.allocator, 45.3, -75.7, .soil_or_eco, 1998, "f25ed1");
     defer std.testing.allocator.free(name);
-    try std.testing.expectEqualStrings("030702001hourly_water.txt", name);
+    // Replaces the source model's positional stem `010101998f25ed1.txt`, whose
+    // leading digits were grid column, grid row and a species digit.
+    try std.testing.expectEqualStrings("lat_45.30_lon_-75.70_soil_or_eco_1998_f25ed1.txt", name);
 }
 
-test "extensionless editor input still produces a text output filename" {
-    const name = try buildCellFileName(std.testing.allocator, 1, 2, 2001, "hourly_water");
+test "an editor name that already ends in .txt does not double the extension" {
+    const name = try buildOutputFileName(std.testing.allocator, 45.3, -75.7, .soil_or_eco, 1998, "f25ed1.txt");
     defer std.testing.allocator.free(name);
-    try std.testing.expectEqualStrings("010202001hourly_water.txt", name);
+    try std.testing.expectEqualStrings("lat_45.30_lon_-75.70_soil_or_eco_1998_f25ed1.txt", name);
 }
 
-test "plant output name preserves source convention without a species limit" {
-    const ordinary = try buildPlantFileName(std.testing.allocator, 3, 7, 1, 2001, "hourly_carbon.txt");
-    defer std.testing.allocator.free(ordinary);
-    try std.testing.expectEqualStrings("030712001hourly_carbon.txt", ordinary);
-    const many_species = try buildPlantFileName(std.testing.allocator, 3, 7, 127, 2001, "hourly_carbon.txt");
-    defer std.testing.allocator.free(many_species);
-    try std.testing.expectEqualStrings("03071272001hourly_carbon.txt", many_species);
-    try std.testing.expectError(error.InvalidOutputFileName, buildPlantFileName(std.testing.allocator, 3, 7, 0, 2001, "hourly_carbon.txt"));
+test "plant output names carry the species name rather than a digit" {
+    const maize = try buildOutputFileName(std.testing.allocator, 45.3, -75.7, .{ .species = "maize" }, 1998, "f25ch1");
+    defer std.testing.allocator.free(maize);
+    try std.testing.expectEqualStrings("lat_45.30_lon_-75.70_maize_1998_f25ch1.txt", maize);
+    // Species are no longer limited to one digit's worth of populations, and two
+    // species at the same site and year get distinct files.
+    const soybean = try buildOutputFileName(std.testing.allocator, 45.3, -75.7, .{ .species = "soybean" }, 1998, "f25ch1");
+    defer std.testing.allocator.free(soybean);
+    try std.testing.expectEqualStrings("lat_45.30_lon_-75.70_soybean_1998_f25ch1.txt", soybean);
+}
+
+test "southern and western sites keep their coordinate signs" {
+    const name = try buildOutputFileName(std.testing.allocator, -33.87, 151.21, .soil_or_eco, 2001, "hourly_water");
+    defer std.testing.allocator.free(name);
+    try std.testing.expectEqualStrings("lat_-33.87_lon_151.21_soil_or_eco_2001_hourly_water.txt", name);
+}
+
+test "each subject, year and editor combination yields a distinct file" {
+    // The name is the complete key for the row set it contains, so varying any
+    // one component must change it.
+    const base = try buildOutputFileName(std.testing.allocator, 45.3, -75.7, .soil_or_eco, 1998, "f25ch1");
+    defer std.testing.allocator.free(base);
+    inline for (.{
+        .{ 45.3, -75.7, Subject.soil_or_eco, 1999, "f25ch1" },
+        .{ 45.3, -75.7, Subject.soil_or_eco, 1998, "f25wh1" },
+        .{ 46.0, -75.7, Subject.soil_or_eco, 1998, "f25ch1" },
+        .{ 45.3, -74.0, Subject.soil_or_eco, 1998, "f25ch1" },
+    }) |variant| {
+        const other = try buildOutputFileName(std.testing.allocator, variant[0], variant[1], variant[2], variant[3], variant[4]);
+        defer std.testing.allocator.free(other);
+        try std.testing.expect(!std.mem.eql(u8, base, other));
+    }
+}
+
+test "output file names reject unsafe editor names, species and coordinates" {
+    inline for (.{
+        "",
+        "../hourly",
+        "subdir/hourly",
+        "subdir\\hourly",
+        " hourly",
+        "hourly ",
+        "hourly.",
+        "hourly:data",
+        "hourly|data",
+        "hourly?data",
+    }) |name| {
+        // Unsafe as an editor name.
+        try std.testing.expectError(
+            error.InvalidOutputFileName,
+            buildOutputFileName(std.testing.allocator, 45.3, -75.7, .soil_or_eco, 2001, name),
+        );
+        // And equally unsafe as a species name, since both become path components.
+        try std.testing.expectError(
+            error.InvalidOutputFileName,
+            buildOutputFileName(std.testing.allocator, 45.3, -75.7, .{ .species = name }, 2001, "hourly"),
+        );
+    }
+    // Coordinates must be real, which also catches a caller still passing an index
+    // for longitude only if it is out of range; the year bounds are unchanged.
+    inline for (.{
+        .{ 91.0, 0.0 },
+        .{ -91.0, 0.0 },
+        .{ 0.0, 181.0 },
+        .{ 0.0, -181.0 },
+    }) |pair| try std.testing.expectError(
+        error.InvalidOutputFileName,
+        buildOutputFileName(std.testing.allocator, pair[0], pair[1], .soil_or_eco, 2001, "hourly"),
+    );
+    try std.testing.expectError(
+        error.InvalidOutputFileName,
+        buildOutputFileName(std.testing.allocator, 45.3, -75.7, .soil_or_eco, 0, "hourly"),
+    );
 }
 
 test "output timestamps reject impossible or inconsistent calendar values" {
@@ -187,8 +332,8 @@ test "output timestamps reject impossible or inconsistent calendar values" {
             &bytes.writer,
             .{
                 .timestamp = timestamp,
-                .grid_column = 1,
-                .grid_row = 1,
+                .longitude_degrees_east = -75.7,
+                .latitude_degrees_north = 45.3,
                 .values = &.{1},
             },
             &.{true},
@@ -211,28 +356,3 @@ test "output timestamps reject impossible or inconsistent calendar values" {
     });
 }
 
-test "output file builders reject invalid coordinates and editor names" {
-    inline for (.{
-        "",
-        "../hourly",
-        "subdir/hourly",
-        "subdir\\hourly",
-        " hourly",
-        "hourly ",
-        "hourly.",
-        "hourly:data",
-        "hourly|data",
-        "hourly?data",
-    }) |name| try std.testing.expectError(
-        error.InvalidOutputFileName,
-        buildCellFileName(std.testing.allocator, 1, 1, 2001, name),
-    );
-    try std.testing.expectError(
-        error.InvalidOutputFileName,
-        buildCellFileName(std.testing.allocator, 0, 1, 2001, "hourly"),
-    );
-    try std.testing.expectError(
-        error.InvalidOutputFileName,
-        buildPlantFileName(std.testing.allocator, 1, 0, 1, 2001, "hourly"),
-    );
-}

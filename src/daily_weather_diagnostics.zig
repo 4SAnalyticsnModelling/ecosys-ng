@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const State = struct {
-    solar_radiation_mj_per_m2: f64,
+    solar_radiation_megajoules_per_m2: f64,
     maximum_air_temperature_c: f64,
     minimum_air_temperature_c: f64,
     maximum_vapor_pressure_kpa: f64,
@@ -9,7 +9,7 @@ pub const State = struct {
     vapor_concentration_m3_per_m3: f64,
     wind_travel_m: f64,
     total_water_input_mm: f64,
-    net_radiation_change_mj_per_m2: f64,
+    net_radiation_change_megajoules_per_m2: f64,
     air_temperature_change_k: f64,
     vapor_concentration_change_m3_per_m3: f64,
 };
@@ -19,8 +19,8 @@ pub const Hour = struct {
     first_scene_day: bool,
     solar_angle_sine: f64,
     seasonal_daylight_sine: f64,
-    direct_shortwave_mj_per_m2: f64,
-    diffuse_shortwave_mj_per_m2: f64,
+    direct_shortwave_megajoules_per_m2: f64,
+    diffuse_shortwave_megajoules_per_m2: f64,
     air_temperature_c: f64,
     air_temperature_k: f64,
     previous_air_temperature_k: f64,
@@ -30,8 +30,8 @@ pub const Hour = struct {
     snowfall_water_equivalent_m: f64,
     surface_irrigation_m: f64,
     subsurface_irrigation_m: f64,
-    net_radiation_mj_per_m2: f64,
-    previous_net_radiation_mj_per_m2: f64,
+    net_radiation_megajoules_per_m2: f64,
+    previous_net_radiation_megajoules_per_m2: f64,
     previous_vapor_concentration_m3_per_m3: f64,
 };
 
@@ -49,8 +49,8 @@ pub fn accumulate(state: *State, hour: Hour) !void {
     if (hour.solar_angle_sine < -1 or hour.solar_angle_sine > 1 or
         hour.seasonal_daylight_sine < -1 or
         hour.seasonal_daylight_sine > 1 or
-        hour.direct_shortwave_mj_per_m2 < 0 or
-        hour.diffuse_shortwave_mj_per_m2 < 0 or
+        hour.direct_shortwave_megajoules_per_m2 < 0 or
+        hour.diffuse_shortwave_megajoules_per_m2 < 0 or
         hour.air_temperature_k <= 0 or hour.vapor_pressure_kpa < 0 or
         hour.wind_speed_m_per_h < 0 or hour.rainfall_m < 0 or
         hour.snowfall_water_equivalent_m < 0 or
@@ -59,9 +59,9 @@ pub fn accumulate(state: *State, hour: Hour) !void {
 
     var next = state.*;
     if (hour.solar_angle_sine > 0) {
-        next.solar_radiation_mj_per_m2 +=
-            hour.direct_shortwave_mj_per_m2 * hour.solar_angle_sine +
-            hour.diffuse_shortwave_mj_per_m2 *
+        next.solar_radiation_megajoules_per_m2 +=
+            hour.direct_shortwave_megajoules_per_m2 * hour.solar_angle_sine +
+            hour.diffuse_shortwave_megajoules_per_m2 *
                 hour.seasonal_daylight_sine;
     }
     next.maximum_air_temperature_c =
@@ -79,13 +79,13 @@ pub fn accumulate(state: *State, hour: Hour) !void {
         (hour.rainfall_m + hour.snowfall_water_equivalent_m +
             hour.surface_irrigation_m + hour.subsurface_irrigation_m);
     if (hour.first_scene_day and hour.source_hour == 1) {
-        next.net_radiation_change_mj_per_m2 = 0;
+        next.net_radiation_change_megajoules_per_m2 = 0;
         next.air_temperature_change_k = 0;
         next.vapor_concentration_change_m3_per_m3 = 0;
     } else {
-        next.net_radiation_change_mj_per_m2 =
-            hour.net_radiation_mj_per_m2 -
-            hour.previous_net_radiation_mj_per_m2;
+        next.net_radiation_change_megajoules_per_m2 =
+            hour.net_radiation_megajoules_per_m2 -
+            hour.previous_net_radiation_megajoules_per_m2;
         next.air_temperature_change_k =
             hour.air_temperature_k - hour.previous_air_temperature_k;
         next.vapor_concentration_change_m3_per_m3 =
@@ -100,7 +100,7 @@ pub fn accumulate(state: *State, hour: Hour) !void {
 
 fn initialState() State {
     return .{
-        .solar_radiation_mj_per_m2 = 0,
+        .solar_radiation_megajoules_per_m2 = 0,
         .maximum_air_temperature_c = -100,
         .minimum_air_temperature_c = 100,
         .maximum_vapor_pressure_kpa = 0,
@@ -108,7 +108,7 @@ fn initialState() State {
         .vapor_concentration_m3_per_m3 = 0,
         .wind_travel_m = 0,
         .total_water_input_mm = 0,
-        .net_radiation_change_mj_per_m2 = 0,
+        .net_radiation_change_megajoules_per_m2 = 0,
         .air_temperature_change_k = 0,
         .vapor_concentration_change_m3_per_m3 = 0,
     };
@@ -120,8 +120,8 @@ fn exampleHour() Hour {
         .first_scene_day = false,
         .solar_angle_sine = 0.5,
         .seasonal_daylight_sine = 0.8,
-        .direct_shortwave_mj_per_m2 = 2,
-        .diffuse_shortwave_mj_per_m2 = 1,
+        .direct_shortwave_megajoules_per_m2 = 2,
+        .diffuse_shortwave_megajoules_per_m2 = 1,
         .air_temperature_c = 20,
         .air_temperature_k = 293.15,
         .previous_air_temperature_k = 292.15,
@@ -131,8 +131,8 @@ fn exampleHour() Hour {
         .snowfall_water_equivalent_m = 0.002,
         .surface_irrigation_m = 0.003,
         .subsurface_irrigation_m = 0.004,
-        .net_radiation_mj_per_m2 = 3,
-        .previous_net_radiation_mj_per_m2 = 2.5,
+        .net_radiation_megajoules_per_m2 = 3,
+        .previous_net_radiation_megajoules_per_m2 = 2.5,
         .previous_vapor_concentration_m3_per_m3 = 1e-6,
     };
 }
@@ -142,14 +142,14 @@ test "WTHR daily diagnostics include all four water carriers" {
     try accumulate(&state, exampleHour());
     try std.testing.expectApproxEqAbs(
         @as(f64, 1.8),
-        state.solar_radiation_mj_per_m2,
+        state.solar_radiation_megajoules_per_m2,
         1e-15,
     );
     try std.testing.expectEqual(@as(f64, 20), state.maximum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, 20), state.minimum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, 10), state.total_water_input_mm);
     try std.testing.expectEqual(@as(f64, 100), state.wind_travel_m);
-    try std.testing.expectEqual(@as(f64, 0.5), state.net_radiation_change_mj_per_m2);
+    try std.testing.expectEqual(@as(f64, 0.5), state.net_radiation_change_megajoules_per_m2);
     try std.testing.expectEqual(@as(f64, 1), state.air_temperature_change_k);
 }
 
@@ -158,7 +158,7 @@ test "night hour excludes radiation but retains weather totals" {
     var hour = exampleHour();
     hour.solar_angle_sine = 0;
     try accumulate(&state, hour);
-    try std.testing.expectEqual(@as(f64, 0), state.solar_radiation_mj_per_m2);
+    try std.testing.expectEqual(@as(f64, 0), state.solar_radiation_megajoules_per_m2);
     try std.testing.expectEqual(@as(f64, 10), state.total_water_input_mm);
 }
 
@@ -168,7 +168,7 @@ test "first scene source hour clears all hourly changes" {
     hour.source_hour = 1;
     hour.first_scene_day = true;
     try accumulate(&state, hour);
-    try std.testing.expectEqual(@as(f64, 0), state.net_radiation_change_mj_per_m2);
+    try std.testing.expectEqual(@as(f64, 0), state.net_radiation_change_megajoules_per_m2);
     try std.testing.expectEqual(@as(f64, 0), state.air_temperature_change_k);
     try std.testing.expectEqual(
         @as(f64, 0),

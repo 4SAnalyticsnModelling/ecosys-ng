@@ -57,7 +57,7 @@ pub const WaterHeatFlux = struct {
     liquid_water_m3_per_step: f64 = 0,
     water_vapor_m3_per_step: f64 = 0,
     ice_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
 };
 
 /// Non-salt carriers use the elemental gram basis tracked by ecosys.
@@ -83,9 +83,9 @@ pub const SurfaceInput = struct {
 
 pub const Inputs = struct {
     /// Current top snow-layer heat capacity, MJ K^-1.
-    top_layer_heat_capacity_mj_per_k: f64,
+    top_layer_heat_capacity_megajoules_per_k: f64,
     /// Snow-layer presence threshold, MJ K^-1.
-    minimum_heat_capacity_mj_per_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     surface_input: SurfaceInput,
 };
 
@@ -115,8 +115,8 @@ pub fn account(
     workspace: Workspace,
 ) !void {
     try validateInputs(equilibrium_mode, inputs, state.*, workspace);
-    if (inputs.top_layer_heat_capacity_mj_per_k >
-        inputs.minimum_heat_capacity_mj_per_k)
+    if (inputs.top_layer_heat_capacity_megajoules_per_k >
+        inputs.minimum_heat_capacity_megajoules_per_k)
     {
         return;
     }
@@ -156,13 +156,13 @@ fn validateInputs(
     state: State,
     workspace: Workspace,
 ) !void {
-    if (!std.math.isFinite(inputs.top_layer_heat_capacity_mj_per_k) or
-        !std.math.isFinite(inputs.minimum_heat_capacity_mj_per_k))
+    if (!std.math.isFinite(inputs.top_layer_heat_capacity_megajoules_per_k) or
+        !std.math.isFinite(inputs.minimum_heat_capacity_megajoules_per_k))
     {
         return error.NonFiniteSnowpackSurfaceInput;
     }
-    if (inputs.top_layer_heat_capacity_mj_per_k < 0 or
-        inputs.minimum_heat_capacity_mj_per_k < 0)
+    if (inputs.top_layer_heat_capacity_megajoules_per_k < 0 or
+        inputs.minimum_heat_capacity_megajoules_per_k < 0)
     {
         return error.InvalidSnowpackHeatCapacity;
     }
@@ -254,8 +254,8 @@ test "absent top layer receives coupled dynamic surface input in source order" {
     };
 
     try account(.dynamic, .{
-        .top_layer_heat_capacity_mj_per_k = 0,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 0,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = .{
             .water_heat = filled(WaterHeatFlux, 1),
             .solute = filled(SoluteFlux, 2),
@@ -284,13 +284,13 @@ test "surface input changes equal every external input exactly" {
         .liquid_water_m3_per_step = 2,
         .water_vapor_m3_per_step = 3,
         .ice_m3_per_step = 4,
-        .convective_heat_mj_per_step = 5,
+        .convective_heat_megajoules_per_step = 5,
     };
     const solute = filled(SoluteFlux, 6);
 
     try account(.dynamic, .{
-        .top_layer_heat_capacity_mj_per_k = 0,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 0,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = .{
             .water_heat = water_heat,
             .solute = solute,
@@ -326,16 +326,16 @@ test "source solid snow and absent-layer gates are exact" {
     surface_input.water_heat.solid_snow_m3_per_step = 0;
 
     try account(.dynamic, .{
-        .top_layer_heat_capacity_mj_per_k = 0,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 0,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = surface_input,
     }, &state, workspace);
     try expectStructValue(state.top_layer_water_heat, 100);
 
     surface_input.water_heat.solid_snow_m3_per_step = 1;
     try account(.dynamic, .{
-        .top_layer_heat_capacity_mj_per_k = 2,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 2,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = surface_input,
     }, &state, workspace);
     try expectStructValue(state.top_layer_solute, 100);
@@ -349,8 +349,8 @@ test "static salt mode still accounts water heat and non-salt solutes" {
         .top_layer_salt_mol_per_step_by_species = &.{},
     };
     try account(.static, .{
-        .top_layer_heat_capacity_mj_per_k = 0,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 0,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = .{
             .water_heat = filled(WaterHeatFlux, 1),
             .solute = filled(SoluteFlux, 2),
@@ -378,8 +378,8 @@ test "late invalid input and overflow preserve coupled state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSurfaceInput,
         account(.dynamic, .{
-            .top_layer_heat_capacity_mj_per_k = 0,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .top_layer_heat_capacity_megajoules_per_k = 0,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .surface_input = .{
                 .water_heat = filled(WaterHeatFlux, 1),
                 .solute = filled(SoluteFlux, 1),
@@ -398,8 +398,8 @@ test "late invalid input and overflow preserve coupled state atomically" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSurfaceResult,
         account(.dynamic, .{
-            .top_layer_heat_capacity_mj_per_k = 0,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .top_layer_heat_capacity_megajoules_per_k = 0,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .surface_input = .{
                 .water_heat = filled(WaterHeatFlux, std.math.floatMax(f64)),
                 .solute = filled(SoluteFlux, 1),
@@ -423,8 +423,8 @@ test "dynamic salt shape and workspace alias errors precede mutation" {
         .top_layer_salt_mol_per_step_by_species = &salt_state,
     };
     const inputs = Inputs{
-        .top_layer_heat_capacity_mj_per_k = 0,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .top_layer_heat_capacity_megajoules_per_k = 0,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .surface_input = .{
             .water_heat = filled(WaterHeatFlux, 1),
             .solute = filled(SoluteFlux, 1),

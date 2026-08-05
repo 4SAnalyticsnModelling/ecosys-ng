@@ -1,8 +1,8 @@
 const std = @import("std");
 
 pub const Dimensions = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     soil_layer_capacity: usize,
 };
 
@@ -48,7 +48,7 @@ pub fn assemble(
     mappings[0] = .{
         .axis = .column,
         .source = source,
-        .positive_destination = if (source.column + 1 < dimensions.grid_column_count)
+        .positive_destination = if (source.column + 1 < dimensions.lon_count)
             .{
                 .column = source.column + 1,
                 .row = source.row,
@@ -68,7 +68,7 @@ pub fn assemble(
     mappings[1] = .{
         .axis = .row,
         .source = source,
-        .positive_destination = if (source.row + 1 < dimensions.grid_row_count)
+        .positive_destination = if (source.row + 1 < dimensions.lat_count)
             .{
                 .column = source.column,
                 .row = source.row + 1,
@@ -101,24 +101,24 @@ pub fn assemble(
 }
 
 fn validate(dimensions: Dimensions, source: Coordinate, output_count: usize) !void {
-    if (dimensions.grid_column_count == 0 or
-        dimensions.grid_row_count == 0 or
+    if (dimensions.lon_count == 0 or
+        dimensions.lat_count == 0 or
         dimensions.soil_layer_capacity == 0)
     {
         return error.InvalidSoilNeighborDimensions;
     }
     const cell_count = std.math.mul(
         usize,
-        dimensions.grid_column_count,
-        dimensions.grid_row_count,
+        dimensions.lon_count,
+        dimensions.lat_count,
     ) catch return error.SoilNeighborDimensionOverflow;
     _ = std.math.mul(
         usize,
         cell_count,
         dimensions.soil_layer_capacity,
     ) catch return error.SoilNeighborDimensionOverflow;
-    if (source.column >= dimensions.grid_column_count or
-        source.row >= dimensions.grid_row_count or
+    if (source.column >= dimensions.lon_count or
+        source.row >= dimensions.lat_count or
         source.layer >= dimensions.soil_layer_capacity)
     {
         return error.SoilNeighborSourceOutOfBounds;
@@ -128,8 +128,8 @@ fn validate(dimensions: Dimensions, source: Coordinate, output_count: usize) !vo
 
 test "interior mapping preserves exact REDIST axis and destination order" {
     const dimensions = Dimensions{
-        .grid_column_count = 4,
-        .grid_row_count = 3,
+        .lon_count = 4,
+        .lat_count = 3,
         .soil_layer_capacity = 2,
     };
     const source = Coordinate{ .column = 1, .row = 1, .layer = 0 };
@@ -166,8 +166,8 @@ test "interior mapping preserves exact REDIST axis and destination order" {
 
 test "domain edges are explicit and never wrap or underflow" {
     const dimensions = Dimensions{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_capacity = 1,
     };
     var mappings: [Axis.count]AxisMapping = undefined;
@@ -182,16 +182,16 @@ test "domain edges are explicit and never wrap or underflow" {
 
 test "horizontal adjacency is reciprocal throughout runtime grid" {
     const dimensions = Dimensions{
-        .grid_column_count = 5,
-        .grid_row_count = 4,
+        .lon_count = 5,
+        .lat_count = 4,
         .soil_layer_capacity = 3,
     };
     var mappings: [Axis.count]AxisMapping = undefined;
     var neighbor_mappings: [Axis.count]AxisMapping = undefined;
 
     for (0..dimensions.soil_layer_capacity) |layer| {
-        for (0..dimensions.grid_row_count) |row| {
-            for (0..dimensions.grid_column_count) |column| {
+        for (0..dimensions.lat_count) |row| {
+            for (0..dimensions.lon_count) |column| {
                 const source = Coordinate{ .column = column, .row = row, .layer = layer };
                 try assemble(dimensions, source, &mappings);
                 inline for (.{ Axis.column, Axis.row }) |axis| {
@@ -218,8 +218,8 @@ test "horizontal adjacency is reciprocal throughout runtime grid" {
 
 test "invalid source and output length fail before output mutation" {
     const dimensions = Dimensions{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .soil_layer_capacity = 2,
     };
     const sentinel = AxisMapping{
@@ -244,8 +244,8 @@ test "invalid source and output length fail before output mutation" {
 
 test "overflowing runtime dimensions fail explicitly" {
     const dimensions = Dimensions{
-        .grid_column_count = std.math.maxInt(usize),
-        .grid_row_count = 2,
+        .lon_count = std.math.maxInt(usize),
+        .lat_count = 2,
         .soil_layer_capacity = 1,
     };
     var mappings: [Axis.count]AxisMapping = undefined;

@@ -190,7 +190,7 @@ test "canopy checkpoint reconstructs arbitrary species branch node sample topolo
     source.sample_leaf_nitrogen_g[source.sample_leaf_nitrogen_g.len - 1] = 0.4;
     source.plant_seed_storage_phosphorus_g[6] = 0.2;
     retention.living_surface_water_m3[6] = 0.03;
-    retention.previous_water_energy_mj[6] = 7.25;
+    retention.previous_water_energy_megajoules[6] = 7.25;
     layers.boundary_height_m[layers.boundary_height_m.len - 1] = 2.75;
     layers.node_leaf_area_m2[layers.node_leaf_area_m2.len - 1] = 0.125;
     var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -206,7 +206,7 @@ test "canopy checkpoint reconstructs arbitrary species branch node sample topolo
     try std.testing.expectEqualSlices(f64, source.sample_leaf_nitrogen_g, restored.canopy.sample_leaf_nitrogen_g);
     try std.testing.expectEqualSlices(f64, source.plant_seed_storage_phosphorus_g, restored.canopy.plant_seed_storage_phosphorus_g);
     try std.testing.expectEqualSlices(f64, retention.living_surface_water_m3, restored.retention.living_surface_water_m3);
-    try std.testing.expectEqualSlices(f64, retention.previous_water_energy_mj, restored.retention.previous_water_energy_mj);
+    try std.testing.expectEqualSlices(f64, retention.previous_water_energy_megajoules, restored.retention.previous_water_energy_megajoules);
     try std.testing.expectEqualSlices(f64, layers.boundary_height_m, restored.layer_distribution.boundary_height_m);
     try std.testing.expectEqualSlices(f64, layers.node_leaf_area_m2, restored.layer_distribution.node_leaf_area_m2);
 }

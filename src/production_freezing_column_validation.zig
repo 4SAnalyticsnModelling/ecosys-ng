@@ -15,8 +15,8 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
     const parameters: stefan.Parameters = .{};
     const cfg = try config.SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = cell_count,
             .plant_populations = 1,
         },
@@ -42,11 +42,11 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
         .destination_path_length_m = cell_thickness_m,
         .face_area_m2 = 1,
     };
-    const heat_capacity_mj_per_k = try allocator.alloc(f64, cell_count);
-    defer allocator.free(heat_capacity_mj_per_k);
-    const minimum_heat_capacity_mj_per_k =
+    const heat_capacity_megajoules_per_k = try allocator.alloc(f64, cell_count);
+    defer allocator.free(heat_capacity_megajoules_per_k);
+    const minimum_heat_capacity_megajoules_per_k =
         try allocator.alloc(f64, cell_count);
-    defer allocator.free(minimum_heat_capacity_mj_per_k);
+    defer allocator.free(minimum_heat_capacity_megajoules_per_k);
     const bulk_density_megagrams_per_m3 =
         try allocator.alloc(f64, cell_count);
     defer allocator.free(bulk_density_megagrams_per_m3);
@@ -90,7 +90,7 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
     @memset(grid.matrix_liquid_water_m3, cell_thickness_m);
     @memset(grid.liquid_water_m3, cell_thickness_m);
     @memset(grid.matrix_pore_capacity_m3, cell_thickness_m);
-    @memset(minimum_heat_capacity_mj_per_k, 0);
+    @memset(minimum_heat_capacity_megajoules_per_k, 0);
     @memset(bulk_density_megagrams_per_m3, 0);
     @memset(liquid_water_fraction, 1);
     @memset(ice_fraction, 0);
@@ -117,21 +117,21 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
     const boundary_area_m2 = [_]f64{ 1, 1 };
     const empty_macropore_curve: [0]retention.MualemVanGenuchtenParameters = .{};
     const properties: heat_solver.Properties = .{
-        .heat_capacity_mj_per_k = heat_capacity_mj_per_k,
-        .minimum_heat_capacity_mj_per_k = minimum_heat_capacity_mj_per_k,
+        .heat_capacity_megajoules_per_k = heat_capacity_megajoules_per_k,
+        .minimum_heat_capacity_megajoules_per_k = minimum_heat_capacity_megajoules_per_k,
         .bulk_density_megagrams_per_m3 = bulk_density_megagrams_per_m3,
         .liquid_water_fraction = liquid_water_fraction,
         .ice_fraction = ice_fraction,
         .air_fraction = air_fraction,
         .fraction_of_pore_volume_air_filled = air_fraction,
-        .solid_conductivity_numerator_m_mj_per_h_k = solid_conductivity_numerator,
+        .solid_conductivity_numerator_m_megajoules_per_h_k = solid_conductivity_numerator,
         .solid_conductivity_denominator = solid_conductivity_denominator,
         .is_top_soil_layer = is_top_layer,
-        .top_snow_heat_capacity_mj_per_k = zero,
-        .maximum_negligible_snow_heat_capacity_mj_per_k = zero,
-        .snow_storage_heat_flux_mj = zero,
-        .cell_heat_source_mj = zero,
-        .liquid_water_heat_capacity_mj_per_m3_k = parameters.unfrozen_thermal_conductivity_w_per_m_k /
+        .top_snow_heat_capacity_megajoules_per_k = zero,
+        .maximum_negligible_snow_heat_capacity_megajoules_per_k = zero,
+        .snow_storage_heat_flux_megajoules = zero,
+        .cell_heat_source_megajoules = zero,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = parameters.unfrozen_thermal_conductivity_w_per_m_k /
             parameters.unfrozen_thermal_diffusivity_m2_per_s * 1.0e-6,
         .turbulence = .{
             .water_fraction_threshold = 1,
@@ -155,13 +155,13 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
             .mualem_van_genuchten = mualem_van_genuchten,
             .gravitational_water_potential_mpa_per_m = 0.00980665,
             .pure_water_melting_temperature_k = 273.15,
-            .ice_water_equivalent_heat_capacity_mj_per_m3_k = parameters.frozen_volumetric_heat_capacity_j_per_m3_k *
+            .ice_water_equivalent_heat_capacity_megajoules_per_m3_k = parameters.frozen_volumetric_heat_capacity_j_per_m3_k *
                 1.0e-6,
-            .latent_heat_of_fusion_mj_per_m3 = parameters.latent_heat_of_fusion_j_per_kg *
+            .latent_heat_of_fusion_megajoules_per_m3 = parameters.latent_heat_of_fusion_j_per_kg *
                 parameters.water_density_kg_per_m3 * 1.0e-6,
             .solver_options = .{
                 .max_iterations = 80,
-                .absolute_enthalpy_tolerance_mj = 1.0e-13,
+                .absolute_enthalpy_tolerance_megajoules = 1.0e-13,
                 .relative_enthalpy_tolerance = 1.0e-11,
             },
             .macropore_mualem_van_genuchten = &empty_macropore_curve,
@@ -193,8 +193,8 @@ test "production dual-phase heat residual passes Appendix C checkpoints" {
         for (0..cell_count) |cell| {
             const liquid_m3 = grid.matrix_liquid_water_m3[cell];
             const ice_m3 = grid.matrix_ice_water_m3[cell];
-            heat_capacity_mj_per_k[cell] =
-                properties.liquid_water_heat_capacity_mj_per_m3_k *
+            heat_capacity_megajoules_per_k[cell] =
+                properties.liquid_water_heat_capacity_megajoules_per_m3_k *
                 liquid_m3 +
                 parameters.frozen_volumetric_heat_capacity_j_per_m3_k *
                     1.0e-6 * ice_m3;

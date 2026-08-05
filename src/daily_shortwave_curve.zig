@@ -5,7 +5,7 @@ pub const Inputs = struct {
     source_hour: u8,
     solar_noon_hour: f64,
     daylength_h: f64,
-    maximum_hourly_shortwave_mj_per_m2_h: f64,
+    maximum_hourly_shortwave_megajoules_per_m2_h: f64,
     pi_radians: f64 = 3.1416,
 };
 
@@ -21,16 +21,16 @@ pub fn radiationAtHour(inputs: Inputs) !f64 {
     }
     if (inputs.solar_noon_hour < 1 or inputs.solar_noon_hour >= 25 or
         inputs.daylength_h < 0 or inputs.daylength_h > 24 or
-        inputs.maximum_hourly_shortwave_mj_per_m2_h < 0 or
+        inputs.maximum_hourly_shortwave_megajoules_per_m2_h < 0 or
         inputs.pi_radians <= 0)
         return error.InvalidDailyShortwaveInput;
 
     const result = if (inputs.phytotron)
-        inputs.maximum_hourly_shortwave_mj_per_m2_h / 24.0
+        inputs.maximum_hourly_shortwave_megajoules_per_m2_h / 24.0
     else if (inputs.daylength_h > 0)
         @max(
             0.0,
-            inputs.maximum_hourly_shortwave_mj_per_m2_h *
+            inputs.maximum_hourly_shortwave_megajoules_per_m2_h *
                 @sin(
                     (@as(f64, @floatFromInt(inputs.source_hour)) -
                         (inputs.solar_noon_hour - inputs.daylength_h / 2.0)) *
@@ -50,7 +50,7 @@ fn outdoors() Inputs {
         .source_hour = 12,
         .solar_noon_hour = 12,
         .daylength_h = 12,
-        .maximum_hourly_shortwave_mj_per_m2_h = 2,
+        .maximum_hourly_shortwave_megajoules_per_m2_h = 2,
     };
 }
 
@@ -76,7 +76,7 @@ test "zero daylength yields zero outdoor radiation" {
 test "phytotron distributes maximum radiation uniformly over 24 hours" {
     var inputs = outdoors();
     inputs.phytotron = true;
-    inputs.maximum_hourly_shortwave_mj_per_m2_h = 24;
+    inputs.maximum_hourly_shortwave_megajoules_per_m2_h = 24;
     inputs.daylength_h = 0;
     inline for (.{ 1, 12, 24 }) |hour| {
         inputs.source_hour = hour;
@@ -89,7 +89,7 @@ test "phytotron distributes maximum radiation uniformly over 24 hours" {
 
 test "nonfinite late forcing fails before producing radiation" {
     var inputs = outdoors();
-    inputs.maximum_hourly_shortwave_mj_per_m2_h = std.math.nan(f64);
+    inputs.maximum_hourly_shortwave_megajoules_per_m2_h = std.math.nan(f64);
     try std.testing.expectError(
         error.NonFiniteDailyShortwaveInput,
         radiationAtHour(inputs),

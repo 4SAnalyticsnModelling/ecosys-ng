@@ -266,6 +266,8 @@ test "HFUNC shoot insertion keeps every runtime branch ledger aligned" {
     canopy.branch_mobile_carbon_g[1] = 9;
     growth.branches[1].initiated_node_count = 9;
     dormancy.branches[1].accumulated_leafout_h = 9;
+    dormancy.branches[1].reproductive_growth_disabled = true;
+    dormancy.branches[1].reproductive_litterfall_delay_h = 42;
     development.maturity_group[1] = 9;
 
     const inserted = try appendShootBranch(.{ .canopy = &canopy, .growth_stages = &growth, .dormancy = &dormancy, .branch_development = &development }, 0, .{ .sample_count_by_node = &.{ 2, 1 }, .growth_stage = .{ .initiated_node_count = 2 }, .maturity_group = 7, .seed_initial_stage = 2, .leafout_initialization_enabled = true, .perennial_node_scaling = 3, .maximum_concurrently_growing_nodes = 12 });
@@ -279,6 +281,8 @@ test "HFUNC shoot insertion keeps every runtime branch ledger aligned" {
     try std.testing.expectEqual(@as(f64, 9), canopy.branch_mobile_carbon_g[2]);
     try std.testing.expectEqual(@as(f64, 9), growth.branches[2].initiated_node_count);
     try std.testing.expectEqual(@as(f64, 9), dormancy.branches[2].accumulated_leafout_h);
+    try std.testing.expect(dormancy.branches[2].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 42), dormancy.branches[2].reproductive_litterfall_delay_h);
     try std.testing.expectEqual(@as(f64, 9), development.maturity_group[2]);
 }
 

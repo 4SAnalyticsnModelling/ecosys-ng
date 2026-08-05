@@ -7,16 +7,16 @@ pub const Inputs = struct {
 };
 
 pub const Parameters = struct {
-    dry_mass_Mg_per_g_c: f64,
-    dry_solid_density_Mg_per_m3: f64,
+    dry_mass_megagrams_per_g_c: f64,
+    dry_solid_density_megagrams_per_m3: f64,
     retained_liquid_water_m3_per_g_c: f64,
-    organic_carbon_heat_capacity_mj_per_g_c_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_heat_capacity_mj_per_m3_k: f64,
+    organic_carbon_heat_capacity_megajoules_per_g_c_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
 };
 
 pub const State = struct {
-    dry_mass_Mg: *f64,
+    dry_mass_megagrams: *f64,
     pore_volume_m3: *f64,
     liquid_water_m3: *f64,
     ice_m3: *f64,
@@ -24,13 +24,13 @@ pub const State = struct {
     porosity_fraction: *f64,
     liquid_fraction_m3_per_m3: *f64,
     ice_fraction_m3_per_m3: *f64,
-    wet_heat_capacity_mj_per_k: *f64,
-    dry_solid_heat_capacity_mj_per_k: *f64,
+    wet_heat_capacity_megajoules_per_k: *f64,
+    dry_solid_heat_capacity_megajoules_per_k: *f64,
     initial_matrix_pore_volume_m3: *f64,
 };
 
 const Candidate = struct {
-    dry_mass_Mg: f64,
+    dry_mass_megagrams: f64,
     pore_volume_m3: f64,
     liquid_water_m3: f64,
     ice_m3: f64,
@@ -38,8 +38,8 @@ const Candidate = struct {
     porosity_fraction: f64,
     liquid_fraction_m3_per_m3: f64,
     ice_fraction_m3_per_m3: f64,
-    wet_heat_capacity_mj_per_k: f64,
-    dry_solid_heat_capacity_mj_per_k: f64,
+    wet_heat_capacity_megajoules_per_k: f64,
+    dry_solid_heat_capacity_megajoules_per_k: f64,
     initial_matrix_pore_volume_m3: f64,
 };
 
@@ -55,22 +55,22 @@ fn validateInputs(inputs: Inputs, parameters: Parameters) !void {
     if (inputs.organic_carbon_g_c < 0.0 or
         inputs.total_litter_volume_m3 < 0.0 or
         inputs.negligible_litter_volume_m3 < 0.0 or
-        parameters.dry_mass_Mg_per_g_c < 0.0 or
-        parameters.dry_solid_density_Mg_per_m3 <= 0.0 or
+        parameters.dry_mass_megagrams_per_g_c < 0.0 or
+        parameters.dry_solid_density_megagrams_per_m3 <= 0.0 or
         parameters.retained_liquid_water_m3_per_g_c < 0.0 or
-        parameters.organic_carbon_heat_capacity_mj_per_g_c_k < 0.0 or
-        parameters.liquid_water_heat_capacity_mj_per_m3_k < 0.0 or
-        parameters.ice_heat_capacity_mj_per_m3_k < 0.0)
+        parameters.organic_carbon_heat_capacity_megajoules_per_g_c_k < 0.0 or
+        parameters.liquid_water_heat_capacity_megajoules_per_m3_k < 0.0 or
+        parameters.ice_heat_capacity_megajoules_per_m3_k < 0.0)
         return error.InvalidSurfaceLitterPhaseInput;
 }
 
 fn calculate(inputs: Inputs, parameters: Parameters) Candidate {
-    const dry_mass_Mg =
-        parameters.dry_mass_Mg_per_g_c * inputs.organic_carbon_g_c;
+    const dry_mass_megagrams =
+        parameters.dry_mass_megagrams_per_g_c * inputs.organic_carbon_g_c;
     const pore_volume_m3 = @max(
         0.0,
         inputs.total_litter_volume_m3 -
-            dry_mass_Mg / parameters.dry_solid_density_Mg_per_m3,
+            dry_mass_megagrams / parameters.dry_solid_density_megagrams_per_m3,
     );
     const liquid_water_m3 =
         parameters.retained_liquid_water_m3_per_g_c *
@@ -93,7 +93,7 @@ fn calculate(inputs: Inputs, parameters: Parameters) Candidate {
         else
             0.0;
     return .{
-        .dry_mass_Mg = dry_mass_Mg,
+        .dry_mass_megagrams = dry_mass_megagrams,
         .pore_volume_m3 = pore_volume_m3,
         .liquid_water_m3 = liquid_water_m3,
         .ice_m3 = ice_m3,
@@ -101,12 +101,12 @@ fn calculate(inputs: Inputs, parameters: Parameters) Candidate {
         .porosity_fraction = porosity_fraction,
         .liquid_fraction_m3_per_m3 = liquid_fraction,
         .ice_fraction_m3_per_m3 = 0.0,
-        .wet_heat_capacity_mj_per_k = parameters.organic_carbon_heat_capacity_mj_per_g_c_k *
+        .wet_heat_capacity_megajoules_per_k = parameters.organic_carbon_heat_capacity_megajoules_per_g_c_k *
             inputs.organic_carbon_g_c +
-            parameters.liquid_water_heat_capacity_mj_per_m3_k *
+            parameters.liquid_water_heat_capacity_megajoules_per_m3_k *
                 liquid_water_m3 +
-            parameters.ice_heat_capacity_mj_per_m3_k * ice_m3,
-        .dry_solid_heat_capacity_mj_per_k = 0.0,
+            parameters.ice_heat_capacity_megajoules_per_m3_k * ice_m3,
+        .dry_solid_heat_capacity_megajoules_per_k = 0.0,
         .initial_matrix_pore_volume_m3 = 0.0,
     };
 }
@@ -144,17 +144,17 @@ pub fn initialize(
 }
 
 const legacy_parameters: Parameters = .{
-    .dry_mass_Mg_per_g_c = 1.82e-6,
-    .dry_solid_density_Mg_per_m3 = 1.30,
+    .dry_mass_megagrams_per_g_c = 1.82e-6,
+    .dry_solid_density_megagrams_per_m3 = 1.30,
     .retained_liquid_water_m3_per_g_c = 8.0e-6,
-    .organic_carbon_heat_capacity_mj_per_g_c_k = 2.496e-6,
-    .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-    .ice_heat_capacity_mj_per_m3_k = 1.9274,
+    .organic_carbon_heat_capacity_megajoules_per_g_c_k = 2.496e-6,
+    .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+    .ice_heat_capacity_megajoules_per_m3_k = 1.9274,
 };
 
 fn stateFrom(values: []f64) State {
     return .{
-        .dry_mass_Mg = &values[0],
+        .dry_mass_megagrams = &values[0],
         .pore_volume_m3 = &values[1],
         .liquid_water_m3 = &values[2],
         .ice_m3 = &values[3],
@@ -162,8 +162,8 @@ fn stateFrom(values: []f64) State {
         .porosity_fraction = &values[5],
         .liquid_fraction_m3_per_m3 = &values[6],
         .ice_fraction_m3_per_m3 = &values[7],
-        .wet_heat_capacity_mj_per_k = &values[8],
-        .dry_solid_heat_capacity_mj_per_k = &values[9],
+        .wet_heat_capacity_megajoules_per_k = &values[8],
+        .dry_solid_heat_capacity_megajoules_per_k = &values[9],
         .initial_matrix_pore_volume_m3 = &values[10],
     };
 }
@@ -176,11 +176,11 @@ test "STARTS initializes surface litter mass water air and heat" {
         .negligible_litter_volume_m3 = 1.0e-12,
     }, legacy_parameters);
 
-    const expected_dry_mass_Mg = 1.82e-4;
-    const expected_pore_volume_m3 = 0.002 - expected_dry_mass_Mg / 1.30;
+    const expected_dry_mass_megagrams = 1.82e-4;
+    const expected_pore_volume_m3 = 0.002 - expected_dry_mass_megagrams / 1.30;
     const expected_water_m3 = 8.0e-4;
     try std.testing.expectApproxEqAbs(
-        expected_dry_mass_Mg,
+        expected_dry_mass_megagrams,
         values[0],
         1.0e-18,
     );

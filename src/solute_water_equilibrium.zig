@@ -33,6 +33,7 @@ pub const SourceOrderFinalReset = struct {
     equal_reaction_extent_activity_mol_per_m3: f64,
     accumulated_hydrogen_change_mol_per_m3: f64,
     accumulated_hydroxide_change_mol_per_m3: f64,
+    water_balance_increment_mol_per_m3: f64,
     published_hydrogen_concentration_mol_per_m3: f64,
     published_hydroxide_concentration_mol_per_m3: f64,
 };
@@ -51,6 +52,58 @@ pub const SourceOrderSurfaceReset = struct {
     hydrogen_floor_was_applied: bool,
     hydroxide_floor_was_applied: bool,
 };
+
+pub const FixedPhResetInputs = struct {
+    soil_ph: f64,
+    monovalent_activity_coefficient: f64,
+    water_activity_product_mol2_per_m6: f64,
+    current_hydrogen_activity_mol_per_m3: f64,
+    current_hydroxide_activity_mol_per_m3: f64,
+    preceding_hydrogen_transformation_mol_per_m3: f64,
+    preceding_hydroxide_transformation_mol_per_m3: f64,
+};
+
+pub const FixedPhReset = struct {
+    target_hydrogen_activity_mol_per_m3: f64,
+    target_hydroxide_activity_mol_per_m3: f64,
+    hydrogen_reset_mol_per_m3: f64,
+    hydroxide_reset_mol_per_m3: f64,
+};
+
+/// Exact fixed-soil-pH reset from SOLUTE.F lines 3647--3650. The source
+/// subtracts both the current activity and the preceding transformation so
+/// that their sum reaches the prescribed activity in this iteration.
+pub fn calculateFixedPhResetSourceOrder(inputs: FixedPhResetInputs) !FixedPhReset {
+    inline for (@typeInfo(FixedPhResetInputs).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(inputs, field.name)))
+            return error.NonFiniteWaterEquilibriumInput;
+    if (inputs.monovalent_activity_coefficient <= 0 or
+        inputs.water_activity_product_mol2_per_m6 <= 0 or
+        inputs.current_hydrogen_activity_mol_per_m3 < 0 or
+        inputs.current_hydroxide_activity_mol_per_m3 < 0)
+        return error.InvalidWaterEquilibriumInput;
+
+    const target_hydrogen_activity = std.math.pow(f64, 10, -inputs.soil_ph) *
+        1.0e3 * inputs.monovalent_activity_coefficient;
+    const target_hydroxide_activity = inputs.water_activity_product_mol2_per_m6 /
+        target_hydrogen_activity;
+    const result = FixedPhReset{
+        .target_hydrogen_activity_mol_per_m3 = target_hydrogen_activity,
+        .target_hydroxide_activity_mol_per_m3 = target_hydroxide_activity,
+        .hydrogen_reset_mol_per_m3 = target_hydrogen_activity -
+            inputs.current_hydrogen_activity_mol_per_m3 -
+            inputs.preceding_hydrogen_transformation_mol_per_m3,
+        .hydroxide_reset_mol_per_m3 = target_hydroxide_activity -
+            inputs.current_hydroxide_activity_mol_per_m3 -
+            inputs.preceding_hydroxide_transformation_mol_per_m3,
+    };
+    inline for (@typeInfo(FixedPhReset).@"struct".fields) |field|
+        if (!std.math.isFinite(@field(result, field.name)))
+            return error.NonFiniteWaterEquilibriumSolution;
+    if (target_hydrogen_activity <= 0 or target_hydroxide_activity <= 0)
+        return error.InvalidWaterEquilibriumSolution;
+    return result;
+}
 
 /// SOLUTE lines 834--854 H2O equilibrium reset with a cancellation-safe
 /// quadratic evaluation. The reaction preserves the H+-OH- activity
@@ -242,7 +295,7 @@ pub fn projectProvisional(
 }
 
 /// Exact equation-order diagnostic for the final reset at SOLUTE.F
-/// lines 2681-2725.
+/// lines 2727--2746.
 ///
 /// The source computes the equal extent from activities, then subtracts that
 /// activity-space value directly from concentration-space transformation
@@ -294,6 +347,7 @@ pub fn calculateSourceOrderFinalReset(inputs: FinalResetInputs) !SourceOrderFina
         .equal_reaction_extent_activity_mol_per_m3 = extent,
         .accumulated_hydrogen_change_mol_per_m3 = hydrogen_change,
         .accumulated_hydroxide_change_mol_per_m3 = hydroxide_change,
+        .water_balance_increment_mol_per_m3 = extent,
         .published_hydrogen_concentration_mol_per_m3 = inputs.initial_hydrogen_concentration_mol_per_m3 +
             hydrogen_change,
         .published_hydroxide_concentration_mol_per_m3 = inputs.initial_hydroxide_concentration_mol_per_m3 +
@@ -580,6 +634,10 @@ test "final source reset mixes activity extent into concentration totals" {
         source.equal_reaction_extent_activity_mol_per_m3,
         1e-15,
     );
+    try std.testing.expectEqual(
+        source.equal_reaction_extent_activity_mol_per_m3,
+        source.water_balance_increment_mol_per_m3,
+    );
     try std.testing.expect(source_published_product > 0.004);
 
     const corrected = try solve(.{
@@ -601,4 +659,20 @@ test "final source reset mixes activity extent into concentration totals" {
             source.published_hydroxide_concentration_mol_per_m3,
         1e-14,
     );
+}
+
+test "SOLUTE 3647-3650 fixed pH reset subtracts preceding transformations" {
+    const result = try calculateFixedPhResetSourceOrder(.{
+        .soil_ph = 3,
+        .monovalent_activity_coefficient = 0.5,
+        .water_activity_product_mol2_per_m6 = 2,
+        .current_hydrogen_activity_mol_per_m3 = 0.2,
+        .current_hydroxide_activity_mol_per_m3 = 0.3,
+        .preceding_hydrogen_transformation_mol_per_m3 = 0.1,
+        .preceding_hydroxide_transformation_mol_per_m3 = -0.2,
+    });
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), result.target_hydrogen_activity_mol_per_m3, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), result.target_hydroxide_activity_mol_per_m3, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), result.hydrogen_reset_mol_per_m3, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.9), result.hydroxide_reset_mol_per_m3, 1e-15);
 }

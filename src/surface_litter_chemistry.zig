@@ -32,22 +32,34 @@ pub const State = struct {
     /// A dry cell retains its last positive reference so extensive solids
     /// remain representable without infinity.
     mineral_reference_water_m3: []f64,
+    /// Zero while the aqueous carrier is wet. When a cell evaporates to exactly
+    /// dry, this remembers the carrier its stored aqueous concentrations refer
+    /// to, so the extensive amount survives and rewetting can rescale from it
+    /// rather than from zero. See `surface_litter_chemistry_carrier_rebase` and
+    /// EXEC-004. Kept separate from `mineral_reference_water_m3`, which tracks
+    /// the solid-mineral basis and is written by other callers.
+    dry_reference_water_m3: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
         if (cell_count == 0) return error.ZeroLitterChemistryCellCount;
         const cells = try allocator.alloc(Cell, cell_count);
         errdefer allocator.free(cells);
         const mineral_reference_water_m3 = try allocator.alloc(f64, cell_count);
+        errdefer allocator.free(mineral_reference_water_m3);
+        const dry_reference_water_m3 = try allocator.alloc(f64, cell_count);
         for (cells) |*cell| zeroValue(Cell, cell);
         @memset(mineral_reference_water_m3, 0);
+        @memset(dry_reference_water_m3, 0);
         return .{
             .allocator = allocator,
             .cells = cells,
             .mineral_reference_water_m3 = mineral_reference_water_m3,
+            .dry_reference_water_m3 = dry_reference_water_m3,
         };
     }
 
     pub fn deinit(self: *State) void {
+        self.allocator.free(self.dry_reference_water_m3);
         self.allocator.free(self.mineral_reference_water_m3);
         self.allocator.free(self.cells);
         self.* = undefined;
@@ -139,7 +151,7 @@ test "solid mineral inventory survives wet dry and rewet carrier changes" {
 }
 
 pub const Environment = struct {
-    litter_mass_per_water_volume_Mg_per_m3: f64,
+    litter_mass_per_water_volume_megagrams_per_m3: f64,
     dynamic_salts: bool,
 };
 
@@ -179,17 +191,21 @@ pub const Evaluator = struct {
 pub fn solveCell(state: *State, cell_index: usize, environment: Environment, evaluator: Evaluator, options: Options) !Result {
     if (cell_index >= state.cells.len) return error.LitterChemistryCellIndexOutOfBounds;
     try validateOptions(options);
-    if (!std.math.isFinite(environment.litter_mass_per_water_volume_Mg_per_m3) or environment.litter_mass_per_water_volume_Mg_per_m3 <= 0) return error.InvalidLitterMassWaterRatio;
+    if (!std.math.isFinite(environment.litter_mass_per_water_volume_megagrams_per_m3) or environment.litter_mass_per_water_volume_megagrams_per_m3 <= 0) return error.InvalidLitterMassWaterRatio;
     try validateCell(state.cells[cell_index]);
 
     var current = state.cells[cell_index];
-    // SOLUTE's ISALTG=0 branch is outside `DO M=1,MRXN`: its TPDH,
-    // TADAH, TADCH, TSLH, and TRWH coefficients are already hourly kinetic
-    // increments scaled by XNFH. Applying them repeatedly until every rate
-    // vanishes would multiply one hour of precipitation/association by the
-    // equilibrium iteration ceiling. Commit exactly one conservative,
-    // substrate-bounded hourly transformation. The iterative hybrid below is
-    // reserved for the dynamic-salt MRXN equilibrium branch.
+    // SOLUTE.F's fixed-pH (ISALTG=0) litter branch, source lines 4634--4929,
+    // sits outside any equilibrium loop: the surface-litter section 3996--5250
+    // contains no `DO M=` statement, and its TPD/TADA/TADC/TSL/TRW rates
+    // (lines 4009--4016) are the undivided hourly constants, not the
+    // MRXN-divided TPDX/TADAX/TSLX constants the soil `DO 1000 M=1,MRXN` loop
+    // at line 822 consumes. Applying undivided hourly rates repeatedly until
+    // every rate vanishes would multiply one hour of precipitation and
+    // association by the equilibrium iteration ceiling. Commit exactly one
+    // conservative, substrate-bounded hourly transformation. The iterative
+    // hybrid below is reserved for the dynamic-salt equilibrium branch. See
+    // docs/traceability/surface_litter_phosphate_equilibrium_closure.md.
     if (!environment.dynamic_salts) {
         const changes = try changesAt(current, environment, evaluator);
         const maximum_fraction =
@@ -277,42 +293,52 @@ pub fn solveCell(state: *State, cell_index: usize, environment: Environment, eva
             }
         }
         if (accepted_newton) continue;
-        if (!environment.dynamic_salts) {
-            if (try conservativeFixedPhosphateActiveSetNewton(
-                current,
-                environment,
-                evaluator,
-                options,
-                current_norm,
-            )) |candidate| {
-                current = candidate;
-                newton_steps += 1;
-                continue;
-            }
-            if (try conservativeFixedPhosphateComplementarityNewton(
-                current,
-                environment,
-                evaluator,
-                options,
-                current_norm,
-            )) |candidate| {
-                current = candidate;
-                newton_steps += 1;
-                continue;
-            }
-            if (try resolveIncompatibleFixedPhosphateSolids(
-                current,
-                environment,
-                evaluator,
-                options,
-                current_norm,
-            )) |candidate| {
-                current = candidate;
-                newton_steps += 1;
-                continue;
-            }
+        // These phosphate escapes were previously guarded by
+        // `!environment.dynamic_salts`, which the early return above already
+        // excludes from this loop, so none of them could ever execute. That
+        // left the phosphate/mineral/surface-site block with no Newton
+        // direction at all: the capped-rate Jacobian is locally constant, the
+        // directional probe therefore finds a zero denominator, and every
+        // iteration fell through to relaxed Picard. That is the mechanism
+        // behind the recorded `newton_steps=0 picard_steps=1000` litter
+        // failure signature. Each of these accepts only on a strict
+        // improvement of the *complete* reaction norm and closes phosphorus,
+        // cation, and site conservation exactly, so running them in the
+        // dynamic-salt loop cannot hide a competing mineral.
+        if (try conservativeFixedPhosphateActiveSetNewton(
+            current,
+            environment,
+            evaluator,
+            options,
+            current_norm,
+        )) |candidate| {
+            current = candidate;
+            newton_steps += 1;
+            continue;
         }
-        if (!environment.dynamic_salts and current_norm < 25) {
+        if (try conservativeFixedPhosphateComplementarityNewton(
+            current,
+            environment,
+            evaluator,
+            options,
+            current_norm,
+        )) |candidate| {
+            current = candidate;
+            newton_steps += 1;
+            continue;
+        }
+        if (try resolveIncompatibleFixedPhosphateSolids(
+            current,
+            environment,
+            evaluator,
+            options,
+            current_norm,
+        )) |candidate| {
+            current = candidate;
+            newton_steps += 1;
+            continue;
+        }
+        if (current_norm < 25) {
             if (try accelerateFixedPhosphateCationBounds(
                 current,
                 environment,
@@ -331,19 +357,17 @@ pub fn solveCell(state: *State, cell_index: usize, environment: Environment, eva
         // extent accumulation.  The scalar active-set branch below is only
         // a plateau escape when the capped-rate Jacobian has no usable
         // coupled direction.
-        if (!environment.dynamic_salts and current_norm < 25) {
+        if (current_norm < 25) {
             if (try conservativePhosphateNewton(state.allocator, current, environment, evaluator, options, current_norm)) |candidate| {
                 current = candidate;
                 newton_steps += 1;
                 continue;
             }
         }
-        if (!environment.dynamic_salts) {
-            if (try conservativePhosphateActiveReactionSolve(current, environment, evaluator, options, current_norm, false)) |candidate| {
-                current = candidate;
-                newton_steps += 1;
-                continue;
-            }
+        if (try conservativePhosphateActiveReactionSolve(current, environment, evaluator, options, current_norm, false)) |candidate| {
+            current = candidate;
+            newton_steps += 1;
+            continue;
         }
         if (evaluator.equilibrate_cation_exchange) |equilibrate_exchange| {
             const exchange_target = try equilibrate_exchange(evaluator.context, current);
@@ -371,13 +395,13 @@ pub fn solveCell(state: *State, cell_index: usize, environment: Environment, eva
                             !exchangeResidualsConvergedAtAqueousScale(
                                 current,
                                 exchange_current_extents.exchange,
-                                environment.litter_mass_per_water_volume_Mg_per_m3,
+                                environment.litter_mass_per_water_volume_megagrams_per_m3,
                                 options,
                             ) and
                             exchangeResidualsConvergedAtAqueousScale(
                                 exchange_candidate,
                                 exchange_candidate_extents.exchange,
-                                environment.litter_mass_per_water_volume_Mg_per_m3,
+                                environment.litter_mass_per_water_volume_megagrams_per_m3,
                                 options,
                             )))
                     {
@@ -474,14 +498,14 @@ pub fn solveCell(state: *State, cell_index: usize, environment: Environment, eva
     std.log.warn(
         "litter exchange extents mol/Mg: NH4={e} H={e} Al={e} Fe={e} Ca={e} Mg={e} Na={e} K={e}",
         .{
-            final_extents.exchange.ammonium_mol_per_Mg,
-            final_extents.exchange.hydrogen_mol_per_Mg,
-            final_extents.exchange.aluminum_mol_per_Mg,
-            final_extents.exchange.iron_mol_per_Mg,
-            final_extents.exchange.calcium_mol_per_Mg,
-            final_extents.exchange.magnesium_mol_per_Mg,
-            final_extents.exchange.sodium_mol_per_Mg,
-            final_extents.exchange.potassium_mol_per_Mg,
+            final_extents.exchange.ammonium_mol_per_megagram,
+            final_extents.exchange.hydrogen_mol_per_megagram,
+            final_extents.exchange.aluminum_mol_per_megagram,
+            final_extents.exchange.iron_mol_per_megagram,
+            final_extents.exchange.calcium_mol_per_megagram,
+            final_extents.exchange.magnesium_mol_per_megagram,
+            final_extents.exchange.sodium_mol_per_megagram,
+            final_extents.exchange.potassium_mol_per_megagram,
         },
     );
     if (evaluator.phosphate_mineral_equilibrium_residuals) |calculate| {
@@ -587,7 +611,7 @@ const phosphate_coordinate_count: usize = 18;
 fn exchangeResidualsConvergedAtAqueousScale(
     cell: Cell,
     extents: ledger.ExchangeAdsorption,
-    density_Mg_per_m3: f64,
+    density_megagrams_per_m3: f64,
     options: Options,
 ) bool {
     inline for (@typeInfo(ledger.ExchangeAdsorption).@"struct".fields) |field| {
@@ -599,34 +623,34 @@ fn exchangeResidualsConvergedAtAqueousScale(
             cell,
             field.name,
         );
-        const aqueous_scale_per_Mg =
+        const aqueous_scale_per_megagram =
             (options.absolute_tolerance +
                 options.relative_tolerance *
                     @max(1.0, @abs(aqueous_inventory))) /
-            density_Mg_per_m3;
+            density_megagrams_per_m3;
         if (@abs(@field(extents, field.name)) >
-            @min(exchange_scale, aqueous_scale_per_Mg))
+            @min(exchange_scale, aqueous_scale_per_megagram))
             return false;
     }
     return true;
 }
 
 fn exchangeAqueousInventory(cell: Cell, comptime field_name: []const u8) f64 {
-    if (comptime std.mem.eql(u8, field_name, "ammonium_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "ammonium_mol_per_megagram"))
         return cell.ammonium_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "hydrogen_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "hydrogen_mol_per_megagram"))
         return cell.hydrogen_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "aluminum_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "aluminum_mol_per_megagram"))
         return cell.aluminum_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "iron_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "iron_mol_per_megagram"))
         return cell.iron_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "calcium_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "calcium_mol_per_megagram"))
         return cell.calcium_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "magnesium_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "magnesium_mol_per_megagram"))
         return cell.magnesium_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "sodium_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "sodium_mol_per_megagram"))
         return cell.sodium_mol_per_m3;
-    if (comptime std.mem.eql(u8, field_name, "potassium_mol_per_Mg"))
+    if (comptime std.mem.eql(u8, field_name, "potassium_mol_per_megagram"))
         return cell.potassium_mol_per_m3;
     unreachable;
 }
@@ -654,7 +678,7 @@ fn conservativeFixedPhosphateActiveSetNewton(
 ) !?Cell {
     const calculate =
         evaluator.phosphate_mineral_equilibrium_residuals orelse return null;
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const site_total = phosphateSiteTotal(current);
     const phosphorus_total = phosphateTotal(current, density);
     const cation_totals = phosphateCationTotals(current);
@@ -889,7 +913,7 @@ fn conservativeFixedPhosphateComplementarityNewton(
 ) !?Cell {
     const calculate =
         evaluator.phosphate_mineral_equilibrium_residuals orelse return null;
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const site_total = phosphateSiteTotal(current);
     const phosphorus_total = phosphateTotal(current, density);
     const cation_totals = phosphateCationTotals(current);
@@ -1568,14 +1592,14 @@ fn conservativeAmmoniumAssociationSolve(
     const scale = @min(ammonium_scale, ammonia_scale);
     const exchange_scale = options.absolute_tolerance +
         options.relative_tolerance *
-            @max(1.0, @abs(current.exchange.ammonium_mol_per_Mg));
+            @max(1.0, @abs(current.exchange.ammonium_mol_per_megagram));
     if (@abs(base_extent) <= scale and
-        @abs(base_extents.exchange.ammonium_mol_per_Mg) <= exchange_scale)
+        @abs(base_extents.exchange.ammonium_mol_per_megagram) <= exchange_scale)
         return null;
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const total_nitrogen = current.ammonium_mol_per_m3 +
         current.ammonia_mol_per_m3 +
-        density * current.exchange.ammonium_mol_per_Mg;
+        density * current.exchange.ammonium_mol_per_megagram;
     if (!std.math.isFinite(total_nitrogen) or total_nitrogen <= 0) return null;
 
     var lower_exchange: f64 = 0;
@@ -1589,7 +1613,7 @@ fn conservativeAmmoniumAssociationSolve(
     );
     var lower_residual =
         (try evaluator.evaluate(evaluator.context, lower_candidate))
-            .exchange.ammonium_mol_per_Mg;
+            .exchange.ammonium_mol_per_megagram;
     const upper_candidate = try ammoniumCandidateAtExchange(
         current,
         evaluator,
@@ -1599,7 +1623,7 @@ fn conservativeAmmoniumAssociationSolve(
     );
     const upper_residual =
         (try evaluator.evaluate(evaluator.context, upper_candidate))
-            .exchange.ammonium_mol_per_Mg;
+            .exchange.ammonium_mol_per_megagram;
     var candidate = lower_candidate;
     if (lower_residual == 0) {
         candidate = lower_candidate;
@@ -1620,7 +1644,7 @@ fn conservativeAmmoniumAssociationSolve(
             );
             const middle_residual =
                 (try evaluator.evaluate(evaluator.context, middle_candidate))
-                    .exchange.ammonium_mol_per_Mg;
+                    .exchange.ammonium_mol_per_megagram;
             candidate = middle_candidate;
             if (middle_residual == 0 or
                 upper_exchange - lower_exchange <=
@@ -1638,7 +1662,7 @@ fn conservativeAmmoniumAssociationSolve(
     const candidate_extents = try evaluator.evaluate(evaluator.context, candidate);
     const candidate_extent = candidate_extents.ammonium_association_mol_per_m3;
     const candidate_exchange_extent =
-        candidate_extents.exchange.ammonium_mol_per_Mg;
+        candidate_extents.exchange.ammonium_mol_per_megagram;
     const candidate_changes = try changesAt(candidate, environment, evaluator);
     const candidate_norm = try scaledNorm(candidate, candidate_changes, options);
     return if (candidate_norm < current_norm or
@@ -1655,12 +1679,12 @@ fn ammoniumCandidateAtExchange(
     evaluator: Evaluator,
     total_nitrogen: f64,
     density: f64,
-    exchange_ammonium_mol_per_Mg: f64,
+    exchange_ammonium_mol_per_megagram: f64,
 ) !Cell {
     var candidate = reference;
-    candidate.exchange.ammonium_mol_per_Mg = exchange_ammonium_mol_per_Mg;
+    candidate.exchange.ammonium_mol_per_megagram = exchange_ammonium_mol_per_megagram;
     const aqueous_total =
-        total_nitrogen - density * exchange_ammonium_mol_per_Mg;
+        total_nitrogen - density * exchange_ammonium_mol_per_megagram;
     if (!std.math.isFinite(aqueous_total) or aqueous_total < -1e-12)
         return error.NegativeLitterChemistryState;
     var lower: f64 = 0;
@@ -1759,7 +1783,7 @@ fn conservativePhosphateActiveReactionSolve(
         options.relative_tolerance * @max(1.0, @abs(phosphateMineralInventory(current, active_mineral)));
     if (@abs(mineral_extent) <= mineral_scale) return null;
 
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const phosphorus_total = phosphateTotal(current, density);
     const aqueous_plus_slack = current.hpo4_mol_p_per_m3 +
         current.h2po4_mol_p_per_m3 +
@@ -2134,7 +2158,7 @@ fn reducedActivePhosphateExchangeNewton(
     const equilibrate_exchange =
         evaluator.equilibrate_cation_exchange orelse return null;
     _ = evaluator.phosphate_mineral_equilibrium_residuals orelse return null;
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const extents = try evaluator.evaluate(evaluator.context, current);
     const mineral_scale = options.absolute_tolerance +
         options.relative_tolerance;
@@ -2142,7 +2166,7 @@ fn reducedActivePhosphateExchangeNewton(
         -mineral_scale or
         extents.phosphate_minerals.iron_phosphate_mol_per_m3 <=
             mineral_scale or
-        @abs(extents.exchange.calcium_mol_per_Mg) <=
+        @abs(extents.exchange.calcium_mol_per_megagram) <=
             mineral_scale / density or
         @abs(extents.phosphate_minerals.dicalcium_phosphate_mol_per_m3) >
             mineral_scale or
@@ -2353,7 +2377,7 @@ fn reducedActiveResidual(
         extents.h2po4_association_mol_p_per_m3,
         extents.phosphate_minerals.aluminum_phosphate_mol_per_m3,
         extents.phosphate_minerals.iron_phosphate_mol_per_m3,
-        density * extents.exchange.calcium_mol_per_Mg,
+        density * extents.exchange.calcium_mol_per_megagram,
     };
 }
 
@@ -2378,7 +2402,7 @@ fn reducedActiveResidualScale(
         ),
         3 => @min(
             cell.calcium_mol_per_m3,
-            density * cell.exchange.calcium_mol_per_Mg,
+            density * cell.exchange.calcium_mol_per_megagram,
         ),
         else => unreachable,
     };
@@ -2414,8 +2438,8 @@ fn conservativePhosphateNewton(
     defer allocator.free(normal_right_hand_side);
 
     const site_total = phosphateSiteTotal(current);
-    const phosphorus_total = phosphateTotal(current, environment.litter_mass_per_water_volume_Mg_per_m3);
-    const density = environment.litter_mass_per_water_volume_Mg_per_m3;
+    const phosphorus_total = phosphateTotal(current, environment.litter_mass_per_water_volume_megagrams_per_m3);
+    const density = environment.litter_mass_per_water_volume_megagrams_per_m3;
     const coupled_totals = coupledPhosphateExchangeTotals(current, density);
     const base_changes = try changesAt(current, environment, evaluator);
     const frozen_exchange_coordinates =
@@ -2702,16 +2726,16 @@ fn residualProbeIsInformative(
 
 fn phosphateSiteTotal(cell: Cell) f64 {
     const p = cell.phosphate_surface;
-    return p.deprotonated_site_mol_per_Mg + p.hydroxyl_site_mol_per_Mg +
-        p.protonated_site_mol_per_Mg + p.adsorbed_hpo4_mol_p_per_Mg +
-        p.adsorbed_h2po4_mol_p_per_Mg;
+    return p.deprotonated_site_mol_per_megagram + p.hydroxyl_site_mol_per_megagram +
+        p.protonated_site_mol_per_megagram + p.adsorbed_hpo4_mol_p_per_megagram +
+        p.adsorbed_h2po4_mol_p_per_megagram;
 }
 
 fn phosphateTotal(cell: Cell, density: f64) f64 {
     const p = cell.phosphate_minerals;
     return cell.hpo4_mol_p_per_m3 + cell.h2po4_mol_p_per_m3 +
-        density * (cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg +
-            cell.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg) +
+        density * (cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram +
+            cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram) +
         p.aluminum_phosphate_mol_per_m3 + p.iron_phosphate_mol_per_m3 +
         p.dicalcium_phosphate_mol_per_m3 + 3 * p.hydroxyapatite_mol_per_m3 +
         2 * p.monocalcium_phosphate_mol_per_m3;
@@ -2745,15 +2769,15 @@ fn closePhosphateConservation(
     density: f64,
 ) !void {
     const surface = &cell.phosphate_surface;
-    surface.adsorbed_h2po4_mol_p_per_Mg = site_total -
-        surface.deprotonated_site_mol_per_Mg -
-        surface.hydroxyl_site_mol_per_Mg -
-        surface.protonated_site_mol_per_Mg -
-        surface.adsorbed_hpo4_mol_p_per_Mg;
+    surface.adsorbed_h2po4_mol_p_per_megagram = site_total -
+        surface.deprotonated_site_mol_per_megagram -
+        surface.hydroxyl_site_mol_per_megagram -
+        surface.protonated_site_mol_per_megagram -
+        surface.adsorbed_hpo4_mol_p_per_megagram;
     const minerals = cell.phosphate_minerals;
     cell.h2po4_mol_p_per_m3 = phosphorus_total -
         cell.hpo4_mol_p_per_m3 -
-        density * (surface.adsorbed_hpo4_mol_p_per_Mg + surface.adsorbed_h2po4_mol_p_per_Mg) -
+        density * (surface.adsorbed_hpo4_mol_p_per_megagram + surface.adsorbed_h2po4_mol_p_per_megagram) -
         minerals.aluminum_phosphate_mol_per_m3 -
         minerals.iron_phosphate_mol_per_m3 -
         minerals.dicalcium_phosphate_mol_per_m3 -
@@ -2779,7 +2803,7 @@ const CoupledPhosphateExchangeTotals = struct {
     magnesium_mol_per_m3: f64,
     sodium_mol_per_m3: f64,
     potassium_mol_per_m3: f64,
-    exchange_charge_mol_per_Mg: f64,
+    exchange_charge_mol_per_megagram: f64,
 };
 
 fn coupledPhosphateExchangeTotals(
@@ -2790,32 +2814,32 @@ fn coupledPhosphateExchangeTotals(
     const exchange = cell.exchange;
     return .{
         .ammoniacal_nitrogen_mol_per_m3 = cell.ammonia_mol_per_m3 + cell.ammonium_mol_per_m3 +
-            density * exchange.ammonium_mol_per_Mg,
+            density * exchange.ammonium_mol_per_megagram,
         .aluminum_mol_per_m3 = cell.aluminum_mol_per_m3 +
             minerals.aluminum_phosphate_mol_per_m3 +
-            density * exchange.aluminum_mol_per_Mg,
+            density * exchange.aluminum_mol_per_megagram,
         .iron_mol_per_m3 = cell.iron_mol_per_m3 +
             minerals.iron_phosphate_mol_per_m3 +
-            density * exchange.iron_mol_per_Mg,
+            density * exchange.iron_mol_per_megagram,
         .calcium_mol_per_m3 = cell.calcium_mol_per_m3 +
             minerals.dicalcium_phosphate_mol_per_m3 +
             5 * minerals.hydroxyapatite_mol_per_m3 +
             minerals.monocalcium_phosphate_mol_per_m3 +
-            density * exchange.calcium_mol_per_Mg,
+            density * exchange.calcium_mol_per_megagram,
         .magnesium_mol_per_m3 = cell.magnesium_mol_per_m3 +
-            density * exchange.magnesium_mol_per_Mg,
+            density * exchange.magnesium_mol_per_megagram,
         .sodium_mol_per_m3 = cell.sodium_mol_per_m3 +
-            density * exchange.sodium_mol_per_Mg,
+            density * exchange.sodium_mol_per_megagram,
         .potassium_mol_per_m3 = cell.potassium_mol_per_m3 +
-            density * exchange.potassium_mol_per_Mg,
-        .exchange_charge_mol_per_Mg = exchange.ammonium_mol_per_Mg +
-            exchange.hydrogen_mol_per_Mg +
-            3 * exchange.aluminum_mol_per_Mg +
-            3 * exchange.iron_mol_per_Mg +
-            2 * exchange.calcium_mol_per_Mg +
-            2 * exchange.magnesium_mol_per_Mg +
-            exchange.sodium_mol_per_Mg +
-            exchange.potassium_mol_per_Mg,
+            density * exchange.potassium_mol_per_megagram,
+        .exchange_charge_mol_per_megagram = exchange.ammonium_mol_per_megagram +
+            exchange.hydrogen_mol_per_megagram +
+            3 * exchange.aluminum_mol_per_megagram +
+            3 * exchange.iron_mol_per_megagram +
+            2 * exchange.calcium_mol_per_megagram +
+            2 * exchange.magnesium_mol_per_megagram +
+            exchange.sodium_mol_per_megagram +
+            exchange.potassium_mol_per_megagram,
     };
 }
 
@@ -2834,38 +2858,38 @@ fn closeCoupledPhosphateExchangeConservation(
         density,
     );
     const exchange = &cell.exchange;
-    exchange.calcium_mol_per_Mg =
-        0.5 * (totals.exchange_charge_mol_per_Mg -
-            exchange.ammonium_mol_per_Mg -
-            exchange.hydrogen_mol_per_Mg -
-            3 * exchange.aluminum_mol_per_Mg -
-            3 * exchange.iron_mol_per_Mg -
-            2 * exchange.magnesium_mol_per_Mg -
-            exchange.sodium_mol_per_Mg -
-            exchange.potassium_mol_per_Mg);
+    exchange.calcium_mol_per_megagram =
+        0.5 * (totals.exchange_charge_mol_per_megagram -
+            exchange.ammonium_mol_per_megagram -
+            exchange.hydrogen_mol_per_megagram -
+            3 * exchange.aluminum_mol_per_megagram -
+            3 * exchange.iron_mol_per_megagram -
+            2 * exchange.magnesium_mol_per_megagram -
+            exchange.sodium_mol_per_megagram -
+            exchange.potassium_mol_per_megagram);
 
     const minerals = cell.phosphate_minerals;
     cell.ammonium_mol_per_m3 =
         totals.ammoniacal_nitrogen_mol_per_m3 -
         cell.ammonia_mol_per_m3 -
-        density * exchange.ammonium_mol_per_Mg;
+        density * exchange.ammonium_mol_per_megagram;
     cell.aluminum_mol_per_m3 = totals.aluminum_mol_per_m3 -
         minerals.aluminum_phosphate_mol_per_m3 -
-        density * exchange.aluminum_mol_per_Mg;
+        density * exchange.aluminum_mol_per_megagram;
     cell.iron_mol_per_m3 = totals.iron_mol_per_m3 -
         minerals.iron_phosphate_mol_per_m3 -
-        density * exchange.iron_mol_per_Mg;
+        density * exchange.iron_mol_per_megagram;
     cell.calcium_mol_per_m3 = totals.calcium_mol_per_m3 -
         minerals.dicalcium_phosphate_mol_per_m3 -
         5 * minerals.hydroxyapatite_mol_per_m3 -
         minerals.monocalcium_phosphate_mol_per_m3 -
-        density * exchange.calcium_mol_per_Mg;
+        density * exchange.calcium_mol_per_megagram;
     cell.magnesium_mol_per_m3 = totals.magnesium_mol_per_m3 -
-        density * exchange.magnesium_mol_per_Mg;
+        density * exchange.magnesium_mol_per_megagram;
     cell.sodium_mol_per_m3 = totals.sodium_mol_per_m3 -
-        density * exchange.sodium_mol_per_Mg;
+        density * exchange.sodium_mol_per_megagram;
     cell.potassium_mol_per_m3 = totals.potassium_mol_per_m3 -
-        density * exchange.potassium_mol_per_Mg;
+        density * exchange.potassium_mol_per_megagram;
     normalizeRoundoffNonnegative(Cell, cell);
     try validateCell(cell.*);
 }
@@ -2873,22 +2897,22 @@ fn closeCoupledPhosphateExchangeConservation(
 fn phosphateCoordinate(cell: Cell, index: usize) f64 {
     return switch (index) {
         0 => cell.hpo4_mol_p_per_m3,
-        1 => cell.phosphate_surface.deprotonated_site_mol_per_Mg,
-        2 => cell.phosphate_surface.hydroxyl_site_mol_per_Mg,
-        3 => cell.phosphate_surface.protonated_site_mol_per_Mg,
-        4 => cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg,
+        1 => cell.phosphate_surface.deprotonated_site_mol_per_megagram,
+        2 => cell.phosphate_surface.hydroxyl_site_mol_per_megagram,
+        3 => cell.phosphate_surface.protonated_site_mol_per_megagram,
+        4 => cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram,
         5 => cell.phosphate_minerals.aluminum_phosphate_mol_per_m3,
         6 => cell.phosphate_minerals.iron_phosphate_mol_per_m3,
         7 => cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3,
         8 => cell.phosphate_minerals.hydroxyapatite_mol_per_m3,
         9 => cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3,
-        10 => cell.exchange.ammonium_mol_per_Mg,
-        11 => cell.exchange.hydrogen_mol_per_Mg,
-        12 => cell.exchange.aluminum_mol_per_Mg,
-        13 => cell.exchange.iron_mol_per_Mg,
-        14 => cell.exchange.magnesium_mol_per_Mg,
-        15 => cell.exchange.sodium_mol_per_Mg,
-        16 => cell.exchange.potassium_mol_per_Mg,
+        10 => cell.exchange.ammonium_mol_per_megagram,
+        11 => cell.exchange.hydrogen_mol_per_megagram,
+        12 => cell.exchange.aluminum_mol_per_megagram,
+        13 => cell.exchange.iron_mol_per_megagram,
+        14 => cell.exchange.magnesium_mol_per_megagram,
+        15 => cell.exchange.sodium_mol_per_megagram,
+        16 => cell.exchange.potassium_mol_per_megagram,
         17 => cell.ammonia_mol_per_m3,
         else => unreachable,
     };
@@ -2897,22 +2921,22 @@ fn phosphateCoordinate(cell: Cell, index: usize) f64 {
 fn setPhosphateCoordinate(cell: *Cell, index: usize, value: f64) void {
     switch (index) {
         0 => cell.hpo4_mol_p_per_m3 = value,
-        1 => cell.phosphate_surface.deprotonated_site_mol_per_Mg = value,
-        2 => cell.phosphate_surface.hydroxyl_site_mol_per_Mg = value,
-        3 => cell.phosphate_surface.protonated_site_mol_per_Mg = value,
-        4 => cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg = value,
+        1 => cell.phosphate_surface.deprotonated_site_mol_per_megagram = value,
+        2 => cell.phosphate_surface.hydroxyl_site_mol_per_megagram = value,
+        3 => cell.phosphate_surface.protonated_site_mol_per_megagram = value,
+        4 => cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram = value,
         5 => cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 = value,
         6 => cell.phosphate_minerals.iron_phosphate_mol_per_m3 = value,
         7 => cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3 = value,
         8 => cell.phosphate_minerals.hydroxyapatite_mol_per_m3 = value,
         9 => cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3 = value,
-        10 => cell.exchange.ammonium_mol_per_Mg = value,
-        11 => cell.exchange.hydrogen_mol_per_Mg = value,
-        12 => cell.exchange.aluminum_mol_per_Mg = value,
-        13 => cell.exchange.iron_mol_per_Mg = value,
-        14 => cell.exchange.magnesium_mol_per_Mg = value,
-        15 => cell.exchange.sodium_mol_per_Mg = value,
-        16 => cell.exchange.potassium_mol_per_Mg = value,
+        10 => cell.exchange.ammonium_mol_per_megagram = value,
+        11 => cell.exchange.hydrogen_mol_per_megagram = value,
+        12 => cell.exchange.aluminum_mol_per_megagram = value,
+        13 => cell.exchange.iron_mol_per_megagram = value,
+        14 => cell.exchange.magnesium_mol_per_megagram = value,
+        15 => cell.exchange.sodium_mol_per_megagram = value,
+        16 => cell.exchange.potassium_mol_per_megagram = value,
         17 => cell.ammonia_mol_per_m3 = value,
         else => unreachable,
     }
@@ -3047,7 +3071,7 @@ fn logInadmissibleDirections(comptime T: type, comptime prefix: []const u8, curr
 
 fn changesAt(cell: Cell, environment: Environment, evaluator: Evaluator) !Cell {
     const extents = try evaluator.evaluate(evaluator.context, cell);
-    return ledger.assemble(extents, environment.litter_mass_per_water_volume_Mg_per_m3, environment.dynamic_salts);
+    return ledger.assemble(extents, environment.litter_mass_per_water_volume_megagrams_per_m3, environment.dynamic_salts);
 }
 
 fn applyFraction(current: Cell, changes: Cell, fraction: f64) !Cell {
@@ -3267,7 +3291,7 @@ test "fixed-pH cation-bound acceleration advances Al and Fe simultaneously" {
     const changes = try changesAt(
         cell,
         .{
-            .litter_mass_per_water_volume_Mg_per_m3 = 1,
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
             .dynamic_salts = false,
         },
         evaluator,
@@ -3276,7 +3300,7 @@ test "fixed-pH cation-bound acceleration advances Al and Fe simultaneously" {
     const candidate = (try accelerateFixedPhosphateCationBounds(
         cell,
         .{
-            .litter_mass_per_water_volume_Mg_per_m3 = 1,
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
             .dynamic_salts = false,
         },
         evaluator,
@@ -3316,7 +3340,7 @@ test "runtime litter cell solve converges early and conserves nitrogen" {
     state.cells[2].ammonia_mol_per_m3 = 2;
     const before = state.cells[2].ammonia_mol_per_m3 + state.cells[2].ammonium_mol_per_m3;
     const context = TestContext{ .rate_fraction = 0.25 };
-    const result = try solveCell(&state, 2, .{ .litter_mass_per_water_volume_Mg_per_m3 = 1, .dynamic_salts = true }, .{ .context = &context, .evaluate = testEvaluator }, .{});
+    const result = try solveCell(&state, 2, .{ .litter_mass_per_water_volume_megagrams_per_m3 = 1, .dynamic_salts = true }, .{ .context = &context, .evaluate = testEvaluator }, .{});
     try std.testing.expect(result.iterations < 60);
     try std.testing.expect(result.newton_raphson_steps + result.picard_steps > 0);
     try std.testing.expectApproxEqAbs(before, state.cells[2].ammonia_mol_per_m3 + state.cells[2].ammonium_mol_per_m3, 1e-12);
@@ -3332,7 +3356,7 @@ test "fixed-pH branch commits one hourly kinetic increment without MRXN multipli
         &state,
         0,
         .{
-            .litter_mass_per_water_volume_Mg_per_m3 = 1,
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
             .dynamic_salts = false,
         },
         .{ .context = &context, .evaluate = testEvaluator },
@@ -3354,7 +3378,7 @@ test "fixed-pH simultaneous sinks share one exact admissible substrate fraction"
         &state,
         0,
         .{
-            .litter_mass_per_water_volume_Mg_per_m3 = 1,
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
             .dynamic_salts = false,
         },
         .{
@@ -3386,7 +3410,7 @@ test "transactional boundary lookahead crosses a neutral clipped plateau" {
     var current = std.mem.zeroes(Cell);
     current.ammonia_mol_per_m3 = 2;
     const environment = Environment{
-        .litter_mass_per_water_volume_Mg_per_m3 = 1,
+        .litter_mass_per_water_volume_megagrams_per_m3 = 1,
         .dynamic_salts = false,
     };
     const context: u8 = 0;
@@ -3434,12 +3458,115 @@ test "subnormal extinct-phase noise does not cap an admissible mineral step" {
     );
 }
 
+/// Reproduces the Ottawa hour-1 non-convergence signature that blocked the
+/// whole project (SOLUTE-PHOSPHATE-EQUIL). Every phosphate rate sits pinned at
+/// a source kinetic ceiling -- `TPDH=2.5E-03` for AlPO4/FePO4/CaHPO4 and
+/// `TPZH=2.5E-02` for hydroxyapatite -- so the rates are locally constant in
+/// the state and their directional derivative is identically zero. No
+/// equilibrium iteration can reduce such a residual: the map has no fixed
+/// point because a saturated kinetic rate is not an equilibrium condition.
+///
+/// The source's ISALTG=0 litter branch (`solute.f` 4009--4016, 4682--4719) sets
+/// `TPD=TPDH*XNFH` and sits *outside* `DO 1000 M=1,MRXN` (which closes at line
+/// 2712), so Fortran commits exactly one bounded hourly increment and never
+/// iterates these rates to a residual. Iterating them instead multiplies one
+/// hour of precipitation by the iteration ceiling and then fails fast.
+fn saturatedCeilingPhosphateEvaluator(
+    _: *const anyopaque,
+    _: Cell,
+) !ledger.ReactionExtents {
+    var extents = std.mem.zeroes(ledger.ReactionExtents);
+    // Fortran TPDH=2.5E-03 ceiling, three minerals precipitating at the cap.
+    extents.phosphate_minerals.aluminum_phosphate_mol_per_m3 = 2.5e-3;
+    extents.phosphate_minerals.iron_phosphate_mol_per_m3 = 2.5e-3;
+    extents.phosphate_minerals.dicalcium_phosphate_mol_per_m3 = 2.5e-3;
+    // Fortran TPZH=2.5E-02 ceiling for the apatite reaction.
+    extents.phosphate_minerals.hydroxyapatite_mol_per_m3 = 2.5e-2;
+    return extents;
+}
+
+test "saturated kinetic ceilings commit one hourly increment instead of failing" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.cells[0].h2po4_mol_p_per_m3 = 1;
+    state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3 = 14.7;
+    state.cells[0].phosphate_minerals.iron_phosphate_mol_per_m3 = 14.7;
+    state.cells[0].phosphate_minerals.hydroxyapatite_mol_per_m3 = 9.8;
+    const context: u8 = 0;
+    const phosphorus_before = phosphateTotal(state.cells[0], 1);
+
+    // The production ceiling for this path. A ceiling raise is forbidden, so
+    // the regression must pass at exactly the ceiling production uses.
+    const result = try solveCell(
+        &state,
+        0,
+        .{
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
+            .dynamic_salts = false,
+        },
+        .{
+            .context = &context,
+            .evaluate = saturatedCeilingPhosphateEvaluator,
+        },
+        .{ .max_iterations = 1000 },
+    );
+
+    // One bounded hourly increment, exactly as the source branch does. Not
+    // 1000 iterations ending in LitterChemistrySolverDidNotConverge.
+    try std.testing.expectEqual(@as(u16, 1), result.iterations);
+    try std.testing.expectEqual(@as(u16, 0), result.newton_raphson_steps);
+    try std.testing.expectEqual(@as(u16, 0), result.picard_steps);
+
+    // The shared H2PO4 substrate is the binding constraint: 1 mol P feeding
+    // sinks that consume 1 + 1 + 1 + 3 = 6 mol P per unit extent admits at
+    // most 1/6, and the substrate must not go negative.
+    try std.testing.expect(state.cells[0].h2po4_mol_p_per_m3 >= 0);
+
+    // Phosphorus is conserved across the committed transformation.
+    try std.testing.expectApproxEqAbs(
+        phosphorus_before,
+        phosphateTotal(state.cells[0], 1),
+        1e-12,
+    );
+}
+
+test "saturated ceiling rates would stall an iterated equilibrium map" {
+    // Proves the diagnosis rather than only the fix: with rates pinned at a
+    // ceiling the residual is constant, so no iteration count converges. This
+    // is why raising the ceiling was the wrong instrument.
+    var cell = std.mem.zeroes(Cell);
+    cell.h2po4_mol_p_per_m3 = 1;
+    const context: u8 = 0;
+    const evaluator = Evaluator{
+        .context = &context,
+        .evaluate = saturatedCeilingPhosphateEvaluator,
+    };
+    const environment = Environment{
+        .litter_mass_per_water_volume_megagrams_per_m3 = 1,
+        .dynamic_salts = false,
+    };
+    const options = Options{};
+    const first = try changesAt(cell, environment, evaluator);
+    const first_norm = try scaledNorm(cell, first, options);
+    try std.testing.expect(first_norm > 1);
+
+    // Move the state anywhere admissible; the residual is unchanged because a
+    // saturated rate does not depend on the state.
+    const moved = try applyFraction(cell, first, 0.05);
+    const second = try changesAt(moved, environment, evaluator);
+    try std.testing.expectEqual(
+        first.phosphate_minerals.hydroxyapatite_mol_per_m3,
+        second.phosphate_minerals.hydroxyapatite_mol_per_m3,
+    );
+    try std.testing.expect(try scaledNorm(moved, second, options) > 1);
+}
+
 test "convergence reached on the last permitted iteration is committed" {
     var state = try State.init(std.testing.allocator, 1);
     defer state.deinit();
     state.cells[0].ammonia_mol_per_m3 = 2;
     const context = TestContext{ .rate_fraction = 0.25 };
-    const result = try solveCell(&state, 0, .{ .litter_mass_per_water_volume_Mg_per_m3 = 1, .dynamic_salts = true }, .{ .context = &context, .evaluate = testEvaluator }, .{ .max_iterations = 1 });
+    const result = try solveCell(&state, 0, .{ .litter_mass_per_water_volume_megagrams_per_m3 = 1, .dynamic_salts = true }, .{ .context = &context, .evaluate = testEvaluator }, .{ .max_iterations = 1 });
     try std.testing.expectEqual(@as(u16, 1), result.iterations);
     try std.testing.expect(result.maximum_scaled_residual <= 1);
     try std.testing.expectApproxEqAbs(@as(f64, 1), state.cells[0].ammonium_mol_per_m3, 1e-12);
@@ -3451,11 +3578,11 @@ test "phosphate Newton coordinates close site phosphorus and cation conservation
     cell.hpo4_mol_p_per_m3 = 2;
     cell.h2po4_mol_p_per_m3 = 3;
     cell.phosphate_surface = .{
-        .deprotonated_site_mol_per_Mg = 0.1,
-        .hydroxyl_site_mol_per_Mg = 0.2,
-        .protonated_site_mol_per_Mg = 0.3,
-        .adsorbed_hpo4_mol_p_per_Mg = 0.4,
-        .adsorbed_h2po4_mol_p_per_Mg = 0.5,
+        .deprotonated_site_mol_per_megagram = 0.1,
+        .hydroxyl_site_mol_per_megagram = 0.2,
+        .protonated_site_mol_per_megagram = 0.3,
+        .adsorbed_hpo4_mol_p_per_megagram = 0.4,
+        .adsorbed_h2po4_mol_p_per_megagram = 0.5,
     };
     cell.phosphate_minerals = .{
         .aluminum_phosphate_mol_per_m3 = 0.6,
@@ -3472,8 +3599,8 @@ test "phosphate Newton coordinates close site phosphorus and cation conservation
     const phosphorus_total = phosphateTotal(cell, density);
     const cation_totals = phosphateCationTotals(cell);
     cell.hpo4_mol_p_per_m3 += 0.1;
-    cell.phosphate_surface.deprotonated_site_mol_per_Mg += 0.01;
-    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg -= 0.02;
+    cell.phosphate_surface.deprotonated_site_mol_per_megagram += 0.01;
+    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram -= 0.02;
     cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 += 0.03;
     cell.phosphate_minerals.hydroxyapatite_mol_per_m3 -= 0.04;
     try closePhosphateConservation(
@@ -3515,25 +3642,25 @@ test "coupled phosphate exchange coordinates conserve elements and exchange char
     cell.magnesium_mol_per_m3 = 9;
     cell.sodium_mol_per_m3 = 10;
     cell.potassium_mol_per_m3 = 11;
-    cell.phosphate_surface.deprotonated_site_mol_per_Mg = 0.1;
-    cell.phosphate_surface.hydroxyl_site_mol_per_Mg = 0.2;
-    cell.phosphate_surface.protonated_site_mol_per_Mg = 0.3;
-    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg = 0.4;
-    cell.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg = 0.5;
+    cell.phosphate_surface.deprotonated_site_mol_per_megagram = 0.1;
+    cell.phosphate_surface.hydroxyl_site_mol_per_megagram = 0.2;
+    cell.phosphate_surface.protonated_site_mol_per_megagram = 0.3;
+    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram = 0.4;
+    cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram = 0.5;
     cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 = 0.6;
     cell.phosphate_minerals.iron_phosphate_mol_per_m3 = 0.7;
     cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3 = 0.8;
     cell.phosphate_minerals.hydroxyapatite_mol_per_m3 = 0.9;
     cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3 = 1;
     cell.exchange = .{
-        .ammonium_mol_per_Mg = 0.11,
-        .hydrogen_mol_per_Mg = 0.12,
-        .aluminum_mol_per_Mg = 0.13,
-        .iron_mol_per_Mg = 0.14,
-        .calcium_mol_per_Mg = 0.15,
-        .magnesium_mol_per_Mg = 0.16,
-        .sodium_mol_per_Mg = 0.17,
-        .potassium_mol_per_Mg = 0.18,
+        .ammonium_mol_per_megagram = 0.11,
+        .hydrogen_mol_per_megagram = 0.12,
+        .aluminum_mol_per_megagram = 0.13,
+        .iron_mol_per_megagram = 0.14,
+        .calcium_mol_per_megagram = 0.15,
+        .magnesium_mol_per_megagram = 0.16,
+        .sodium_mol_per_megagram = 0.17,
+        .potassium_mol_per_megagram = 0.18,
     };
     const density: f64 = 2;
     const site_total = phosphateSiteTotal(cell);
@@ -3542,11 +3669,11 @@ test "coupled phosphate exchange coordinates conserve elements and exchange char
 
     cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 += 0.2;
     cell.phosphate_minerals.hydroxyapatite_mol_per_m3 -= 0.1;
-    cell.exchange.ammonium_mol_per_Mg += 0.01;
-    cell.exchange.hydrogen_mol_per_Mg -= 0.02;
-    cell.exchange.aluminum_mol_per_Mg += 0.01;
-    cell.exchange.magnesium_mol_per_Mg -= 0.03;
-    cell.exchange.sodium_mol_per_Mg += 0.02;
+    cell.exchange.ammonium_mol_per_megagram += 0.01;
+    cell.exchange.hydrogen_mol_per_megagram -= 0.02;
+    cell.exchange.aluminum_mol_per_megagram += 0.01;
+    cell.exchange.magnesium_mol_per_megagram -= 0.03;
+    cell.exchange.sodium_mol_per_megagram += 0.02;
     cell.ammonia_mol_per_m3 += 0.25;
     try closeCoupledPhosphateExchangeConservation(
         &cell,
@@ -3615,4 +3742,188 @@ test "Marquardt scaling preserves weak coordinates beside stiff chemistry" {
     ));
     try std.testing.expectApproxEqAbs(@as(f64, 1), solution[0], 1e-10);
     try std.testing.expectApproxEqAbs(@as(f64, 1), solution[1], 1e-10);
+}
+
+/// Reproduces the Ottawa surface-litter phosphate tail: a capped, locally
+/// constant precipitation rate whose directional derivative is zero, so the
+/// solver's probe finds no usable direction and only a phosphate-aware
+/// escape can descend. Supersaturation is reported against the aqueous
+/// H2PO4 pool, exactly like the production evaluator.
+const CappedPhosphatePlateauContext = struct {
+    /// mol P m-3 per iteration; the recorded failure had rates in this range
+    /// against inventories of order 10 mol m-3.
+    capped_rate: f64,
+    target_h2po4_mol_p_per_m3: f64,
+};
+
+fn cappedPhosphatePlateauEvaluator(
+    raw: *const anyopaque,
+    cell: Cell,
+) !ledger.ReactionExtents {
+    const context: *const CappedPhosphatePlateauContext =
+        @ptrCast(@alignCast(raw));
+    var extents = std.mem.zeroes(ledger.ReactionExtents);
+    // Clipped to a constant whenever supersaturated: no local gradient.
+    if (cell.h2po4_mol_p_per_m3 > context.target_h2po4_mol_p_per_m3)
+        extents.phosphate_minerals.aluminum_phosphate_mol_per_m3 =
+            context.capped_rate;
+    return extents;
+}
+
+fn cappedPhosphatePlateauResiduals(
+    raw: *const anyopaque,
+    cell: Cell,
+) !ledger.PhosphateMineralExtents {
+    const context: *const CappedPhosphatePlateauContext =
+        @ptrCast(@alignCast(raw));
+    const supersaturation =
+        cell.h2po4_mol_p_per_m3 - context.target_h2po4_mol_p_per_m3;
+    return .{
+        .aluminum_phosphate_mol_per_m3 =
+            if (cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 <= 0)
+                @max(0, supersaturation)
+            else
+                supersaturation,
+        .iron_phosphate_mol_per_m3 = 0,
+        .dicalcium_phosphate_mol_per_m3 = 0,
+        .hydroxyapatite_mol_per_m3 = 0,
+        .monocalcium_phosphate_mol_per_m3 = 0,
+    };
+}
+
+test "capped phosphate plateau escapes are reachable in the iterative branch" {
+    // Regression for SOLUTE-PHOSPHATE-EQUIL. Every phosphate escape used to be
+    // guarded by `!environment.dynamic_salts`, which the fixed-pH early return
+    // already excludes from the loop, so the iterative branch had no phosphate
+    // Newton direction and degenerated to pure Picard on a zero-gradient
+    // plateau. That produced `newton_steps=0` with the ceiling exhausted.
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.cells[0].h2po4_mol_p_per_m3 = 12;
+    state.cells[0].hpo4_mol_p_per_m3 = 2;
+    state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3 = 14;
+    const phosphorus_before =
+        state.cells[0].h2po4_mol_p_per_m3 +
+        state.cells[0].hpo4_mol_p_per_m3 +
+        state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3;
+    const context = CappedPhosphatePlateauContext{
+        .capped_rate = 2.5e-3,
+        .target_h2po4_mol_p_per_m3 = 4,
+    };
+    const result = try solveCell(
+        &state,
+        0,
+        .{
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
+            .dynamic_salts = true,
+        },
+        .{
+            .context = &context,
+            .evaluate = cappedPhosphatePlateauEvaluator,
+            .phosphate_mineral_equilibrium_residuals =
+                cappedPhosphatePlateauResiduals,
+        },
+        // Deliberately far below the production ceiling: the fix must converge
+        // by finding a direction, never by spending more iterations.
+        .{ .max_iterations = 24 },
+    );
+    try std.testing.expect(result.maximum_scaled_residual <= 1);
+    try std.testing.expect(result.newton_raphson_steps > 0);
+    // Phosphorus is conserved across the aqueous/mineral split.
+    try std.testing.expectApproxEqAbs(
+        phosphorus_before,
+        state.cells[0].h2po4_mol_p_per_m3 +
+            state.cells[0].hpo4_mol_p_per_m3 +
+            state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3,
+        1e-9,
+    );
+    // Every inventory stays in its physical domain.
+    try std.testing.expect(state.cells[0].h2po4_mol_p_per_m3 >= 0);
+    try std.testing.expect(state.cells[0].hpo4_mol_p_per_m3 >= 0);
+    try std.testing.expect(
+        state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3 >= 0,
+    );
+}
+
+test "fixed-pH litter never iterates undivided hourly rates" {
+    // SOLUTE.F 3996--5250 has no `DO M=` statement and uses the undivided
+    // hourly TPD/TSL constants, so the fixed-pH litter branch must commit one
+    // increment even when offered a large ceiling. Guards the MRXN
+    // multiplication that iterating this branch would introduce.
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.cells[0].h2po4_mol_p_per_m3 = 12;
+    state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3 = 14;
+    const context = CappedPhosphatePlateauContext{
+        .capped_rate = 2.5e-3,
+        .target_h2po4_mol_p_per_m3 = 4,
+    };
+    const result = try solveCell(
+        &state,
+        0,
+        .{
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
+            .dynamic_salts = false,
+        },
+        .{
+            .context = &context,
+            .evaluate = cappedPhosphatePlateauEvaluator,
+            .phosphate_mineral_equilibrium_residuals =
+                cappedPhosphatePlateauResiduals,
+        },
+        .{ .max_iterations = 1000 },
+    );
+    try std.testing.expectEqual(@as(u16, 1), result.iterations);
+    try std.testing.expectEqual(@as(u16, 0), result.newton_raphson_steps);
+    try std.testing.expectEqual(@as(u16, 0), result.picard_steps);
+    // Exactly one hourly capped increment moved from aqueous to solid.
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 12 - 2.5e-3),
+        state.cells[0].h2po4_mol_p_per_m3,
+        1e-15,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 14 + 2.5e-3),
+        state.cells[0].phosphate_minerals.aluminum_phosphate_mol_per_m3,
+        1e-15,
+    );
+}
+
+test "failed litter solve leaves caller state untouched" {
+    var state = try State.init(std.testing.allocator, 1);
+    defer state.deinit();
+    state.cells[0].ammonia_mol_per_m3 = 2;
+    const before = state.cells[0];
+    // A constant nonzero association rate against a cell that cannot satisfy
+    // it fails somewhere in the reaction network. Which specific error surfaces
+    // first is an internal detail of the strategy order, so do not pin the
+    // tag: the invariant under test is that *any* fail-fast leaves the caller's
+    // state byte-identical, because `solveCell` writes
+    // `state.cells[cell_index]` only on a success path.
+    const context = TestContext{ .rate_fraction = 0.25 };
+    if (solveCell(
+        &state,
+        0,
+        .{
+            .litter_mass_per_water_volume_megagrams_per_m3 = 1,
+            .dynamic_salts = true,
+        },
+        .{ .context = &context, .evaluate = divergentEvaluator },
+        .{ .max_iterations = 3 },
+    )) |_| {
+        return error.ExpectedLitterChemistryFailure;
+    } else |_| {}
+    try std.testing.expectEqual(before, state.cells[0]);
+}
+
+fn divergentEvaluator(
+    _: *const anyopaque,
+    _: Cell,
+) !ledger.ReactionExtents {
+    var extents = std.mem.zeroes(ledger.ReactionExtents);
+    // Constant nonzero ammonium association: the residual never vanishes and
+    // the state always changes, so neither the converged nor the stagnated
+    // exit can be taken.
+    extents.ammonium_association_mol_per_m3 = 0.1;
+    return extents;
 }

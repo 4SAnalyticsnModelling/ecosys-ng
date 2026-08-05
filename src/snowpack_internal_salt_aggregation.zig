@@ -55,9 +55,9 @@ pub const salt_species_count = @typeInfo(SaltSpecies).@"enum".fields.len;
 
 pub const Inputs = struct {
     /// Current snow heat capacity [snow_layer], MJ K^-1.
-    heat_capacity_mj_per_k_by_layer: []const f64,
+    heat_capacity_megajoules_per_k_by_layer: []const f64,
     /// Snow-layer presence threshold, MJ K^-1.
-    minimum_heat_capacity_mj_per_k: f64,
+    minimum_heat_capacity_megajoules_per_k: f64,
     /// `X*BLS(LS)` [snow_layer][salt_species], mol per model step.
     upper_face_mol_per_step_by_layer_species: []const f64,
 };
@@ -96,10 +96,10 @@ pub fn aggregate(
     );
 
     for (0..layer_count - 1) |layer| {
-        if (inputs.heat_capacity_mj_per_k_by_layer[layer] <=
-            inputs.minimum_heat_capacity_mj_per_k or
-            inputs.heat_capacity_mj_per_k_by_layer[layer + 1] <=
-                inputs.minimum_heat_capacity_mj_per_k)
+        if (inputs.heat_capacity_megajoules_per_k_by_layer[layer] <=
+            inputs.minimum_heat_capacity_megajoules_per_k or
+            inputs.heat_capacity_megajoules_per_k_by_layer[layer + 1] <=
+                inputs.minimum_heat_capacity_megajoules_per_k)
         {
             continue;
         }
@@ -126,7 +126,7 @@ pub fn aggregate(
 }
 
 fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !usize {
-    const layer_count = inputs.heat_capacity_mj_per_k_by_layer.len;
+    const layer_count = inputs.heat_capacity_megajoules_per_k_by_layer.len;
     if (layer_count == 0) return error.InvalidSnowpackSaltDimensions;
     const value_count = std.math.mul(
         usize,
@@ -143,11 +143,11 @@ fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !usize
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.minimum_heat_capacity_mj_per_k))
+    if (!std.math.isFinite(inputs.minimum_heat_capacity_megajoules_per_k))
         return error.NonFiniteSnowpackSaltInput;
-    if (inputs.minimum_heat_capacity_mj_per_k < 0)
+    if (inputs.minimum_heat_capacity_megajoules_per_k < 0)
         return error.InvalidSnowpackHeatCapacity;
-    for (inputs.heat_capacity_mj_per_k_by_layer) |capacity| {
+    for (inputs.heat_capacity_megajoules_per_k_by_layer) |capacity| {
         if (!std.math.isFinite(capacity))
             return error.NonFiniteSnowpackSaltInput;
         if (capacity < 0) return error.InvalidSnowpackHeatCapacity;
@@ -215,8 +215,8 @@ test "dynamic internal salt divergence retains layer and species order" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try aggregate(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &face_fluxes,
     }, &state, .{ .net_mol_per_step_by_layer_species = &scratch });
 
@@ -239,8 +239,8 @@ test "internal faces conserve every salt species exactly" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try aggregate(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &face_fluxes,
     }, &state, .{ .net_mol_per_step_by_layer_species = &scratch });
 
@@ -278,8 +278,8 @@ test "species layout and runtime snow layer extent are explicit" {
     var scratch: [layer_count * salt_species_count]f64 = undefined;
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
     try aggregate(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &face_fluxes,
     }, &state, .{ .net_mol_per_step_by_layer_species = &scratch });
     for (totals) |value| try std.testing.expectEqual(@as(f64, 0), value);
@@ -298,8 +298,8 @@ test "inactive adjacent layers preserve source capacity gates" {
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
 
     try aggregate(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &face_fluxes,
     }, &state, .{ .net_mol_per_step_by_layer_species = &scratch });
 
@@ -314,8 +314,8 @@ test "static equilibrium bypasses dynamic dimensions and mutation" {
     var scratch = [_]f64{13};
     var state = State{ .net_mol_per_step_by_layer_species = &totals };
     try aggregate(.static, .{
-        .heat_capacity_mj_per_k_by_layer = &.{},
-        .minimum_heat_capacity_mj_per_k = std.math.nan(f64),
+        .heat_capacity_megajoules_per_k_by_layer = &.{},
+        .minimum_heat_capacity_megajoules_per_k = std.math.nan(f64),
         .upper_face_mol_per_step_by_layer_species = &.{},
     }, &state, .{ .net_mol_per_step_by_layer_species = &scratch });
     try std.testing.expectEqual(@as(f64, 11), totals[0]);
@@ -335,8 +335,8 @@ test "source association and atomic failure behavior are retained" {
     const workspace = Workspace{ .net_mol_per_step_by_layer_species = &scratch };
 
     try aggregate(.dynamic, .{
-        .heat_capacity_mj_per_k_by_layer = &capacities,
-        .minimum_heat_capacity_mj_per_k = 1,
+        .heat_capacity_megajoules_per_k_by_layer = &capacities,
+        .minimum_heat_capacity_megajoules_per_k = 1,
         .upper_face_mol_per_step_by_layer_species = &face_fluxes,
     }, &state, workspace);
     try expectLayerValue(&totals, 0, -1);
@@ -346,8 +346,8 @@ test "source association and atomic failure behavior are retained" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSaltInput,
         aggregate(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &face_fluxes,
         }, &state, workspace),
     );
@@ -359,8 +359,8 @@ test "source association and atomic failure behavior are retained" {
     try std.testing.expectError(
         error.NonFiniteSnowpackSaltResult,
         aggregate(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &face_fluxes,
         }, &state, workspace),
     );
@@ -376,8 +376,8 @@ test "dimension and workspace alias errors precede mutation" {
     try std.testing.expectError(
         error.SnowpackSaltWorkspaceOverlap,
         aggregate(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &face_fluxes,
         }, &state, .{ .net_mol_per_step_by_layer_species = &totals }),
     );
@@ -387,8 +387,8 @@ test "dimension and workspace alias errors precede mutation" {
     try std.testing.expectError(
         error.SnowpackSaltDimensionMismatch,
         aggregate(.dynamic, .{
-            .heat_capacity_mj_per_k_by_layer = &capacities,
-            .minimum_heat_capacity_mj_per_k = 1,
+            .heat_capacity_megajoules_per_k_by_layer = &capacities,
+            .minimum_heat_capacity_megajoules_per_k = 1,
             .upper_face_mol_per_step_by_layer_species = &face_fluxes,
         }, &state, .{ .net_mol_per_step_by_layer_species = &short_scratch }),
     );

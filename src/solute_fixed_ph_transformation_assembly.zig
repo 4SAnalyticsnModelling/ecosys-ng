@@ -2,9 +2,9 @@ const std = @import("std");
 const cation_exchange = @import("solute_cation_exchange.zig");
 
 pub const Geometry = struct {
-    shared_soil_mass_per_water_volume_Mg_per_m3: f64,
-    non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3: f64,
-    band_ammonium_soil_mass_per_water_volume_Mg_per_m3: f64,
+    shared_soil_mass_per_water_volume_megagrams_per_m3: f64,
+    non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3: f64,
+    band_ammonium_soil_mass_per_water_volume_megagrams_per_m3: f64,
 };
 
 pub const AmmoniumRates = struct {
@@ -37,7 +37,7 @@ pub const Inputs = struct {
     ammonium: AmmoniumRates,
     non_band_phosphate: PhosphateZoneRates,
     band_phosphate: PhosphateZoneRates,
-    cation_exchange_mol_per_Mg_step: cation_exchange.Cations,
+    cation_exchange_mol_per_megagram_step: cation_exchange.Cations,
 };
 
 pub const AmmoniumTransformations = struct {
@@ -85,19 +85,19 @@ pub const Result = struct {
 /// comparator does not apply the production soil-mass:water correction.
 pub fn assembleSourceOrder(inputs: Inputs) !Result {
     try validate(inputs);
-    const exchange = inputs.cation_exchange_mol_per_Mg_step;
+    const exchange = inputs.cation_exchange_mol_per_megagram_step;
     const shared_density =
-        inputs.geometry.shared_soil_mass_per_water_volume_Mg_per_m3;
+        inputs.geometry.shared_soil_mass_per_water_volume_megagrams_per_m3;
     const result = Result{
         .ammonium = .{
             .non_band_ammonium_mol_n_per_m3_step = inputs.ammonium.non_band_association_mol_n_per_m3_step -
                 exchange.ammonium_non_band *
                     inputs.geometry
-                        .non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3,
+                        .non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3,
             .band_ammonium_mol_n_per_m3_step = inputs.ammonium.band_association_mol_n_per_m3_step -
                 exchange.ammonium_band *
                     inputs.geometry
-                        .band_ammonium_soil_mass_per_water_volume_Mg_per_m3,
+                        .band_ammonium_soil_mass_per_water_volume_megagrams_per_m3,
             .non_band_ammonia_mol_n_per_m3_step = -inputs.ammonium.non_band_association_mol_n_per_m3_step,
             .band_ammonia_mol_n_per_m3_step = -inputs.ammonium.band_association_mol_n_per_m3_step,
         },
@@ -155,7 +155,7 @@ fn validate(inputs: Inputs) !void {
     try validateSignedStruct(inputs.ammonium);
     try validatePhosphateZone(inputs.non_band_phosphate);
     try validatePhosphateZone(inputs.band_phosphate);
-    try validateSignedStruct(inputs.cation_exchange_mol_per_Mg_step);
+    try validateSignedStruct(inputs.cation_exchange_mol_per_megagram_step);
 }
 
 fn validatePhosphateZone(zone: PhosphateZoneRates) !void {
@@ -203,9 +203,9 @@ fn zeroZoneRates() PhosphateZoneRates {
 fn validInputs() Inputs {
     return .{
         .geometry = .{
-            .shared_soil_mass_per_water_volume_Mg_per_m3 = 1.4,
-            .non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3 = 1.2,
-            .band_ammonium_soil_mass_per_water_volume_Mg_per_m3 = 0.8,
+            .shared_soil_mass_per_water_volume_megagrams_per_m3 = 1.4,
+            .non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3 = 1.2,
+            .band_ammonium_soil_mass_per_water_volume_megagrams_per_m3 = 0.8,
         },
         .ammonium = .{
             .non_band_association_mol_n_per_m3_step = 0.11,
@@ -241,7 +241,7 @@ fn validInputs() Inputs {
                 .monocalcium_phosphate_mol_per_m3_step = 0.19,
             },
         },
-        .cation_exchange_mol_per_Mg_step = .{
+        .cation_exchange_mol_per_megagram_step = .{
             .ammonium_non_band = 0.02,
             .ammonium_band = -0.03,
             .hydrogen = 0.04,
@@ -260,19 +260,19 @@ test "fixed-pH transformation assembly matches every source equation" {
     const result = try assembleSourceOrder(inputs);
     const n = inputs.non_band_phosphate;
     const b = inputs.band_phosphate;
-    const x = inputs.cation_exchange_mol_per_Mg_step;
+    const x = inputs.cation_exchange_mol_per_megagram_step;
     const shared_density =
-        inputs.geometry.shared_soil_mass_per_water_volume_Mg_per_m3;
+        inputs.geometry.shared_soil_mass_per_water_volume_megagrams_per_m3;
     const expected = Result{
         .ammonium = .{
             .non_band_ammonium_mol_n_per_m3_step = inputs.ammonium.non_band_association_mol_n_per_m3_step -
                 x.ammonium_non_band *
                     inputs.geometry
-                        .non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3,
+                        .non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3,
             .band_ammonium_mol_n_per_m3_step = inputs.ammonium.band_association_mol_n_per_m3_step -
                 x.ammonium_band *
                     inputs.geometry
-                        .band_ammonium_soil_mass_per_water_volume_Mg_per_m3,
+                        .band_ammonium_soil_mass_per_water_volume_megagrams_per_m3,
             .non_band_ammonia_mol_n_per_m3_step = -inputs.ammonium.non_band_association_mol_n_per_m3_step,
             .band_ammonia_mol_n_per_m3_step = -inputs.ammonium.band_association_mol_n_per_m3_step,
         },
@@ -350,29 +350,29 @@ test "fixed-pH assembly closes internal N P sites and cation exchange" {
     const non_band_n =
         result.ammonium.non_band_ammonium_mol_n_per_m3_step +
         result.ammonium.non_band_ammonia_mol_n_per_m3_step +
-        inputs.cation_exchange_mol_per_Mg_step.ammonium_non_band *
+        inputs.cation_exchange_mol_per_megagram_step.ammonium_non_band *
             inputs.geometry
-                .non_band_ammonium_soil_mass_per_water_volume_Mg_per_m3;
+                .non_band_ammonium_soil_mass_per_water_volume_megagrams_per_m3;
     const band_n =
         result.ammonium.band_ammonium_mol_n_per_m3_step +
         result.ammonium.band_ammonia_mol_n_per_m3_step +
-        inputs.cation_exchange_mol_per_Mg_step.ammonium_band *
+        inputs.cation_exchange_mol_per_megagram_step.ammonium_band *
             inputs.geometry
-                .band_ammonium_soil_mass_per_water_volume_Mg_per_m3;
+                .band_ammonium_soil_mass_per_water_volume_megagrams_per_m3;
     try std.testing.expectApproxEqAbs(@as(f64, 0), non_band_n, 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 0), band_n, 1e-15);
     try expectSourcePhosphateClosure(result.non_band_phosphate);
     try expectSourcePhosphateClosure(result.band_phosphate);
     const density =
-        inputs.geometry.shared_soil_mass_per_water_volume_Mg_per_m3;
+        inputs.geometry.shared_soil_mass_per_water_volume_megagrams_per_m3;
     inline for (.{
-        .{ result.shared_aqueous.hydrogen_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.hydrogen },
-        .{ result.shared_aqueous.aluminum_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.aluminum },
-        .{ result.shared_aqueous.iron_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.iron },
-        .{ result.shared_aqueous.calcium_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.calcium },
-        .{ result.shared_aqueous.magnesium_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.magnesium },
-        .{ result.shared_aqueous.sodium_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.sodium },
-        .{ result.shared_aqueous.potassium_mol_per_m3_step, inputs.cation_exchange_mol_per_Mg_step.potassium },
+        .{ result.shared_aqueous.hydrogen_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.hydrogen },
+        .{ result.shared_aqueous.aluminum_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.aluminum },
+        .{ result.shared_aqueous.iron_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.iron },
+        .{ result.shared_aqueous.calcium_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.calcium },
+        .{ result.shared_aqueous.magnesium_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.magnesium },
+        .{ result.shared_aqueous.sodium_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.sodium },
+        .{ result.shared_aqueous.potassium_mol_per_m3_step, inputs.cation_exchange_mol_per_megagram_step.potassium },
     }) |pair| try std.testing.expectApproxEqAbs(
         @as(f64, 0),
         pair[0] + pair[1] * density,
@@ -411,7 +411,7 @@ fn expectSourcePhosphateClosure(
 test "fixed-pH assembly exposes omitted dissolved mineral metal changes" {
     var inputs = validInputs();
     inputs.ammonium = std.mem.zeroes(AmmoniumRates);
-    inputs.cation_exchange_mol_per_Mg_step = zeroCations();
+    inputs.cation_exchange_mol_per_megagram_step = zeroCations();
     inputs.non_band_phosphate = zeroZoneRates();
     inputs.band_phosphate = zeroZoneRates();
     inputs.non_band_phosphate.minerals
@@ -440,7 +440,7 @@ test "fixed-pH assembly propagates inactive zero rates and rejects NaN" {
     inputs.ammonium = std.mem.zeroes(AmmoniumRates);
     inputs.non_band_phosphate = zeroZoneRates();
     inputs.band_phosphate = zeroZoneRates();
-    inputs.cation_exchange_mol_per_Mg_step = zeroCations();
+    inputs.cation_exchange_mol_per_megagram_step = zeroCations();
     const result = try assembleSourceOrder(inputs);
     try std.testing.expectEqualDeep(
         std.mem.zeroes(AmmoniumTransformations),

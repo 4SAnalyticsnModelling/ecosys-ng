@@ -26,7 +26,7 @@ pub const PhaseFlux = struct {
     snow_m3_per_step: f64 = 0,
     liquid_water_m3_per_step: f64 = 0,
     ice_m3_per_step: f64 = 0,
-    heat_mj_per_step: f64 = 0,
+    heat_megajoules_per_step: f64 = 0,
 };
 
 pub const ElementFlux = struct {
@@ -110,7 +110,7 @@ pub const BoundaryFlux = struct {
 
 pub const CumulativeOutwardLedger = struct {
     water_equivalent_m3: f64 = 0,
-    heat_mj: f64 = 0,
+    heat_megajoules: f64 = 0,
     carbon_g_c: f64 = 0,
     nitrogen_g_n: f64 = 0,
     phosphorus_g_p: f64 = 0,
@@ -127,8 +127,8 @@ pub const CellOutwardLedger = struct {
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     flux_by_face: [Face.count][]const BoundaryFlux,
     negligible_water_m3_by_cell: []const f64,
@@ -164,7 +164,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
                 const flux = inputs.flux_by_face[@intFromEnum(face)][cell];
@@ -193,7 +193,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
 
 const SignedTransfer = struct {
     water_equivalent_m3: f64,
-    heat_mj: f64,
+    heat_megajoules: f64,
     inorganic_carbon_g_c: f64,
     mineral_nitrogen_g_n: f64,
     gaseous_nitrogen_g_n: f64,
@@ -213,7 +213,7 @@ fn calculateTransfer(
     const elements = flux.elements;
     var transfer: SignedTransfer = .{
         .water_equivalent_m3 = water_equivalent_m3,
-        .heat_mj = try checkedProduct(direction, phases.heat_mj_per_step),
+        .heat_megajoules = try checkedProduct(direction, phases.heat_megajoules_per_step),
         .inorganic_carbon_g_c = try signedSourceSum(direction, &.{
             elements.carbon_dioxide_g_c_per_step,
             elements.methane_g_c_per_step,
@@ -318,7 +318,7 @@ fn advanceCumulative(
     var next = current;
     next.water_equivalent_m3 =
         try checkedSum(next.water_equivalent_m3, -transfer.water_equivalent_m3);
-    next.heat_mj = try checkedSum(next.heat_mj, -transfer.heat_mj);
+    next.heat_megajoules = try checkedSum(next.heat_megajoules, -transfer.heat_megajoules);
     next.carbon_g_c =
         try checkedSum(next.carbon_g_c, -transfer.inorganic_carbon_g_c);
     next.nitrogen_g_n =
@@ -371,7 +371,7 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var cell_ledger = state.outward_by_cell[cell];
             for (std.meta.tags(Face)) |face| {
                 if (!isExternalFace(face, column, row, window)) continue;
@@ -398,12 +398,12 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !usize {
-    if (inputs.grid_column_count == 0 or inputs.grid_row_count == 0)
+    if (inputs.lon_count == 0 or inputs.lat_count == 0)
         return error.InvalidSnowBoundaryDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidSnowBoundaryDimensions;
     inline for (inputs.flux_by_face) |values|
         if (values.len != cell_count)
@@ -414,8 +414,8 @@ fn validateDimensions(inputs: Inputs, state: State) !usize {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidSnowBoundaryWindow;
     return cell_count;
 }
@@ -525,7 +525,7 @@ fn allOneFlux() BoundaryFlux {
             .snow_m3_per_step = 1,
             .liquid_water_m3_per_step = 2,
             .ice_m3_per_step = 3,
-            .heat_mj_per_step = 5,
+            .heat_megajoules_per_step = 5,
         },
         .elements = filled(ElementFlux, 1),
         .multiplicity_one = filled(MultiplicityOneSaltFlux, 1),
@@ -542,8 +542,8 @@ fn oneCellInputs(
     zero: []const BoundaryFlux,
 ) Inputs {
     return .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 0,
@@ -567,7 +567,7 @@ test "REDIST snow boundary accounts water heat elements and dynamic salts" {
     try apply(oneCellInputs(.dynamic, &east, &zero), &state);
 
     try std.testing.expectEqual(@as(f64, 4.5), state.cumulative.water_equivalent_m3);
-    try std.testing.expectEqual(@as(f64, 5), state.cumulative.heat_mj);
+    try std.testing.expectEqual(@as(f64, 5), state.cumulative.heat_megajoules);
     try std.testing.expectEqual(@as(f64, 2), state.cumulative.carbon_g_c);
     try std.testing.expectEqual(@as(f64, 5), state.cumulative.nitrogen_g_n);
     try std.testing.expectEqual(@as(f64, 219), state.cumulative.phosphorus_g_p);
@@ -596,7 +596,7 @@ test "west face signed transfer records outward drift without sign loss" {
     const west = [_]BoundaryFlux{.{
         .phases = .{
             .snow_m3_per_step = -1,
-            .heat_mj_per_step = -2,
+            .heat_megajoules_per_step = -2,
         },
         .elements = .{ .carbon_dioxide_g_c_per_step = -3 },
     }};
@@ -609,7 +609,7 @@ test "west face signed transfer records outward drift without sign loss" {
     try apply(inputs, &state);
 
     try std.testing.expectEqual(@as(f64, 1), state.cumulative.water_equivalent_m3);
-    try std.testing.expectEqual(@as(f64, 2), state.cumulative.heat_mj);
+    try std.testing.expectEqual(@as(f64, 2), state.cumulative.heat_megajoules);
     try std.testing.expectEqual(@as(f64, 3), state.cumulative.carbon_g_c);
     try std.testing.expectEqual(@as(f64, 3), cells[0].dissolved_inorganic_carbon_g_c);
 }
@@ -634,8 +634,8 @@ test "runtime grid indexes boundary cells and conserves cell totals" {
     var cells = [_]CellOutwardLedger{ .{}, .{}, .{}, .{} };
     var state: State = .{ .cumulative = .{}, .outward_by_cell = &cells };
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,
@@ -674,8 +674,8 @@ test "late non-finite snow flux leaves every ledger unchanged" {
         .outward_by_cell = &cells,
     };
     try std.testing.expectError(error.InvalidSnowBoundaryInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
             .last_column_inclusive = 1,

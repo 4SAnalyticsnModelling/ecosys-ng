@@ -69,11 +69,11 @@ pub const SurfaceExchangeResult = struct {
     litter_evaporation_resistance_h_per_m: f64,
     soil_evaporation_resistance_h_per_m: f64,
     snow_latent_conductance_m3_per_step: f64,
-    snow_sensible_conductance_mj_per_k_step: f64,
+    snow_sensible_conductance_megajoules_per_k_step: f64,
     litter_latent_conductance_m3_per_step: f64,
-    litter_sensible_conductance_mj_per_k_step: f64,
+    litter_sensible_conductance_megajoules_per_k_step: f64,
     soil_latent_conductance_m3_per_step: f64,
-    soil_sensible_conductance_mj_per_k_step: f64,
+    soil_sensible_conductance_megajoules_per_k_step: f64,
 };
 
 /// WATSUB surface fractions and `PAREWM/PARSWM`, `PARERM/PARSRM`, and
@@ -98,7 +98,7 @@ pub fn calculateSurfaceExchange(inputs: SurfaceExchangeInputs) !SurfaceExchangeR
     const soil_evaporation_resistance = inputs.soil_evaporation_pore_resistance_h_per_m * inputs.soil_surface_air_fraction;
     const combined_ground_resistance = 1 / (bare / inputs.current_ground_surface_resistance_h_per_m + litter / (inputs.current_ground_surface_resistance_h_per_m + porous_resistance));
     const latent_area_time_m2_h = inputs.cell_area_m2 * inputs.flux_timestep_h;
-    const sensible_area_time_mj_m_per_k = inputs.cell_area_m2 * 1.25e-3 * inputs.flux_timestep_h;
+    const sensible_area_time_megajoules_m_per_k = inputs.cell_area_m2 * 1.25e-3 * inputs.flux_timestep_h;
     const result: SurfaceExchangeResult = .{
         .snow_cover_fraction = snow_cover,
         .snow_free_fraction = snow_free,
@@ -108,11 +108,11 @@ pub fn calculateSurfaceExchange(inputs: SurfaceExchangeInputs) !SurfaceExchangeR
         .litter_evaporation_resistance_h_per_m = litter_evaporation_resistance,
         .soil_evaporation_resistance_h_per_m = soil_evaporation_resistance,
         .snow_latent_conductance_m3_per_step = latent_area_time_m2_h * snow_cover * inputs.snow_flux_timestep_h / inputs.flux_timestep_h / (inputs.current_snow_surface_resistance_h_per_m + inputs.evaporation_surface_resistance_h_per_m),
-        .snow_sensible_conductance_mj_per_k_step = sensible_area_time_mj_m_per_k * snow_cover * inputs.snow_flux_timestep_h / inputs.flux_timestep_h / inputs.current_snow_surface_resistance_h_per_m,
+        .snow_sensible_conductance_megajoules_per_k_step = sensible_area_time_megajoules_m_per_k * snow_cover * inputs.snow_flux_timestep_h / inputs.flux_timestep_h / inputs.current_snow_surface_resistance_h_per_m,
         .litter_latent_conductance_m3_per_step = latent_area_time_m2_h * snow_free * litter * inputs.litter_flux_timestep_h / inputs.flux_timestep_h / (inputs.current_ground_surface_resistance_h_per_m + inputs.evaporation_surface_resistance_h_per_m + 0.5 * litter_evaporation_resistance),
-        .litter_sensible_conductance_mj_per_k_step = sensible_area_time_mj_m_per_k * snow_free * litter * inputs.litter_flux_timestep_h / inputs.flux_timestep_h / inputs.current_ground_surface_resistance_h_per_m,
+        .litter_sensible_conductance_megajoules_per_k_step = sensible_area_time_megajoules_m_per_k * snow_free * litter * inputs.litter_flux_timestep_h / inputs.flux_timestep_h / inputs.current_ground_surface_resistance_h_per_m,
         .soil_latent_conductance_m3_per_step = latent_area_time_m2_h * snow_free * bare / (combined_ground_resistance + inputs.evaporation_surface_resistance_h_per_m + soil_evaporation_resistance),
-        .soil_sensible_conductance_mj_per_k_step = sensible_area_time_mj_m_per_k * snow_free * bare / combined_ground_resistance,
+        .soil_sensible_conductance_megajoules_per_k_step = sensible_area_time_megajoules_m_per_k * snow_free * bare / combined_ground_resistance,
     };
     inline for (@typeInfo(SurfaceExchangeResult).@"struct".fields) |field| if (!std.math.isFinite(@field(result, field.name)) or @field(result, field.name) < 0) return error.InvalidSurfaceExchangeResult;
     return result;

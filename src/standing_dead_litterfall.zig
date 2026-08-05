@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const kinetic_fraction_count: usize = 5;
+pub const kinetic_fraction_count: usize = 4;
 pub const litter_position_count: usize = 2;
 
 pub const State = struct {
@@ -198,9 +198,9 @@ fn validatePartitions(inputs: Inputs, plant: usize) !void {
 test "standing dead litterfall preserves five fractions and two positions" {
     var state = try State.init(std.testing.allocator, 1);
     defer state.deinit();
-    var carbon = [_]f64{ 10, 20, 30, 40, 50 };
-    var nitrogen = [_]f64{ 1, 2, 3, 4, 5 };
-    var phosphorus = [_]f64{ 0.1, 0.2, 0.3, 0.4, 0.5 };
+    var carbon = [_]f64{ 10, 20, 30, 40 };
+    var nitrogen = [_]f64{ 1, 2, 3, 4 };
+    var phosphorus = [_]f64{ 0.1, 0.2, 0.3, 0.4 };
     try apply(
         &state,
         .{
@@ -232,7 +232,7 @@ test "standing dead litterfall preserves five fractions and two positions" {
         state.carbon_litterfall_g_c_by_plant_fraction_position[1],
         1.0e-15,
     );
-    const initial_carbon_g_c: f64 = 150;
+    const initial_carbon_g_c: f64 = 100;
     var final_carbon_g_c: f64 = 0;
     for (carbon) |value| final_carbon_g_c += value;
     for (state.carbon_litterfall_g_c_by_plant_fraction_position) |value|

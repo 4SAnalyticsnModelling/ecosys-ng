@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const water_heat_capacity_mj_per_m3_k = 4.19;
+const water_heat_capacity_megajoules_per_m3_k = 4.19;
 
 /// Runtime EXTRACT `RTDNT/TUPWTR/TUPHT` owner. Arrays use cell-major then
 /// soil-layer-major order.
@@ -12,7 +12,7 @@ pub const State = struct {
     root_domain_capacity: usize,
     root_length_density_m_per_m3: []f64,
     water_uptake_m3_per_h: []f64,
-    convective_water_heat_mj_per_h: []f64,
+    convective_water_heat_megajoules_per_h: []f64,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -45,12 +45,12 @@ pub const State = struct {
             .root_domain_capacity = root_domain_capacity,
             .root_length_density_m_per_m3 = density,
             .water_uptake_m3_per_h = water,
-            .convective_water_heat_mj_per_h = heat,
+            .convective_water_heat_megajoules_per_h = heat,
         };
     }
 
     pub fn deinit(self: *State) void {
-        self.allocator.free(self.convective_water_heat_mj_per_h);
+        self.allocator.free(self.convective_water_heat_megajoules_per_h);
         self.allocator.free(self.water_uptake_m3_per_h);
         self.allocator.free(self.root_length_density_m_per_m3);
         self.* = undefined;
@@ -71,7 +71,7 @@ pub const Inputs = struct {
 const Totals = struct {
     root_length_density_m_per_m3: f64 = 0,
     water_uptake_m3_per_h: f64 = 0,
-    convective_water_heat_mj_per_h: f64 = 0,
+    convective_water_heat_megajoules_per_h: f64 = 0,
 };
 
 /// Exact EXTRACT lines 680–703 publication. Active plants traverse root
@@ -114,7 +114,7 @@ pub fn refresh(state: *State, inputs: Inputs) !void {
 
     @memset(state.root_length_density_m_per_m3, 0);
     @memset(state.water_uptake_m3_per_h, 0);
-    @memset(state.convective_water_heat_mj_per_h, 0);
+    @memset(state.convective_water_heat_megajoules_per_h, 0);
     for (0..state.cell_count) |cell| {
         for (0..inputs.active_soil_layer_count_by_cell[cell]) |layer| {
             const output = cell * state.soil_layer_capacity + layer;
@@ -123,8 +123,8 @@ pub fn refresh(state: *State, inputs: Inputs) !void {
                 totals.root_length_density_m_per_m3;
             state.water_uptake_m3_per_h[output] =
                 totals.water_uptake_m3_per_h;
-            state.convective_water_heat_mj_per_h[output] =
-                totals.convective_water_heat_mj_per_h;
+            state.convective_water_heat_megajoules_per_h[output] =
+                totals.convective_water_heat_megajoules_per_h;
         }
     }
 }
@@ -164,8 +164,8 @@ fn totalsFor(
                 result.root_length_density_m_per_m3 +=
                     density * population / area;
             result.water_uptake_m3_per_h += water;
-            result.convective_water_heat_mj_per_h +=
-                water * water_heat_capacity_mj_per_m3_k * temperature;
+            result.convective_water_heat_megajoules_per_h +=
+                water * water_heat_capacity_megajoules_per_m3_k * temperature;
         }
     }
     inline for (@typeInfo(Totals).@"struct".fields) |field|
@@ -199,7 +199,7 @@ test "root water publication preserves domain order signs and heat closure" {
     );
     try std.testing.expectApproxEqAbs(
         state.water_uptake_m3_per_h[1] * 4.19 * 290,
-        state.convective_water_heat_mj_per_h[1],
+        state.convective_water_heat_megajoules_per_h[1],
         1e-12,
     );
 }
@@ -209,7 +209,7 @@ test "late invalid root water leaves full publication unchanged" {
     defer state.deinit();
     @memset(state.root_length_density_m_per_m3, 7);
     @memset(state.water_uptake_m3_per_h, 8);
-    @memset(state.convective_water_heat_mj_per_h, 9);
+    @memset(state.convective_water_heat_megajoules_per_h, 9);
     try std.testing.expectError(
         error.InvalidRootWaterPublicationInput,
         refresh(&state, .{
@@ -225,5 +225,5 @@ test "late invalid root water leaves full publication unchanged" {
     );
     try std.testing.expectEqualSlices(f64, &.{ 7, 7 }, state.root_length_density_m_per_m3);
     try std.testing.expectEqualSlices(f64, &.{ 8, 8 }, state.water_uptake_m3_per_h);
-    try std.testing.expectEqualSlices(f64, &.{ 9, 9 }, state.convective_water_heat_mj_per_h);
+    try std.testing.expectEqualSlices(f64, &.{ 9, 9 }, state.convective_water_heat_megajoules_per_h);
 }

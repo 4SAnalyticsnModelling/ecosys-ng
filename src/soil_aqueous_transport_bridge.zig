@@ -5,6 +5,25 @@ const species_module = @import("solute_transport_species.zig");
 
 const Species = species_module.AqueousSpecies;
 
+/// Requires chemistry's physical water carrier and the transport owner's
+/// carrier to describe the same runtime volume before concentration export.
+pub fn validateCarrierVolumes(
+    transport_state: *const transport.State,
+    expected_water_volume_m3: []const f64,
+    absolute_tolerance_m3: f64,
+) !void {
+    if (expected_water_volume_m3.len != transport_state.cell_count)
+        return error.AqueousTransportDimensionMismatch;
+    if (!std.math.isFinite(absolute_tolerance_m3) or absolute_tolerance_m3 < 0)
+        return error.InvalidAqueousTransportCarrierTolerance;
+    for (transport_state.water_volume_m3, expected_water_volume_m3) |actual, expected| {
+        if (!std.math.isFinite(actual) or !std.math.isFinite(expected) or actual < 0 or expected < 0)
+            return error.InvalidAqueousTransportWaterVolume;
+        if (@abs(actual - expected) > absolute_tolerance_m3)
+            return error.AqueousTransportCarrierVolumeMismatch;
+    }
+}
+
 /// Copies dissolved chemistry concentrations into the conservative transport
 /// inventory. Chemistry uses mol m-3; transport uses mol per runtime layer.
 pub fn exportChemistry(chemistry_state: *const chemistry.State, transport_state: *transport.State) !void {
@@ -61,6 +80,56 @@ pub fn importChemistry(transport_state: *const transport.State, chemistry_state:
             setConcentration(&chemistry_state.aqueous[cell], &chemistry_state.non_band_phosphate[cell], &chemistry_state.band_phosphate[cell], @enumFromInt(field.value), amount_mol / water_volume_m3);
         }
     }
+}
+
+/// Atomically reconciles one cell after a process changes its water carrier
+/// and a declared subset of concentrations. Changed species publish their
+/// new extensive amounts; every other transport-owned species preserves its
+/// amount and is diluted onto the new carrier.
+pub fn synchronizeCellAfterCarrierChange(
+    chemistry_state: *chemistry.State,
+    transport_state: *transport.State,
+    cell: usize,
+    new_water_volume_m3: f64,
+    changed_species: []const Species,
+) !void {
+    try validateDimensions(chemistry_state, transport_state);
+    if (cell >= chemistry_state.cell_count) return error.AqueousTransportCellIndexOutOfBounds;
+    if (!std.math.isFinite(new_water_volume_m3) or new_water_volume_m3 <= 0)
+        return error.AqueousTransportRequiresPositiveWaterVolume;
+    const amounts = try transport_state.cellAmounts(cell);
+    for (amounts) |amount_mol| {
+        if (!std.math.isFinite(amount_mol) or amount_mol < 0)
+            return error.InvalidAqueousTransportAmount;
+    }
+    for (changed_species) |species| {
+        const value = concentration(chemistry_state, cell, species);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidAqueousChemistryConcentration;
+        const amount_mol = value * new_water_volume_m3;
+        if (!std.math.isFinite(amount_mol)) return error.InvalidAqueousTransportAmount;
+    }
+
+    inline for (@typeInfo(Species).@"enum".fields) |field| {
+        const species: Species = @enumFromInt(field.value);
+        if (containsSpecies(changed_species, species)) {
+            amounts[field.value] = concentration(chemistry_state, cell, species) * new_water_volume_m3;
+        } else {
+            setConcentration(
+                &chemistry_state.aqueous[cell],
+                &chemistry_state.non_band_phosphate[cell],
+                &chemistry_state.band_phosphate[cell],
+                species,
+                amounts[field.value] / new_water_volume_m3,
+            );
+        }
+    }
+    transport_state.water_volume_m3[cell] = new_water_volume_m3;
+}
+
+fn containsSpecies(species_list: []const Species, wanted: Species) bool {
+    for (species_list) |species| if (species == wanted) return true;
+    return false;
 }
 
 fn validateDimensions(chemistry_state: *const chemistry.State, transport_state: *const transport.State) !void {
@@ -180,6 +249,18 @@ fn setConcentration(aqueous: anytype, non_band: anytype, band: anytype, species:
     }
 }
 
+test "chemistry export carrier validation rejects a stale water owner" {
+    var transport_state = try transport.State.init(std.testing.allocator, 2, Species.count);
+    defer transport_state.deinit();
+    transport_state.water_volume_m3[0] = 1;
+    transport_state.water_volume_m3[1] = 2;
+    try validateCarrierVolumes(&transport_state, &.{ 1, 2 + 1.0e-12 }, 1.0e-11);
+    try std.testing.expectError(
+        error.AqueousTransportCarrierVolumeMismatch,
+        validateCarrierVolumes(&transport_state, &.{ 1, 2.01 }, 1.0e-11),
+    );
+}
+
 test "all TRNSFRS species round trip between concentration and runtime amount" {
     var chemistry_state = try chemistry.State.init(std.testing.allocator, 2);
     defer chemistry_state.deinit();
@@ -204,4 +285,33 @@ test "failed import cannot partially overwrite chemistry" {
     transport_state.water_volume_m3[0] = 0;
     try std.testing.expectError(error.AqueousTransportRequiresPositiveWaterVolume, importChemistry(&transport_state, &chemistry_state));
     try std.testing.expectEqual(@as(f64, 3), chemistry_state.aqueous[0].calcium);
+}
+
+test "carrier synchronization preserves unchanged complexes and publishes transferred carbonate" {
+    var chemistry_state = try chemistry.State.init(std.testing.allocator, 1);
+    defer chemistry_state.deinit();
+    var transport_state = try transport.State.init(std.testing.allocator, 1, Species.count);
+    defer transport_state.deinit();
+    transport_state.water_volume_m3[0] = 1;
+    const amounts = try transport_state.cellAmounts(0);
+    amounts[@intFromEnum(Species.carbonate)] = 7;
+    amounts[@intFromEnum(Species.bicarbonate)] = 11;
+    amounts[@intFromEnum(Species.calcium_carbonate)] = 13;
+    chemistry_state.aqueous[0].carbonate = 5;
+    chemistry_state.aqueous[0].bicarbonate = 7;
+    chemistry_state.aqueous[0].calcium_carbonate = 13;
+
+    try synchronizeCellAfterCarrierChange(
+        &chemistry_state,
+        &transport_state,
+        0,
+        2,
+        &.{ .carbonate, .bicarbonate },
+    );
+
+    try std.testing.expectEqual(@as(f64, 10), amounts[@intFromEnum(Species.carbonate)]);
+    try std.testing.expectEqual(@as(f64, 14), amounts[@intFromEnum(Species.bicarbonate)]);
+    try std.testing.expectEqual(@as(f64, 13), amounts[@intFromEnum(Species.calcium_carbonate)]);
+    try std.testing.expectEqual(@as(f64, 6.5), chemistry_state.aqueous[0].calcium_carbonate);
+    try std.testing.expectEqual(@as(f64, 2), transport_state.water_volume_m3[0]);
 }

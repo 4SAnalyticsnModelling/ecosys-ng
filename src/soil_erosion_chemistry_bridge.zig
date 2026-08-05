@@ -20,17 +20,17 @@ pub fn route(
     columns: usize,
     rows: usize,
     soil_layer_capacity: usize,
-    surface_soil_mass_Mg: []const f64,
+    surface_soil_mass_megagrams: []const f64,
     topsoil_water_volume_m3: []const f64,
     chemistry: *chemistry_module.State,
     sediment: constituents.DirectionalSediment,
     workspace: *constituents.PackedWorkspace,
 ) !void {
     const cells = try std.math.mul(usize, columns, rows);
-    if (soil_layer_capacity == 0 or chemistry.cell_count != try std.math.mul(usize, cells, soil_layer_capacity) or surface_soil_mass_Mg.len != cells or topsoil_water_volume_m3.len != chemistry.cell_count or workspace.cell_count != cells or workspace.component_count != component_count) return error.ChemistryErosionDimensionMismatch;
-    try pack(cells, soil_layer_capacity, surface_soil_mass_Mg, topsoil_water_volume_m3, chemistry, workspace.pools);
-    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_Mg, sediment);
-    try unpack(cells, soil_layer_capacity, surface_soil_mass_Mg, topsoil_water_volume_m3, chemistry, workspace.pools);
+    if (soil_layer_capacity == 0 or chemistry.cell_count != try std.math.mul(usize, cells, soil_layer_capacity) or surface_soil_mass_megagrams.len != cells or topsoil_water_volume_m3.len != chemistry.cell_count or workspace.cell_count != cells or workspace.component_count != component_count) return error.ChemistryErosionDimensionMismatch;
+    try pack(cells, soil_layer_capacity, surface_soil_mass_megagrams, topsoil_water_volume_m3, chemistry, workspace.pools);
+    try constituents.routePackedWorkspace(workspace, columns, rows, surface_soil_mass_megagrams, sediment);
+    try unpack(cells, soil_layer_capacity, surface_soil_mass_megagrams, topsoil_water_volume_m3, chemistry, workspace.pools);
 }
 
 /// REDIST `ZXE/PXE/PPE/CXE/SEX/SEP` external solid-chemistry loss.
@@ -132,20 +132,20 @@ fn geochemistryIonAtoms(comptime name: []const u8) f64 {
     return 1;
 }
 
-fn pack(cells: usize, layer_capacity: usize, soil_mass_Mg: []const f64, water_m3: []const f64, chemistry: *const chemistry_module.State, output: []f64) !void {
+fn pack(cells: usize, layer_capacity: usize, soil_mass_megagrams: []const f64, water_m3: []const f64, chemistry: *const chemistry_module.State, output: []f64) !void {
     for (0..cells) |cell| {
         const layer = cell * layer_capacity;
-        const soil_mass = soil_mass_Mg[cell];
+        const soil_mass = soil_mass_megagrams[cell];
         const water = water_m3[layer];
         if (!std.math.isFinite(soil_mass) or soil_mass <= 0 or !std.math.isFinite(water) or water < 0) return error.InvalidChemistryErosionState;
         var cursor = cell * component_count;
         inline for (@typeInfo(cation.Cations).@"struct".fields) |field| {
-            try put(@field(chemistry.cation_exchange_mol_per_Mg[layer], field.name) * soil_mass, output, &cursor);
+            try put(@field(chemistry.cation_exchange_mol_per_megagram[layer], field.name) * soil_mass, output, &cursor);
         }
-        try put(chemistry.carboxyl_bound_hydrogen_mol_per_Mg[layer] * soil_mass, output, &cursor);
+        try put(chemistry.carboxyl_bound_hydrogen_mol_per_megagram[layer] * soil_mass, output, &cursor);
         inline for (.{ chemistry.non_band_phosphate[layer], chemistry.band_phosphate[layer] }) |zone| inline for (@typeInfo(phosphate.State).@"struct".fields) |field| {
             if (comptime isErodiblePhosphateField(field.name)) {
-                const scale = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) soil_mass else water;
+                const scale = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) soil_mass else water;
                 try put(@field(zone, field.name) * scale, output, &cursor);
             }
         };
@@ -156,22 +156,22 @@ fn pack(cells: usize, layer_capacity: usize, soil_mass_Mg: []const f64, water_m3
     }
 }
 
-fn unpack(cells: usize, layer_capacity: usize, soil_mass_Mg: []const f64, water_m3: []const f64, chemistry: *chemistry_module.State, input: []const f64) !void {
+fn unpack(cells: usize, layer_capacity: usize, soil_mass_megagrams: []const f64, water_m3: []const f64, chemistry: *chemistry_module.State, input: []const f64) !void {
     for (input) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidChemistryErosionCandidate;
     for (0..cells) |cell| {
         const layer = cell * layer_capacity;
-        const soil_mass = soil_mass_Mg[cell];
+        const soil_mass = soil_mass_megagrams[cell];
         const water = water_m3[layer];
         var cursor = cell * component_count;
         inline for (@typeInfo(cation.Cations).@"struct".fields) |field| {
-            @field(chemistry.cation_exchange_mol_per_Mg[layer], field.name) = input[cursor] / soil_mass;
+            @field(chemistry.cation_exchange_mol_per_megagram[layer], field.name) = input[cursor] / soil_mass;
             cursor += 1;
         }
-        chemistry.carboxyl_bound_hydrogen_mol_per_Mg[layer] = input[cursor] / soil_mass;
+        chemistry.carboxyl_bound_hydrogen_mol_per_megagram[layer] = input[cursor] / soil_mass;
         cursor += 1;
         inline for (.{ &chemistry.non_band_phosphate[layer], &chemistry.band_phosphate[layer] }) |zone| inline for (@typeInfo(phosphate.State).@"struct".fields) |field| {
             if (comptime isErodiblePhosphateField(field.name)) {
-                const scale = if (comptime std.mem.endsWith(u8, field.name, "_per_Mg")) soil_mass else water;
+                const scale = if (comptime std.mem.endsWith(u8, field.name, "_per_megagram")) soil_mass else water;
                 @field(zone, field.name) = try concentration(input[cursor], scale);
                 cursor += 1;
             }
@@ -197,7 +197,7 @@ fn concentration(amount: f64, scale: f64) !f64 {
 
 fn isErodiblePhosphateField(comptime name: []const u8) bool {
     @setEvalBranchQuota(10_000);
-    return std.mem.endsWith(u8, name, "_per_Mg") or std.mem.indexOf(u8, name, "_solid_mol_per_m3") != null;
+    return std.mem.endsWith(u8, name, "_per_megagram") or std.mem.indexOf(u8, name, "_solid_mol_per_m3") != null;
 }
 
 fn phosphateErodibleFieldCount() usize {
@@ -211,20 +211,20 @@ fn phosphateErodibleFieldCount() usize {
 test "solid chemistry amounts follow sediment while retaining native concentrations" {
     var chemistry = try chemistry_module.State.init(std.testing.allocator, 2);
     defer chemistry.deinit();
-    chemistry.cation_exchange_mol_per_Mg[0].calcium = 2;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[0] = 4;
-    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_Mg = 3;
+    chemistry.cation_exchange_mol_per_megagram[0].calcium = 2;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[0] = 4;
+    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_megagram = 3;
     chemistry.non_band_phosphate[0].aluminum_phosphate_solid_mol_per_m3 = 10;
     chemistry.geochemistry_solids[0].gibbsite_solid_mol_per_m3 = 20;
     var workspace = try constituents.PackedWorkspace.init(std.testing.allocator, 2, component_count);
     defer workspace.deinit();
-    try route(2, 1, 1, &.{ 10, 10 }, &.{ 1, 1 }, &chemistry, .{ .east_Mg = &.{ 1, 0 }, .west_Mg = &.{ 0, 0 }, .south_Mg = &.{ 0, 0 }, .north_Mg = &.{ 0, 0 } }, &workspace);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.8), chemistry.cation_exchange_mol_per_Mg[0].calcium, 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.2), chemistry.cation_exchange_mol_per_Mg[1].calcium, 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.6), chemistry.carboxyl_bound_hydrogen_mol_per_Mg[0], 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.4), chemistry.carboxyl_bound_hydrogen_mol_per_Mg[1], 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.7), chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_Mg, 1e-14);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.3), chemistry.non_band_phosphate[1].adsorbed_hpo4_mol_p_per_Mg, 1e-14);
+    try route(2, 1, 1, &.{ 10, 10 }, &.{ 1, 1 }, &chemistry, .{ .east_megagrams = &.{ 1, 0 }, .west_megagrams = &.{ 0, 0 }, .south_megagrams = &.{ 0, 0 }, .north_megagrams = &.{ 0, 0 } }, &workspace);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.8), chemistry.cation_exchange_mol_per_megagram[0].calcium, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), chemistry.cation_exchange_mol_per_megagram[1].calcium, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.6), chemistry.carboxyl_bound_hydrogen_mol_per_megagram[0], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.4), chemistry.carboxyl_bound_hydrogen_mol_per_megagram[1], 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.7), chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_megagram, 1e-14);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.3), chemistry.non_band_phosphate[1].adsorbed_hpo4_mol_p_per_megagram, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 9), chemistry.non_band_phosphate[0].aluminum_phosphate_solid_mol_per_m3, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 1), chemistry.non_band_phosphate[1].aluminum_phosphate_solid_mol_per_m3, 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 18), chemistry.geochemistry_solids[0].gibbsite_solid_mol_per_m3, 1e-14);
@@ -234,10 +234,10 @@ test "solid chemistry amounts follow sediment while retaining native concentrati
 test "external solid chemistry export reproduces REDIST C N P ion counts" {
     var chemistry = try chemistry_module.State.init(std.testing.allocator, 1);
     defer chemistry.deinit();
-    chemistry.cation_exchange_mol_per_Mg[0].ammonium_non_band = 10;
-    chemistry.cation_exchange_mol_per_Mg[0].calcium = 20;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[0] = 30;
-    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_Mg = 40;
+    chemistry.cation_exchange_mol_per_megagram[0].ammonium_non_band = 10;
+    chemistry.cation_exchange_mol_per_megagram[0].calcium = 20;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[0] = 30;
+    chemistry.non_band_phosphate[0].adsorbed_hpo4_mol_p_per_megagram = 40;
     chemistry.non_band_phosphate[0].hydroxyapatite_solid_mol_per_m3 = 50;
     chemistry.geochemistry_solids[0].calcite_solid_mol_per_m3 = 60;
     var workspace = try constituents.PackedWorkspace.init(
@@ -247,10 +247,10 @@ test "external solid chemistry export reproduces REDIST C N P ion counts" {
     );
     defer workspace.deinit();
     try route(1, 1, 1, &.{10}, &.{1}, &chemistry, .{
-        .east_Mg = &.{1},
-        .west_Mg = &.{0},
-        .south_Mg = &.{0},
-        .north_Mg = &.{0},
+        .east_megagrams = &.{1},
+        .west_megagrams = &.{0},
+        .south_megagrams = &.{0},
+        .north_megagrams = &.{0},
     }, &workspace);
     const loss = try exported(&workspace, 12, 14, 31);
     try std.testing.expectApproxEqAbs(@as(f64, 140), loss.nitrogen_g_n, 1e-12);

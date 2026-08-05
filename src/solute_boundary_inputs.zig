@@ -6,8 +6,8 @@ pub const Routing = struct {
     snowfall_m3_per_step: f64,
     rainfall_m3_per_step: f64,
     irrigation_m3_per_step: f64,
-    snowpack_heat_capacity_mj_per_k: f64,
-    minimum_snowpack_heat_capacity_mj_per_k: f64,
+    snowpack_heat_capacity_megajoules_per_k: f64,
+    minimum_snowpack_heat_capacity_megajoules_per_k: f64,
 };
 
 pub const Flux = struct {
@@ -68,7 +68,7 @@ pub const State = struct {
 pub fn calculate(allocator: std.mem.Allocator, routing: Routing, precipitation_concentration_mol_per_m3: []const f64, irrigation_concentration_mol_per_m3: []const f64) !Flux {
     if (precipitation_concentration_mol_per_m3.len == 0 or precipitation_concentration_mol_per_m3.len != irrigation_concentration_mol_per_m3.len) return error.TransportSpeciesCountMismatch;
     try validateRouting(routing);
-    const snowpack_present = routing.snowpack_heat_capacity_mj_per_k > routing.minimum_snowpack_heat_capacity_mj_per_k;
+    const snowpack_present = routing.snowpack_heat_capacity_megajoules_per_k > routing.minimum_snowpack_heat_capacity_megajoules_per_k;
     const destination: Destination = if (routing.snowfall_m3_per_step > 0 or (routing.rainfall_m3_per_step > 0 and snowpack_present))
         .snowpack
     else if ((routing.rainfall_m3_per_step > 0 or routing.irrigation_m3_per_step > 0) and !snowpack_present)
@@ -91,7 +91,7 @@ fn validateRouting(routing: Routing) !void {
 }
 
 test "rain routes through existing snowpack" {
-    var flux = try calculate(std.testing.allocator, .{ .snowfall_m3_per_step = 0, .rainfall_m3_per_step = 2, .irrigation_m3_per_step = 1, .snowpack_heat_capacity_mj_per_k = 2, .minimum_snowpack_heat_capacity_mj_per_k = 1 }, &[_]f64{ 3, 4 }, &[_]f64{ 5, 6 });
+    var flux = try calculate(std.testing.allocator, .{ .snowfall_m3_per_step = 0, .rainfall_m3_per_step = 2, .irrigation_m3_per_step = 1, .snowpack_heat_capacity_megajoules_per_k = 2, .minimum_snowpack_heat_capacity_megajoules_per_k = 1 }, &[_]f64{ 3, 4 }, &[_]f64{ 5, 6 });
     defer flux.deinit(std.testing.allocator);
     try std.testing.expectEqual(Destination.snowpack, flux.destination);
     try std.testing.expectEqualSlices(f64, &[_]f64{ 11, 14 }, flux.amount_mol);
@@ -100,7 +100,7 @@ test "rain routes through existing snowpack" {
 test "rain and irrigation route to bare soil surface" {
     var state = try State.init(std.testing.allocator, 2, 2);
     defer state.deinit();
-    var flux = try calculate(std.testing.allocator, .{ .snowfall_m3_per_step = 0, .rainfall_m3_per_step = 2, .irrigation_m3_per_step = 1, .snowpack_heat_capacity_mj_per_k = 0, .minimum_snowpack_heat_capacity_mj_per_k = 1 }, &[_]f64{ 3, 4 }, &[_]f64{ 5, 6 });
+    var flux = try calculate(std.testing.allocator, .{ .snowfall_m3_per_step = 0, .rainfall_m3_per_step = 2, .irrigation_m3_per_step = 1, .snowpack_heat_capacity_megajoules_per_k = 0, .minimum_snowpack_heat_capacity_megajoules_per_k = 1 }, &[_]f64{ 3, 4 }, &[_]f64{ 5, 6 });
     defer flux.deinit(std.testing.allocator);
     try std.testing.expectEqual(Destination.soil_surface, flux.destination);
     try state.commit(1, flux);

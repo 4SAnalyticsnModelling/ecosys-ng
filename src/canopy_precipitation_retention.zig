@@ -43,13 +43,13 @@ pub const State = struct {
     standing_dead_surface_area_m2: []f64,
     living_radiation_fraction: []f64,
     standing_dead_radiation_fraction: []f64,
-    living_absorbed_shortwave_mj_per_m2: []f64,
-    standing_dead_absorbed_shortwave_mj_per_m2: []f64,
+    living_absorbed_shortwave_megajoules_per_m2: []f64,
+    standing_dead_absorbed_shortwave_megajoules_per_m2: []f64,
     living_surface_water_m3: []f64,
     standing_dead_surface_water_m3: []f64,
     living_retention_m3_per_h: []f64,
     standing_dead_retention_m3_per_h: []f64,
-    previous_water_energy_mj: []f64,
+    previous_water_energy_megajoules: []f64,
     cell_potential_interception_m3_per_h: []f64,
     cell_retention_m3_per_h: []f64,
     cell_throughfall_m3_per_h: []f64,
@@ -102,7 +102,7 @@ pub fn refreshFromModel(
     cell_area_m2: []const f64,
     root_profile_type_by_plant: []const u8,
     solar_angle_sine_by_cell: []const f64,
-    incident_ground_shortwave_mj_per_m2: []const f64,
+    incident_ground_shortwave_megajoules_per_m2: []const f64,
     parameters: Parameters,
 ) !void {
     try parameters.validate();
@@ -115,7 +115,7 @@ pub fn refreshFromModel(
         cell_area_m2,
         root_profile_type_by_plant,
         solar_angle_sine_by_cell,
-        incident_ground_shortwave_mj_per_m2,
+        incident_ground_shortwave_megajoules_per_m2,
     );
     var leaf_area_by_plant_m2 = try state.allocator.alloc(f64, plant_count);
     var stalk_area_by_plant_m2 = try state.allocator.alloc(f64, plant_count);
@@ -128,12 +128,12 @@ pub fn refreshFromModel(
         var living_leaf_area_m2: f64 = 0;
         var living_stalk_area_m2: f64 = 0;
         var dead_area_m2: f64 = 0;
-        var dead_shortwave_mj_per_m2: f64 = 0;
+        var dead_shortwave_megajoules_per_m2: f64 = 0;
         for (0..layers.layer_count) |layer| {
             const plant_layer = plant * layers.layer_count + layer;
             dead_area_m2 += layers.plant_standing_dead_area_m2[plant_layer];
-            dead_shortwave_mj_per_m2 +=
-                interception.standing_dead_absorbed_shortwave_by_layer_mj_per_m2[
+            dead_shortwave_megajoules_per_m2 +=
+                interception.standing_dead_absorbed_shortwave_by_layer_megajoules_per_m2[
                     plant_layer
                 ];
         }
@@ -151,10 +151,10 @@ pub fn refreshFromModel(
                     living_leaf_area_m2 += layers.node_leaf_area_m2[node_layer_first + layer];
             }
         }
-        const live_shortwave = interception.absorbed_shortwave_mj_per_m2[plant];
+        const live_shortwave = interception.absorbed_shortwave_megajoules_per_m2[plant];
         const living_area_m2 = living_leaf_area_m2 + living_stalk_area_m2;
-        const incident = incident_ground_shortwave_mj_per_m2[cell];
-        const total_absorbed = live_shortwave + dead_shortwave_mj_per_m2;
+        const incident = incident_ground_shortwave_megajoules_per_m2[cell];
+        const total_absorbed = live_shortwave + dead_shortwave_megajoules_per_m2;
         const low_sun_fraction = 1.0 -
             std.math.exp(-parameters.low_sun_extinction_per_area_index *
                 (living_area_m2 + dead_area_m2) / cell_area_m2[cell]);
@@ -173,9 +173,9 @@ pub fn refreshFromModel(
         stalk_area_by_plant_m2[plant] = living_stalk_area_m2;
         state.living_surface_area_m2[plant] = living_area_m2;
         state.standing_dead_surface_area_m2[plant] = dead_area_m2;
-        state.living_absorbed_shortwave_mj_per_m2[plant] = live_shortwave;
-        state.standing_dead_absorbed_shortwave_mj_per_m2[plant] =
-            dead_shortwave_mj_per_m2;
+        state.living_absorbed_shortwave_megajoules_per_m2[plant] = live_shortwave;
+        state.standing_dead_absorbed_shortwave_megajoules_per_m2[plant] =
+            dead_shortwave_megajoules_per_m2;
         state.living_radiation_fraction[plant] =
             intercepted_fraction * live_share;
         state.standing_dead_radiation_fraction[plant] =
@@ -186,12 +186,9 @@ pub fn refreshFromModel(
         const last = first + state.species_count;
         const totals = try source_order.compute(
             .{
-                .precipitation_irrigation_m3_h =
-                    rainfall_m_by_cell[cell] * cell_area_m2[cell],
-                .retention_capacity_m3_per_m2_by_vegetation_type =
-                    &parameters.surface_water_capacity_m3_per_m2_by_root_profile,
-                .vegetation_type_by_species =
-                    root_profile_type_by_plant[first..last],
+                .precipitation_irrigation_m3_h = rainfall_m_by_cell[cell] * cell_area_m2[cell],
+                .retention_capacity_m3_per_m2_by_vegetation_type = &parameters.surface_water_capacity_m3_per_m2_by_root_profile,
+                .vegetation_type_by_species = root_profile_type_by_plant[first..last],
                 .leaf_area_m2 = leaf_area_by_plant_m2[first..last],
                 .stalk_area_m2 = stalk_area_by_plant_m2[first..last],
                 .standing_dead_area_m2 = state.standing_dead_surface_area_m2[first..last],
@@ -323,7 +320,7 @@ test "runtime canopy retention state supports arbitrary species count" {
 
     try std.testing.expectEqual(@as(usize, 14), state.living_surface_water_m3.len);
     try std.testing.expectEqual(@as(usize, 2), state.cell_throughfall_m3_per_h.len);
-    for (state.previous_water_energy_mj) |value|
+    for (state.previous_water_energy_megajoules) |value|
         try std.testing.expectEqual(@as(f64, 0), value);
 }
 

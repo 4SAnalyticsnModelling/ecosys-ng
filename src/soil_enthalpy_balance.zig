@@ -15,10 +15,10 @@ pub const Parameters = struct {
     unfrozen_pressure_head_m: f64,
     gravitational_water_potential_mpa_per_m: f64,
     pure_water_melting_temperature_k: f64,
-    dry_solid_heat_capacity_mj_per_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_water_equivalent_heat_capacity_mj_per_m3_k: f64,
-    latent_heat_of_fusion_mj_per_m3: f64,
+    dry_solid_heat_capacity_megajoules_per_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_water_equivalent_heat_capacity_megajoules_per_m3_k: f64,
+    latent_heat_of_fusion_megajoules_per_m3: f64,
     mualem_van_genuchten: retention.MualemVanGenuchtenParameters,
     secondary_domain: ?SecondaryDomain = null,
 
@@ -32,10 +32,10 @@ pub const Parameters = struct {
             self.unfrozen_pressure_head_m > 0 or
             self.gravitational_water_potential_mpa_per_m <= 0 or
             self.pure_water_melting_temperature_k <= 0 or
-            self.dry_solid_heat_capacity_mj_per_k < 0 or
-            self.liquid_water_heat_capacity_mj_per_m3_k <= 0 or
-            self.ice_water_equivalent_heat_capacity_mj_per_m3_k <= 0 or
-            self.latent_heat_of_fusion_mj_per_m3 <= 0)
+            self.dry_solid_heat_capacity_megajoules_per_k < 0 or
+            self.liquid_water_heat_capacity_megajoules_per_m3_k <= 0 or
+            self.ice_water_equivalent_heat_capacity_megajoules_per_m3_k <= 0 or
+            self.latent_heat_of_fusion_megajoules_per_m3 <= 0)
             return error.InvalidSoilEnthalpyParameter;
         try self.mualem_van_genuchten.validate();
         if (self.secondary_domain) |secondary| {
@@ -59,13 +59,13 @@ pub const State = struct {
     ice_water_equivalent_m3: f64,
     secondary_liquid_water_m3: f64,
     secondary_ice_water_equivalent_m3: f64,
-    sensible_heat_capacity_mj_per_k: f64,
-    enthalpy_mj: f64,
+    sensible_heat_capacity_megajoules_per_k: f64,
+    enthalpy_megajoules: f64,
 };
 
 pub const SolverOptions = struct {
     max_iterations: u16,
-    absolute_enthalpy_tolerance_mj: f64 = 1.0e-12,
+    absolute_enthalpy_tolerance_megajoules: f64 = 1.0e-12,
     relative_enthalpy_tolerance: f64 = 1.0e-10,
     minimum_temperature_k: f64 = 173.15,
     maximum_temperature_k: f64 = 373.15,
@@ -92,7 +92,7 @@ pub fn stateAtTemperature(parameters: Parameters, temperature_k: f64) !State {
         .porous_medium_volume_m3 = parameters.porous_medium_volume_m3,
         .unfrozen_pressure_head_m = parameters.unfrozen_pressure_head_m,
         .gravitational_water_potential_mpa_per_m = parameters.gravitational_water_potential_mpa_per_m,
-        .latent_heat_of_fusion_mj_per_m3 = parameters.latent_heat_of_fusion_mj_per_m3,
+        .latent_heat_of_fusion_megajoules_per_m3 = parameters.latent_heat_of_fusion_megajoules_per_m3,
         .pure_water_melting_temperature_k = parameters.pure_water_melting_temperature_k,
         .mualem_van_genuchten = parameters.mualem_van_genuchten,
     });
@@ -104,7 +104,7 @@ pub fn stateAtTemperature(parameters: Parameters, temperature_k: f64) !State {
                 .porous_medium_volume_m3 = secondary.porous_medium_volume_m3,
                 .unfrozen_pressure_head_m = secondary.unfrozen_pressure_head_m,
                 .gravitational_water_potential_mpa_per_m = parameters.gravitational_water_potential_mpa_per_m,
-                .latent_heat_of_fusion_mj_per_m3 = parameters.latent_heat_of_fusion_mj_per_m3,
+                .latent_heat_of_fusion_megajoules_per_m3 = parameters.latent_heat_of_fusion_megajoules_per_m3,
                 .pure_water_melting_temperature_k = parameters.pure_water_melting_temperature_k,
                 .mualem_van_genuchten = secondary.mualem_van_genuchten,
             })
@@ -117,23 +117,23 @@ pub fn stateAtTemperature(parameters: Parameters, temperature_k: f64) !State {
             state.ice_water_equivalent_m3
         else
             0;
-    const heat_capacity_mj_per_k =
-        parameters.dry_solid_heat_capacity_mj_per_k +
-        parameters.liquid_water_heat_capacity_mj_per_m3_k *
+    const heat_capacity_megajoules_per_k =
+        parameters.dry_solid_heat_capacity_megajoules_per_k +
+        parameters.liquid_water_heat_capacity_megajoules_per_m3_k *
             (equilibrium.liquid_water_m3 +
                 secondary_liquid_water_m3) +
-        parameters.ice_water_equivalent_heat_capacity_mj_per_m3_k *
+        parameters.ice_water_equivalent_heat_capacity_megajoules_per_m3_k *
             (equilibrium.ice_water_equivalent_m3 +
                 secondary_ice_water_equivalent_m3);
-    const enthalpy_mj =
-        heat_capacity_mj_per_k *
+    const enthalpy_megajoules =
+        heat_capacity_megajoules_per_k *
         (temperature_k - parameters.pure_water_melting_temperature_k) +
-        parameters.latent_heat_of_fusion_mj_per_m3 *
+        parameters.latent_heat_of_fusion_megajoules_per_m3 *
             (equilibrium.liquid_water_m3 +
                 secondary_liquid_water_m3);
-    if (!std.math.isFinite(heat_capacity_mj_per_k) or
-        heat_capacity_mj_per_k <= 0 or
-        !std.math.isFinite(enthalpy_mj))
+    if (!std.math.isFinite(heat_capacity_megajoules_per_k) or
+        heat_capacity_megajoules_per_k <= 0 or
+        !std.math.isFinite(enthalpy_megajoules))
         return error.NonFiniteSoilEnthalpyState;
     return .{
         .temperature_k = temperature_k,
@@ -141,8 +141,8 @@ pub fn stateAtTemperature(parameters: Parameters, temperature_k: f64) !State {
         .ice_water_equivalent_m3 = equilibrium.ice_water_equivalent_m3,
         .secondary_liquid_water_m3 = secondary_liquid_water_m3,
         .secondary_ice_water_equivalent_m3 = secondary_ice_water_equivalent_m3,
-        .sensible_heat_capacity_mj_per_k = heat_capacity_mj_per_k,
-        .enthalpy_mj = enthalpy_mj,
+        .sensible_heat_capacity_megajoules_per_k = heat_capacity_megajoules_per_k,
+        .enthalpy_megajoules = enthalpy_megajoules,
     };
 }
 
@@ -152,7 +152,7 @@ fn enthalpyDerivativeMjPerK(
     state: State,
 ) !f64 {
     const pressure_head_change_m_per_k =
-        parameters.latent_heat_of_fusion_mj_per_m3 /
+        parameters.latent_heat_of_fusion_megajoules_per_m3 /
         (parameters.gravitational_water_potential_mpa_per_m *
             temperature_k);
     var liquid_water_change_m3_per_k: f64 = 0;
@@ -191,24 +191,24 @@ fn enthalpyDerivativeMjPerK(
                         temperature_k,
                     ),
                 ) *
-                parameters.latent_heat_of_fusion_mj_per_m3 /
+                parameters.latent_heat_of_fusion_megajoules_per_m3 /
                 (parameters.gravitational_water_potential_mpa_per_m *
                     temperature_k);
         }
     }
-    const heat_capacity_change_mj_per_k2 =
-        (parameters.liquid_water_heat_capacity_mj_per_m3_k -
-            parameters.ice_water_equivalent_heat_capacity_mj_per_m3_k) *
+    const heat_capacity_change_megajoules_per_k2 =
+        (parameters.liquid_water_heat_capacity_megajoules_per_m3_k -
+            parameters.ice_water_equivalent_heat_capacity_megajoules_per_m3_k) *
         liquid_water_change_m3_per_k;
-    const derivative_mj_per_k =
-        state.sensible_heat_capacity_mj_per_k +
-        heat_capacity_change_mj_per_k2 *
+    const derivative_megajoules_per_k =
+        state.sensible_heat_capacity_megajoules_per_k +
+        heat_capacity_change_megajoules_per_k2 *
             (temperature_k - parameters.pure_water_melting_temperature_k) +
-        parameters.latent_heat_of_fusion_mj_per_m3 *
+        parameters.latent_heat_of_fusion_megajoules_per_m3 *
             liquid_water_change_m3_per_k;
-    if (!std.math.isFinite(derivative_mj_per_k) or derivative_mj_per_k <= 0)
+    if (!std.math.isFinite(derivative_megajoules_per_k) or derivative_megajoules_per_k <= 0)
         return error.NonFiniteSoilEnthalpyDerivative;
-    return derivative_mj_per_k;
+    return derivative_megajoules_per_k;
 }
 
 fn depressedMeltingTemperatureK(
@@ -218,7 +218,7 @@ fn depressedMeltingTemperatureK(
     const exponent =
         parameters.gravitational_water_potential_mpa_per_m *
         unfrozen_pressure_head_m /
-        parameters.latent_heat_of_fusion_mj_per_m3;
+        parameters.latent_heat_of_fusion_megajoules_per_m3;
     const minimum_exponent =
         @log(std.math.floatMin(f64)) -
         @log(parameters.pure_water_melting_temperature_k);
@@ -235,7 +235,7 @@ fn frozenPressureHeadM(
         depressedMeltingTemperatureK(parameters, unfrozen_pressure_head_m);
     return if (temperature_k < melting_temperature_k)
         unfrozen_pressure_head_m +
-            parameters.latent_heat_of_fusion_mj_per_m3 /
+            parameters.latent_heat_of_fusion_megajoules_per_m3 /
                 parameters.gravitational_water_potential_mpa_per_m *
                 (@log(temperature_k) - @log(melting_temperature_k))
     else
@@ -247,15 +247,15 @@ fn frozenPressureHeadM(
 /// a number of phase or full-model substeps.
 pub fn temperatureFromEnthalpy(
     parameters: Parameters,
-    target_enthalpy_mj: f64,
+    target_enthalpy_megajoules: f64,
     options: SolverOptions,
 ) !SolverResult {
     try parameters.validate();
-    if (!std.math.isFinite(target_enthalpy_mj))
+    if (!std.math.isFinite(target_enthalpy_megajoules))
         return error.NonFiniteSoilEnthalpyTarget;
     if (options.max_iterations == 0 or
-        !std.math.isFinite(options.absolute_enthalpy_tolerance_mj) or
-        options.absolute_enthalpy_tolerance_mj <= 0 or
+        !std.math.isFinite(options.absolute_enthalpy_tolerance_megajoules) or
+        options.absolute_enthalpy_tolerance_megajoules <= 0 or
         !std.math.isFinite(options.relative_enthalpy_tolerance) or
         options.relative_enthalpy_tolerance <= 0 or
         !std.math.isFinite(options.minimum_temperature_k) or
@@ -272,31 +272,31 @@ pub fn temperatureFromEnthalpy(
     var upper_temperature_k = options.maximum_temperature_k;
     var lower_state = try stateAtTemperature(parameters, lower_temperature_k);
     var upper_state = try stateAtTemperature(parameters, upper_temperature_k);
-    if (target_enthalpy_mj < lower_state.enthalpy_mj or
-        target_enthalpy_mj > upper_state.enthalpy_mj)
+    if (target_enthalpy_megajoules < lower_state.enthalpy_megajoules or
+        target_enthalpy_megajoules > upper_state.enthalpy_megajoules)
         return error.SoilEnthalpyTargetOutsideTemperatureBracket;
     var temperature_k = options.initial_temperature_k orelse
         lower_temperature_k +
             (upper_temperature_k - lower_temperature_k) *
-                (target_enthalpy_mj - lower_state.enthalpy_mj) /
-                (upper_state.enthalpy_mj - lower_state.enthalpy_mj);
+                (target_enthalpy_megajoules - lower_state.enthalpy_megajoules) /
+                (upper_state.enthalpy_megajoules - lower_state.enthalpy_megajoules);
     var newton_steps: u16 = 0;
     var picard_steps: u16 = 0;
     var iteration: u16 = 0;
     while (iteration < options.max_iterations) : (iteration += 1) {
         const state = try stateAtTemperature(parameters, temperature_k);
-        const residual_mj = state.enthalpy_mj - target_enthalpy_mj;
-        const tolerance_mj = options.absolute_enthalpy_tolerance_mj +
+        const residual_megajoules = state.enthalpy_megajoules - target_enthalpy_megajoules;
+        const tolerance_megajoules = options.absolute_enthalpy_tolerance_megajoules +
             options.relative_enthalpy_tolerance *
-                @max(1.0, @abs(target_enthalpy_mj));
-        if (@abs(residual_mj) <= tolerance_mj)
+                @max(1.0, @abs(target_enthalpy_megajoules));
+        if (@abs(residual_megajoules) <= tolerance_megajoules)
             return .{
                 .state = state,
                 .iterations = iteration + 1,
                 .newton_raphson_steps = newton_steps,
                 .picard_steps = picard_steps,
             };
-        if (residual_mj < 0) {
+        if (residual_megajoules < 0) {
             lower_temperature_k = temperature_k;
             lower_state = state;
         } else {
@@ -308,8 +308,8 @@ pub fn temperatureFromEnthalpy(
                 @max(1.0, @abs(temperature_k)))
         {
             const accepted_state =
-                if (@abs(lower_state.enthalpy_mj - target_enthalpy_mj) <=
-                @abs(upper_state.enthalpy_mj - target_enthalpy_mj))
+                if (@abs(lower_state.enthalpy_megajoules - target_enthalpy_megajoules) <=
+                @abs(upper_state.enthalpy_megajoules - target_enthalpy_megajoules))
                     lower_state
                 else
                     upper_state;
@@ -321,10 +321,10 @@ pub fn temperatureFromEnthalpy(
             };
         }
         var accepted_newton = false;
-        const derivative_mj_per_k =
+        const derivative_megajoules_per_k =
             try enthalpyDerivativeMjPerK(parameters, temperature_k, state);
         const candidate_temperature_k =
-            temperature_k - residual_mj / derivative_mj_per_k;
+            temperature_k - residual_megajoules / derivative_megajoules_per_k;
         if (candidate_temperature_k > lower_temperature_k and
             candidate_temperature_k < upper_temperature_k)
         {
@@ -344,12 +344,12 @@ pub fn temperatureFromEnthalpy(
     }
     const final_state = try stateAtTemperature(parameters, temperature_k);
     std.log.err(
-        "soil enthalpy Newton-Picard ceiling reached: iterations={d} target_mj={e} state_mj={e} residual_mj={e} temperature_k={e} lower_k={e} upper_k={e}",
+        "soil enthalpy Newton-Picard ceiling reached: iterations={d} target_megajoules={e} state_megajoules={e} residual_megajoules={e} temperature_k={e} lower_k={e} upper_k={e}",
         .{
             options.max_iterations,
-            target_enthalpy_mj,
-            final_state.enthalpy_mj,
-            final_state.enthalpy_mj - target_enthalpy_mj,
+            target_enthalpy_megajoules,
+            final_state.enthalpy_megajoules,
+            final_state.enthalpy_megajoules - target_enthalpy_megajoules,
             temperature_k,
             lower_temperature_k,
             upper_temperature_k,
@@ -365,10 +365,10 @@ fn testParameters() Parameters {
         .unfrozen_pressure_head_m = -2,
         .gravitational_water_potential_mpa_per_m = 0.00980665,
         .pure_water_melting_temperature_k = 273.15,
-        .dry_solid_heat_capacity_mj_per_k = 1.5,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-        .ice_water_equivalent_heat_capacity_mj_per_m3_k = 1.93,
-        .latent_heat_of_fusion_mj_per_m3 = 333.7,
+        .dry_solid_heat_capacity_megajoules_per_k = 1.5,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+        .ice_water_equivalent_heat_capacity_megajoules_per_m3_k = 1.93,
+        .latent_heat_of_fusion_megajoules_per_m3 = 333.7,
         .mualem_van_genuchten = .{
             .residual_water_content_m3_per_m3 = 0.05,
             .saturated_water_content_m3_per_m3 = 0.45,
@@ -384,7 +384,7 @@ test "Dall'Amico enthalpy inversion conserves energy and exits early" {
     const expected = try stateAtTemperature(parameters, 268);
     const solved = try temperatureFromEnthalpy(
         parameters,
-        expected.enthalpy_mj,
+        expected.enthalpy_megajoules,
         .{ .max_iterations = 80 },
     );
     try std.testing.expect(solved.iterations < 80);
@@ -396,8 +396,8 @@ test "Dall'Amico enthalpy inversion conserves energy and exits early" {
         1.0e-8,
     );
     try std.testing.expectApproxEqAbs(
-        expected.enthalpy_mj,
-        solved.state.enthalpy_mj,
+        expected.enthalpy_megajoules,
+        solved.state.enthalpy_megajoules,
         1.0e-9,
     );
     try std.testing.expectApproxEqAbs(

@@ -27,7 +27,7 @@ pub const GridState = struct {
 
     pub fn init(allocator: std.mem.Allocator, cfg: SimulationConfig) !GridState {
         try cfg.validate();
-        const cell_count = try std.math.mul(usize, cfg.grid_columns, cfg.grid_rows);
+        const cell_count = try std.math.mul(usize, cfg.lon_count, cfg.lat_count);
         const layer_count = try std.math.mul(usize, cell_count, cfg.soil_layers);
         const soil_temperature_k = try allocator.alloc(f64, layer_count);
         errdefer allocator.free(soil_temperature_k);
@@ -165,7 +165,7 @@ pub const PlantState = struct {
 
     pub fn init(allocator: std.mem.Allocator, cfg: SimulationConfig) !PlantState {
         try cfg.validate();
-        const cell_count = try std.math.mul(usize, cfg.grid_columns, cfg.grid_rows);
+        const cell_count = try std.math.mul(usize, cfg.lon_count, cfg.lat_count);
         const cell_species_count = try std.math.mul(usize, cell_count, cfg.plant_populations);
         const root_count = try std.math.mul(usize, cell_species_count, cfg.soil_layers);
         const canopy_temperature_k = try allocator.alloc(f64, cell_species_count);
@@ -259,7 +259,7 @@ test "plant state supports more than five runtime species" {
 
 fn testConfig(columns: usize, rows: usize, layers: usize, species: usize) !SimulationConfig {
     return SimulationConfig.init(
-        .{ .grid_columns = columns, .grid_rows = rows, .soil_layers = layers, .plant_populations = species },
+        .{ .lon_count = columns, .lat_count = rows, .soil_layers = layers, .plant_populations = species },
         .{ .worker_threads = 1, .tile_cells = 64 },
         .{ .relative_tolerance = 1.0e-8, .absolute_tolerance = 1.0e-11, .max_nonlinear_iterations = 40 },
     );

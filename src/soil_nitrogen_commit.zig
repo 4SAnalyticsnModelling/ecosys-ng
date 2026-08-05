@@ -61,6 +61,10 @@ fn commitLayer(context: *ApplyContext, layer: usize) !void {
     const n_mass = context.nitrogen_molar_mass_g_per_mol;
     var ammonium_non_band = context.chemistry_state.aqueous[layer].ammonium_non_band * water_m3 * context.zone_fractions.ammonium_non_band * n_mass;
     var ammonium_band = context.chemistry_state.aqueous[layer].ammonium_band * water_m3 * context.zone_fractions.ammonium_band * n_mass;
+    if (ammonium_non_band > 1e8 or ammonium_band > 1e8) std.log.warn(
+        "large ammonium entering commit: layer={d} non_band_g={e} band_g={e} non_band_conc={e} water_m3={e}",
+        .{ layer, ammonium_non_band, ammonium_band, context.chemistry_state.aqueous[layer].ammonium_non_band, water_m3 },
+    );
     var nitrate_non_band = context.chemistry_state.aqueous[layer].nitrate_non_band * water_m3 * context.zone_fractions.nitrate_non_band * n_mass;
     var nitrate_band = context.chemistry_state.aqueous[layer].nitrate_band * water_m3 * context.zone_fractions.nitrate_band * n_mass;
     const p_mass = context.phosphorus_molar_mass_g_per_mol;
@@ -83,6 +87,8 @@ fn commitLayer(context: *ApplyContext, layer: usize) !void {
     var hydrogen = context.gas_state.dissolved_mass_g[hydrogen_index];
     var aqueous_oxygen = context.gas_state.dissolved_mass_g[oxygen_index];
     var gaseous_oxygen = context.gas_state.gaseous_mass_g[oxygen_index];
+    const conserved_carbon_before_g_c = try authoritativeLayerCarbon_g_c(context.*, layer);
+    const conserved_nitrogen_before_g_n = try authoritativeLayerNitrogen_g_n(context.*, layer);
     const first = layer * context.flux_workspace.process_unit_count_per_layer;
     const end = first + context.flux_workspace.process_unit_count_per_layer;
     const next_nonstructural = try context.microbial_state.allocator.alloc(microbial.ElementalPool, end - first);
@@ -600,6 +606,153 @@ fn commitLayer(context: *ApplyContext, layer: usize) !void {
         context.microbial_state.structural[runtime_index * 2 + 1].nitrogen_g_n += context.flux_workspace.resistant_assimilation_g_n[unit];
         context.microbial_state.structural[runtime_index * 2 + 1].phosphorus_g_p += context.flux_workspace.resistant_assimilation_g_p[unit];
     };
+    var closed_carbon_dioxide_g_c = context.gas_state.dissolved_mass_g[co2_index];
+    // A second census is sometimes required because adding a sub-gram closure
+    // to landscape-scale pools can itself round at a different exponent.
+    for (0..4) |_| {
+        const conserved_carbon_after_g_c = try authoritativeLayerCarbon_g_c(context.*, layer);
+        // Same representation floor as the nitrogen closure below; see
+        // `normalizeCensusRoundoff`. Carbon has not yet been observed to fail
+        // this way, but the two loops are structurally identical and leaving
+        // one unfiltered would only defer the same defect to the first example
+        // whose CO2 carrier happens to be empty.
+        const carbon_closure_g_c = normalizeCensusRoundoff(
+            conserved_carbon_before_g_c - conserved_carbon_after_g_c,
+            @max(@abs(conserved_carbon_before_g_c), @abs(conserved_carbon_after_g_c)),
+        );
+        if (carbon_closure_g_c == 0) break;
+        closed_carbon_dioxide_g_c += carbon_closure_g_c;
+        if (!std.math.isFinite(closed_carbon_dioxide_g_c) or closed_carbon_dioxide_g_c < 0)
+            return error.InvalidSoilCarbonConservationClosure;
+        context.gas_state.dissolved_mass_g[co2_index] = closed_carbon_dioxide_g_c;
+    }
+    if (context.hourly_signed_heterotrophic_respiration_g_c) |ledger|
+        ledger[layer] = -((closed_carbon_dioxide_g_c - carbon_dioxide_before) +
+            (context.gas_state.dissolved_mass_g[methane_index] - methane_before));
+    // NITRO only redistributes nitrogen among mineral, organic, microbial,
+    // and gaseous owners. Close accepted-publication roundoff and incomplete
+    // partition cancellation in dissolved N2 before gas transport observes
+    // the layer. N2 is the least reactive internal carrier in this kernel.
+    var closed_dinitrogen_g_n = context.gas_state.dissolved_mass_g[n2_index];
+    var diagnostic_nitrogen_closure_g_n: f64 = 0;
+    for (0..4) |_| {
+        const conserved_nitrogen_after_g_n = try authoritativeLayerNitrogen_g_n(context.*, layer);
+        // A census difference smaller than the f64 representation floor of the
+        // census itself is not a mass discrepancy: it is the sum's own rounding,
+        // and its sign is an artifact of summation order rather than physics.
+        // Pushing it into a carrier is unphysical in both directions, and in a
+        // frozen layer whose dissolved N2 is exactly zero it is also impossible.
+        // `Arctic Tundra IQ` layer 5 at hour 1 measured `closure=-3.814697e-6`
+        // against `census=1.3391410615279026e10`, a relative `2.8e-16`, with
+        // `carrier=0`, `fixed_g_n=0`. This is the same reasoning, and the same
+        // helper, that `normalizeNonnegativeRoundoff` already applies to every
+        // dissolved, adsorbed, residue, and structural pool above; the closure
+        // loop was the one place that skipped it. It is a representation floor
+        // derived from the operands, not a configured tolerance, and it does
+        // not widen with the size of a real imbalance.
+        const nitrogen_closure_g_n = normalizeCensusRoundoff(
+            conserved_nitrogen_before_g_n - conserved_nitrogen_after_g_n,
+            @max(@abs(conserved_nitrogen_before_g_n), @abs(conserved_nitrogen_after_g_n)),
+        );
+        if (nitrogen_closure_g_n == 0) break;
+        diagnostic_nitrogen_closure_g_n += nitrogen_closure_g_n;
+        closed_dinitrogen_g_n += nitrogen_closure_g_n;
+        if (!std.math.isFinite(closed_dinitrogen_g_n) or closed_dinitrogen_g_n < 0) {
+            std.log.err(
+                "soil nitrogen closure exceeds the dissolved N2 carrier: layer={d} carrier_before_g_n={e} closure_g_n={e} carrier_after_g_n={e} census_before_g_n={e} census_after_g_n={e} water_m3={e} fixed_g_n={e}",
+                .{
+                    layer,
+                    context.gas_state.dissolved_mass_g[n2_index],
+                    nitrogen_closure_g_n,
+                    closed_dinitrogen_g_n,
+                    conserved_nitrogen_before_g_n,
+                    conserved_nitrogen_after_g_n,
+                    water_m3,
+                    published.fixed_dinitrogen_g_n,
+                },
+            );
+            return error.InvalidSoilNitrogenConservationClosure;
+        }
+        context.gas_state.dissolved_mass_g[n2_index] = closed_dinitrogen_g_n;
+    }
+    if (diagnostic_nitrogen_closure_g_n != 0)
+        std.log.debug("soil accepted nitrogen closure: layer={d} closure_g_n={e}", .{ layer, diagnostic_nitrogen_closure_g_n });
+}
+
+/// Complete carbon owner changed by one NITRO layer commit. The organic
+/// mirror is unchanged during the transaction, so including it in both
+/// snapshots cancels exactly while the authoritative microbial state records
+/// its actual change. Closing the residual in dissolved CO2 prevents many
+/// partition products from manufacturing carbon through accumulated rounding.
+fn authoritativeLayerCarbon_g_c(context: ApplyContext, layer: usize) !f64 {
+    var total = try context.organic_state.totalCarbon_g_c(layer);
+    const cell = layer / context.microbial_state.layer_count;
+    const local_layer = layer % context.microbial_state.layer_count;
+    for (0..context.microbial_state.substrate_count) |substrate|
+        for (0..context.microbial_state.population_count) |population| {
+            const population_index = try context.microbial_state.populationIndex(
+                cell,
+                local_layer,
+                substrate,
+                population,
+            );
+            total += context.microbial_state.nonstructural[population_index].carbon_g_c;
+            total += context.microbial_state.structural[population_index * 2].carbon_g_c;
+            total += context.microbial_state.structural[population_index * 2 + 1].carbon_g_c;
+        };
+    inline for (.{ gas.Species.carbon_dioxide, gas.Species.methane }) |species| {
+        const index = try gas.massIndex(layer, species, context.gas_state.cell_count);
+        total += context.gas_state.gaseous_mass_g[index];
+        total += context.gas_state.dissolved_mass_g[index];
+        total += context.gas_state.macropore_dissolved_mass_g[index];
+        total += context.gas_state.band_dissolved_mass_g[index];
+    }
+    if (!std.math.isFinite(total)) return error.NonFiniteSoilCarbonConservationCensus;
+    return total;
+}
+
+/// Complete nitrogen ownership changed by one NITRO layer commit. Mineral
+/// concentrations are converted back to tracked-element grams using the same
+/// water volume and zone fractions used at publication.
+fn authoritativeLayerNitrogen_g_n(context: ApplyContext, layer: usize) !f64 {
+    var total: f64 = context.reactive_nitrogen.non_band_nitrite_g_n[layer] +
+        context.reactive_nitrogen.band_nitrite_g_n[layer];
+    const water_m3 = context.water_volume_m3[layer];
+    const aqueous = context.chemistry_state.aqueous[layer];
+    total += context.nitrogen_molar_mass_g_per_mol * water_m3 *
+        (aqueous.ammonium_non_band * context.zone_fractions.ammonium_non_band +
+            aqueous.ammonium_band * context.zone_fractions.ammonium_band +
+            aqueous.nitrate_non_band * context.zone_fractions.nitrate_non_band +
+            aqueous.nitrate_band * context.zone_fractions.nitrate_band);
+    const organic_first = layer * organic.substrate_count;
+    for (context.organic_state.dissolved[organic_first..][0..organic.substrate_count]) |pool|
+        total += pool.nitrogen_g_n;
+    for (context.organic_state.adsorbed[organic_first..][0..organic.substrate_count]) |pool|
+        total += pool.nitrogen_g_n;
+    const residue_first = layer * organic.substrate_count * organic.residue_fraction_count;
+    for (context.organic_state.residue[residue_first..][0 .. organic.substrate_count * organic.residue_fraction_count]) |pool|
+        total += pool.nitrogen_g_n;
+    const structural_first = layer * organic.substrate_count * organic.structural_fraction_count;
+    for (context.organic_state.structural[structural_first..][0 .. organic.substrate_count * organic.structural_fraction_count]) |pool|
+        total += pool.nitrogen_g_n;
+    const cell = layer / context.microbial_state.layer_count;
+    const local_layer = layer % context.microbial_state.layer_count;
+    for (0..context.microbial_state.substrate_count) |substrate|
+        for (0..context.microbial_state.population_count) |population| {
+            const population_index = try context.microbial_state.populationIndex(cell, local_layer, substrate, population);
+            total += context.microbial_state.nonstructural[population_index].nitrogen_g_n;
+            total += context.microbial_state.structural[population_index * 2].nitrogen_g_n;
+            total += context.microbial_state.structural[population_index * 2 + 1].nitrogen_g_n;
+        };
+    inline for (.{ gas.Species.nitrogen, gas.Species.nitrous_oxide, gas.Species.ammonia }) |species| {
+        const index = try gas.massIndex(layer, species, context.gas_state.cell_count);
+        total += context.gas_state.gaseous_mass_g[index];
+        total += context.gas_state.dissolved_mass_g[index];
+        total += context.gas_state.macropore_dissolved_mass_g[index];
+        total += context.gas_state.band_dissolved_mass_g[index];
+    }
+    if (!std.math.isFinite(total)) return error.NonFiniteSoilNitrogenConservationCensus;
+    return total;
 }
 
 /// NITRO RDOSL includes lignin (fraction 4 in one-based Fortran) from the
@@ -626,6 +779,45 @@ fn normalizeNonnegativeRoundoff(value: f64, operation_scale: f64) f64 {
         64.0 * std.math.floatEps(f64) *
         @max(std.math.floatMin(f64), operation_scale);
     return if (value >= -cancellation_tolerance) 0 else value;
+}
+
+/// Discards a conservation-census difference that is smaller than the f64
+/// representation floor of the census being differenced. Such a difference
+/// carries no information about mass: it is the accumulation's own rounding,
+/// and both its magnitude and its sign depend on summation order.
+///
+/// This is deliberately two-sided, unlike `normalizeNonnegativeRoundoff`. A
+/// one-sided filter would let positive noise accumulate into a carrier while
+/// rejecting negative noise, which is precisely the systematic drift that lane
+/// A9 observed in `Arctic Tundra IQ` (every accepted closure negative).
+///
+/// The floor is derived from the operands via `floatEps`, so it is a property
+/// of f64 and of the census magnitude, not a configured tolerance. It cannot be
+/// widened to absorb a real imbalance: a discrepancy one part in `1e15` of a
+/// `1e10 g N` census is `1e-5 g N`, still far below any physical process this
+/// kernel represents, while anything physically meaningful is orders of
+/// magnitude above the floor and passes through unchanged.
+fn normalizeCensusRoundoff(difference: f64, census_scale: f64) f64 {
+    if (!std.math.isFinite(difference) or !std.math.isFinite(census_scale) or census_scale < 0)
+        return difference;
+    const representation_floor =
+        64.0 * std.math.floatEps(f64) * @max(std.math.floatMin(f64), census_scale);
+    return if (@abs(difference) <= representation_floor) 0 else difference;
+}
+
+test "census roundoff filter discards representation noise symmetrically" {
+    // The measured Arctic Tundra IQ layer-5 case, and its mirror image.
+    const census: f64 = 1.3391410615279026e10;
+    try std.testing.expectEqual(@as(f64, 0), normalizeCensusRoundoff(-3.814697265625e-6, census));
+    try std.testing.expectEqual(@as(f64, 0), normalizeCensusRoundoff(3.814697265625e-6, census));
+    // A physically meaningful imbalance at the same census scale survives. One
+    // gram is 12 orders of magnitude above the floor here.
+    try std.testing.expectEqual(@as(f64, 1), normalizeCensusRoundoff(1, census));
+    try std.testing.expectEqual(@as(f64, -1), normalizeCensusRoundoff(-1, census));
+    // The floor scales with the census and never exceeds it.
+    try std.testing.expect(normalizeCensusRoundoff(1e-9, 1) == 1e-9);
+    // Non-finite input is passed through so the caller's own guard reports it.
+    try std.testing.expect(std.math.isNan(normalizeCensusRoundoff(std.math.nan(f64), census)));
 }
 
 fn applyMicrobialExchange(pool_g_n: *f64, exchange_g_n: f64, tolerance: f64) !void {

@@ -26,8 +26,8 @@ pub const ApplyContext = struct {
     topsoil_volume_m3: []const f64,
     surface_area_m2: []const f64,
     topsoil_thickness_m: []const f64,
-    surface_dry_mass_Mg: []const f64,
-    topsoil_bulk_density_Mg_per_m3: []const f64,
+    surface_dry_mass_megagrams: []const f64,
+    topsoil_bulk_density_megagrams_per_m3: []const f64,
     topsoil_organic_carbon_g_per_megagram: []const f64,
     parameters: Parameters,
 };
@@ -74,8 +74,8 @@ fn mixingFraction(context: ApplyContext, cell: usize) !f64 {
     const surface_thickness_m =
         context.surface_volume_m3[cell] / context.surface_area_m2[cell];
     if (context.active_soil_layer_count[cell] == 0 or
-        context.surface_dry_mass_Mg[cell] <= 0 or
-        context.topsoil_bulk_density_Mg_per_m3[topsoil] <= 0)
+        context.surface_dry_mass_megagrams[cell] <= 0 or
+        context.topsoil_bulk_density_megagrams_per_m3[topsoil] <= 0)
         return 0;
     const surface_density = context.surface_activity_g_c_per_step[cell] /
         context.surface_volume_m3[cell];
@@ -83,7 +83,7 @@ fn mixingFraction(context: ApplyContext, cell: usize) !f64 {
         context.topsoil_volume_m3[topsoil];
     const surface_carbon_g_per_megagram =
         try context.surface_organic.totalCarbon_g_c(cell) /
-        context.surface_dry_mass_Mg[cell];
+        context.surface_dry_mass_megagrams[cell];
     const shared_carbon =
         @min(
             surface_carbon_g_per_megagram,
@@ -166,13 +166,13 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
         context.surface_activity_g_c_per_step.len,
         context.surface_volume_m3.len,
         context.surface_area_m2.len,
-        context.surface_dry_mass_Mg.len,
+        context.surface_dry_mass_megagrams.len,
     }) |length| if (length != cells) return error.InvalidSurfaceTopsoilMicrobialMixingDimensions;
     inline for (.{
         context.topsoil_activity_g_c_per_step.len,
         context.topsoil_volume_m3.len,
         context.topsoil_thickness_m.len,
-        context.topsoil_bulk_density_Mg_per_m3.len,
+        context.topsoil_bulk_density_megagrams_per_m3.len,
         context.topsoil_organic_carbon_g_per_megagram.len,
     }) |length| if (length != layers) return error.InvalidSurfaceTopsoilMicrobialMixingDimensions;
     inline for (std.meta.fields(Parameters)) |field| {
@@ -188,19 +188,19 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
             context.surface_activity_g_c_per_step[cell],
             context.surface_volume_m3[cell],
             context.surface_area_m2[cell],
-            context.surface_dry_mass_Mg[cell],
+            context.surface_dry_mass_megagrams[cell],
             context.topsoil_activity_g_c_per_step[topsoil],
             context.topsoil_volume_m3[topsoil],
             context.topsoil_thickness_m[topsoil],
-            context.topsoil_bulk_density_Mg_per_m3[topsoil],
+            context.topsoil_bulk_density_megagrams_per_m3[topsoil],
             context.topsoil_organic_carbon_g_per_megagram[topsoil],
         }) |value| if (!std.math.isFinite(value) or value < 0)
             return error.InvalidSurfaceTopsoilMicrobialMixingInput;
         if (context.surface_area_m2[cell] <= 0)
             return error.InvalidSurfaceTopsoilMicrobialMixingGeometry;
         if (context.active_soil_layer_count[cell] > 0 and
-            context.surface_dry_mass_Mg[cell] > 0 and
-            context.topsoil_bulk_density_Mg_per_m3[topsoil] > 0 and
+            context.surface_dry_mass_megagrams[cell] > 0 and
+            context.topsoil_bulk_density_megagrams_per_m3[topsoil] > 0 and
             (context.surface_volume_m3[cell] <= 0 or
                 context.topsoil_volume_m3[topsoil] <= 0 or
                 context.topsoil_thickness_m[topsoil] <= 0))
@@ -235,8 +235,8 @@ fn fixture(
         .topsoil_volume_m3 = &.{1},
         .surface_area_m2 = &.{1},
         .topsoil_thickness_m = &.{1},
-        .surface_dry_mass_Mg = &.{1},
-        .topsoil_bulk_density_Mg_per_m3 = &.{1},
+        .surface_dry_mass_megagrams = &.{1},
+        .topsoil_bulk_density_megagrams_per_m3 = &.{1},
         .topsoil_organic_carbon_g_per_megagram = &.{1.0e6},
         .parameters = .{ .mixing_rate_per_h = 0.1, .timestep_h = 1, .minimum_layer_thickness_m = 0.01 },
     };
@@ -288,7 +288,7 @@ test "no-neighbor and zero-mass surface cells do not mix" {
         inactive_surface.microbial[inactive_index].carbon_g_c,
     );
     inactive_context.active_soil_layer_count = &.{1};
-    inactive_context.surface_dry_mass_Mg = &.{0};
+    inactive_context.surface_dry_mass_megagrams = &.{0};
     try applyTile(&inactive_context, .{ .first = 0, .end = 1 });
     try std.testing.expectEqual(
         @as(f64, 10),

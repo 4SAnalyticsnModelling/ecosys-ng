@@ -1,5 +1,6 @@
 const std = @import("std");
 const compute = @import("compute.zig");
+const gas = @import("gas_transport.zig");
 const grid = @import("grid.zig");
 const organic = @import("soil_organic_initialization.zig");
 const microbial = @import("soil_microbial_state.zig");
@@ -8,6 +9,7 @@ const respiration = @import("soil_microbial_respiration_activity.zig");
 const reactive = @import("soil_reactive_nitrogen_state.zig");
 const fluxes = @import("soil_nitrogen_flux_workspace.zig");
 const nitrogen_parameters = @import("soil_nitrogen_parameters.zig");
+const anaerobic = @import("soil_anaerobic_growth_respiration.zig");
 const retention = @import("soil_water_retention.zig");
 
 pub const ApplyContext = struct {
@@ -19,10 +21,108 @@ pub const ApplyContext = struct {
     retention_curve: []const retention.ResolvedCurve,
     matrix_bulk_volume_m3: []const f64,
     matric_plus_osmotic_potential_mpa: []const f64,
+    /// Authoritative aqueous gas owner, needed only for source `CH2GS`, the
+    /// aqueous hydrogen concentration that drives the `NITRO.F` 918 fermenter
+    /// energy feedback. Read-only; this step never publishes a gas field.
+    /// Optional so that callers without the `soil_anaerobic_growth_energy`
+    /// parameter record keep their existing dimension contract exactly.
+    gas_state: ?*const gas.State = null,
+    /// Authoritative liquid water owner used as the aqueous concentration
+    /// basis, matching `soil_methane_step`'s `water_volume_m3`. When absent,
+    /// `model_grid.matrix_liquid_water_m3` is used, which is the same field
+    /// production passes.
+    aqueous_water_volume_m3: ?[]const f64 = null,
     parameters: nitrogen_parameters.Parameters,
     timestep_h: f64,
     negligible_amount: f64,
 };
+
+/// Source `NITRO.F` 924--928 and 1003--1004 growth respiration requirements
+/// for the two anaerobic branches this step owns, or the legacy production
+/// constants when the runtime parameter set carries no
+/// `soil_anaerobic_growth_energy` record.
+///
+/// `soil_heterotrophic_respiration_step` remains the sole writer of the
+/// anaerobic publish set. This only replaces the two scalar requirements that
+/// multiply the supply limit, per
+/// `docs/traceability/bind_nitro_001_double_mutation_analysis.md`.
+const AnaerobicRequirements = struct {
+    fermenter_g_c_per_g_c: f64,
+    anaerobic_diazotroph_g_c_per_g_c: f64,
+    acetotrophic_methanogen_g_c_per_g_c: f64,
+};
+
+/// Exact source order: `GH2X` at `NITRO.F` 556--557 is computed once per layer,
+/// before the substrate and population loops that consume it at 918 and 1317.
+/// Returning `null` means the runtime parameter set carries no
+/// `soil_anaerobic_growth_energy` record, in which case the legacy production
+/// constants stay in effect and nothing about this step changes.
+fn layerHydrogenFeedback_kilojoule_per_mol(
+    context: ApplyContext,
+    layer: usize,
+) !?f64 {
+    if (context.parameters.anaerobic_growth_energy == null) return null;
+    const water_m3 = if (context.aqueous_water_volume_m3) |volumes|
+        volumes[layer]
+    else
+        context.model_grid.matrix_liquid_water_m3[layer];
+    const concentration_g_h_per_m3 = blk: {
+        const gas_state = context.gas_state orelse break :blk 0;
+        if (!(water_m3 > 0)) break :blk 0;
+        const index = try gas.massIndex(layer, .hydrogen, gas_state.cell_count);
+        break :blk gas_state.dissolved_mass_g[index] / water_m3;
+    };
+    return try anaerobic.hydrogenFeedbackEnergy_kilojoule_per_mol(
+        context.model_grid.soil_temperature_k[layer],
+        concentration_g_h_per_m3,
+        anaerobic.source_feedback_environment,
+    );
+}
+
+fn anaerobicRequirements(
+    context: ApplyContext,
+    layer: usize,
+    hydrogen_feedback_kilojoule_per_mol: ?f64,
+    aqueous_acetate_concentration_g_c_per_m3: f64,
+) !AnaerobicRequirements {
+    const parameters = context.parameters.heterotrophic_respiration;
+    const legacy: AnaerobicRequirements = .{
+        .fermenter_g_c_per_g_c = parameters.doc_respiration_requirement_g_c_per_g_c,
+        .anaerobic_diazotroph_g_c_per_g_c = parameters.doc_respiration_requirement_g_c_per_g_c,
+        .acetotrophic_methanogen_g_c_per_g_c = parameters.acetate_respiration_requirement_g_c_per_g_c,
+    };
+    const energy = context.parameters.anaerobic_growth_energy orelse return legacy;
+    const hydrogen_feedback = hydrogen_feedback_kilojoule_per_mol orelse return legacy;
+    const temperature_k = context.model_grid.soil_temperature_k[layer];
+    const feedback = try anaerobic.fermenterFeedback(
+        temperature_k,
+        aqueous_acetate_concentration_g_c_per_m3,
+        hydrogen_feedback,
+        anaerobic.source_feedback_environment,
+        anaerobic.source_carbon_basis,
+    );
+    return .{
+        .fermenter_g_c_per_g_c = try anaerobic.fermenterRequirement_g_c_per_g_c(
+            energy,
+            feedback,
+            .fermenter,
+        ),
+        .anaerobic_diazotroph_g_c_per_g_c = try anaerobic.fermenterRequirement_g_c_per_g_c(
+            energy,
+            feedback,
+            .anaerobic_diazotroph,
+        ),
+        .acetotrophic_methanogen_g_c_per_g_c = try anaerobic.acetotrophicRequirement_g_c_per_g_c(
+            energy,
+            try anaerobic.acetotrophicFeedback_kilojoule_per_g_c(
+                temperature_k,
+                aqueous_acetate_concentration_g_c_per_m3,
+                anaerobic.source_feedback_environment,
+                anaerobic.source_carbon_basis,
+            ),
+        ),
+    };
+}
 
 pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
     try validate(context.*, range);
@@ -32,6 +132,8 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
     for (range.first..range.end) |layer| {
         const active_water_m3 = try biologicallyActiveWaterM3(context.*, layer);
         context.result.layer_biologically_active_water_m3[layer] = active_water_m3;
+        // Source NITRO.F 556--557, once per layer before the K and N loops.
+        const layer_hydrogen_feedback_kilojoule_per_mol = try layerHydrogenFeedback_kilojoule_per_mol(context.*, layer);
         var total_colonized_g_c: f64 = 0;
         for (0..substrate_count) |substrate| total_colonized_g_c += colonizedAndSorbedCarbon(context.organic_state, layer, substrate);
         for (0..substrate_count) |substrate| {
@@ -79,8 +181,19 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
                 const concentration_water_m3 = if (effective_water_m3 > 0) effective_water_m3 else active_water_m3;
                 if (population_metabolism == .fermenting_heterotroph) {
                     const doc_concentration_g_c_per_m3 = if (concentration_water_m3 > 0) context.organic_state.dissolved[mobile].carbon_g_c / concentration_water_m3 else 0;
+                    const acetate_concentration_g_c_per_m3 = if (concentration_water_m3 > 0) context.organic_state.dissolved_acetate_carbon_g_c[mobile] / concentration_water_m3 else 0;
                     const doc_demand_g_c = unlimited * doc_concentration_g_c_per_m3 / (doc_concentration_g_c_per_m3 + parameters.doc_half_saturation_g_c_per_m3) * temperature_response;
-                    const doc_supply_g_c = context.organic_state.dissolved[mobile].carbon_g_c * doc_share * parameters.doc_respiration_requirement_g_c_per_g_c * context.timestep_h;
+                    // Source NITRO.F 924--928: ECHZ is a function of the H2
+                    // plus acetate product energy, and the N=7 anaerobic
+                    // diazotroph has a different floor and energy requirement
+                    // from the N=4 fermenter.
+                    const requirements = try anaerobicRequirements(context.*, layer, layer_hydrogen_feedback_kilojoule_per_mol, acetate_concentration_g_c_per_m3);
+                    const is_anaerobic_diazotroph = population == context.parameters.nonsymbiotic_nitrogen_fixation.anaerobic_diazotroph_population_index;
+                    const respiration_requirement = if (is_anaerobic_diazotroph)
+                        requirements.anaerobic_diazotroph_g_c_per_g_c
+                    else
+                        requirements.fermenter_g_c_per_g_c;
+                    const doc_supply_g_c = context.organic_state.dissolved[mobile].carbon_g_c * doc_share * respiration_requirement * context.timestep_h;
                     const doc_respiration_g_c = @min(doc_supply_g_c, doc_demand_g_c);
                     context.result.substrate_unlimited_respiration_g_c[unit] = unlimited;
                     context.result.doc_respiration_demand_g_c[unit] = doc_respiration_g_c;
@@ -96,7 +209,10 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
                 if (population_metabolism == .acetotrophic_methanogen) {
                     const acetate_concentration_g_c_per_m3 = if (concentration_water_m3 > 0) context.organic_state.dissolved_acetate_carbon_g_c[mobile] / concentration_water_m3 else 0;
                     const acetate_demand_g_c = unlimited * acetate_concentration_g_c_per_m3 / (acetate_concentration_g_c_per_m3 + parameters.acetate_half_saturation_g_c_per_m3) * temperature_response;
-                    const acetate_supply_g_c = context.organic_state.dissolved_acetate_carbon_g_c[mobile] * acetate_share * parameters.acetate_respiration_requirement_g_c_per_g_c * context.timestep_h;
+                    // Source NITRO.F 1003--1004. The acetate feedback ADDS to
+                    // GC4X here where the fermenter branch subtracts it.
+                    const requirements = try anaerobicRequirements(context.*, layer, layer_hydrogen_feedback_kilojoule_per_mol, acetate_concentration_g_c_per_m3);
+                    const acetate_supply_g_c = context.organic_state.dissolved_acetate_carbon_g_c[mobile] * acetate_share * requirements.acetotrophic_methanogen_g_c_per_g_c * context.timestep_h;
                     const acetate_respiration_g_c = @min(acetate_supply_g_c, acetate_demand_g_c);
                     context.result.substrate_unlimited_respiration_g_c[unit] = 0;
                     context.result.doc_respiration_demand_g_c[unit] = 0;
@@ -193,10 +309,17 @@ fn validate(context: ApplyContext, range: compute.CellRange) !void {
     const units = try std.math.mul(usize, layers, context.result.process_unit_count_per_layer);
     if (range.first > range.end or range.end > layers or context.organic_state.layer_count != layers or context.reactive_nitrogen.layer_count != layers or context.retention_curve.len != layers or context.matrix_bulk_volume_m3.len != layers or context.matric_plus_osmotic_potential_mpa.len != layers or context.result.process_unit_count_per_layer != context.microbial_state.substrate_count * context.microbial_state.population_count or context.reactive_nitrogen.previous_doc_respiration_demand_g_c.len != units) return error.SoilHeterotrophicRespirationDimensionMismatch;
     if (context.parameters.nitrifier_indices.heterotrophic_denitrifier_population_index >= context.microbial_state.population_count or !std.math.isFinite(context.timestep_h) or context.timestep_h <= 0 or !std.math.isFinite(context.negligible_amount) or context.negligible_amount < 0) return error.InvalidSoilHeterotrophicRespirationInput;
+    // The source ECHZ feedback needs the authoritative aqueous hydrogen and
+    // water owners. Both stay optional, but a supplied owner must match the
+    // runtime layer axis exactly, and the parameter record must not be active
+    // without the gas owner that makes it meaningful.
+    if (context.gas_state) |gas_state| if (gas_state.cell_count != layers) return error.SoilHeterotrophicRespirationDimensionMismatch;
+    if (context.aqueous_water_volume_m3) |volumes| if (volumes.len != layers) return error.SoilHeterotrophicRespirationDimensionMismatch;
+    if (context.parameters.anaerobic_growth_energy != null and context.gas_state == null) return error.MissingAnaerobicHydrogenFeedbackOwner;
 }
 
 test "runtime aerobic respiration evaluates every heterotrophic population" {
-    const config = @import("config.zig").SimulationConfig{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
+    const config = @import("config.zig").SimulationConfig{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
     var model_grid = try grid.GridState.init(std.testing.allocator, config);
     defer model_grid.deinit();
     model_grid.matrix_liquid_water_m3[0] = 0.3;
@@ -237,5 +360,412 @@ test "runtime aerobic respiration evaluates every heterotrophic population" {
         const first_unit = substrate * microbial_state.population_count;
         try std.testing.expectEqual(@as(f64, 0), result.acetate_respiration_demand_g_c[first_unit + 3]);
         try std.testing.expectEqual(@as(f64, 0), result.doc_respiration_demand_g_c[first_unit + 4]);
+    }
+}
+
+/// Shared fixture for the anaerobic `ECHZ` tests. Owns every allocation and is
+/// deinitialized by the caller through `deinit`.
+const AnaerobicFixture = struct {
+    model_grid: grid.GridState,
+    microbial_state: microbial.State,
+    organic_state: organic.State,
+    reactive_state: reactive.State,
+    result: fluxes.State,
+    gas_state: gas.State,
+    curve: retention.ResolvedCurve,
+
+    const layer_count = 1;
+    const substrate_count = 2;
+    const population_count = 7;
+    const units_per_layer = substrate_count * population_count;
+
+    fn init(allocator: std.mem.Allocator) !AnaerobicFixture {
+        const config = @import("config.zig").SimulationConfig{ .lon_count = 1, .lat_count = 1, .soil_layers = layer_count, .plant_populations = 1, .worker_threads = 1, .tile_cells = 1, .relative_tolerance = 1e-8, .absolute_tolerance = 1e-12, .max_nonlinear_iterations = 20, .picard_relaxation = 0.5 };
+        var model_grid = try grid.GridState.init(allocator, config);
+        errdefer model_grid.deinit();
+        model_grid.matrix_liquid_water_m3[0] = 0.3;
+        model_grid.soil_temperature_k[0] = 293.15;
+        var microbial_state = try microbial.State.init(allocator, 1, layer_count, substrate_count, population_count);
+        errdefer microbial_state.deinit();
+        for (0..substrate_count * population_count) |index|
+            // Large active biomass so the source supply limit `RGOFX`/`RGOGX`,
+            // which is what `ECHZ` scales, is the binding constraint rather
+            // than the kinetic demand. C:N:P ratios stay at the parameter
+            // targets so the nutrient factor is exactly one.
+            microbial_state.structural[index * 2] = .{ .carbon_g_c = 100, .nitrogen_g_n = 10, .phosphorus_g_p = 1 };
+        var organic_state = try organic.State.init(allocator, layer_count);
+        errdefer organic_state.deinit();
+        organic_state.dissolved[0].carbon_g_c = 10;
+        organic_state.dissolved_acetate_carbon_g_c[0] = 2;
+        organic_state.adsorbed[0].carbon_g_c = 5;
+        var reactive_state = try reactive.State.init(allocator, layer_count, units_per_layer);
+        errdefer reactive_state.deinit();
+        var result = try fluxes.State.init(allocator, layer_count, units_per_layer);
+        errdefer result.deinit();
+        var gas_state = try gas.State.init(allocator, layer_count);
+        errdefer gas_state.deinit();
+        gas_state.dissolved_mass_g[try gas.massIndex(0, .hydrogen, layer_count)] = 0.03;
+        return .{
+            .model_grid = model_grid,
+            .microbial_state = microbial_state,
+            .organic_state = organic_state,
+            .reactive_state = reactive_state,
+            .result = result,
+            .gas_state = gas_state,
+            .curve = .{ .porosity_fraction = 0.5, .curve = .{ .field_capacity_fraction = 0.25, .wilting_point_fraction = 0.1, .saturation_water_potential_mpa = -0.0005, .field_capacity_water_potential_mpa = -0.033, .wilting_point_water_potential_mpa = -1.5, .minimum_water_potential_mpa = -1.5e12, .saturation_to_field_shape = 0.5, .below_wilting_shape = 0.5 } },
+        };
+    }
+
+    fn deinit(self: *AnaerobicFixture) void {
+        self.gas_state.deinit();
+        self.result.deinit();
+        self.reactive_state.deinit();
+        self.organic_state.deinit();
+        self.microbial_state.deinit();
+        self.model_grid.deinit();
+    }
+
+    fn context(self: *AnaerobicFixture, parameters: nitrogen_parameters.Parameters, with_gas: bool) ApplyContext {
+        return .{
+            .result = &self.result,
+            .reactive_nitrogen = &self.reactive_state,
+            .organic_state = &self.organic_state,
+            .microbial_state = &self.microbial_state,
+            .model_grid = &self.model_grid,
+            .retention_curve = self.retentionSlice(),
+            .matrix_bulk_volume_m3 = &.{1},
+            .matric_plus_osmotic_potential_mpa = &.{0},
+            .gas_state = if (with_gas) &self.gas_state else null,
+            .aqueous_water_volume_m3 = self.model_grid.matrix_liquid_water_m3,
+            .parameters = parameters,
+            .timestep_h = 1,
+            .negligible_amount = 1e-12,
+        };
+    }
+
+    fn retentionSlice(self: *AnaerobicFixture) []const retention.ResolvedCurve {
+        return @as(*const [1]retention.ResolvedCurve, &self.curve)[0..];
+    }
+
+    /// Zero-based population index of the fermenter and the acetotrophic
+    /// methanogen, matching `soil_microbial_respiration_activity`.
+    const fermenter_population = 3;
+    const acetotrophic_population = 4;
+    const anaerobic_diazotroph_population = 6;
+};
+
+fn anaerobicTestParameters(with_energy_record: bool) !nitrogen_parameters.Parameters {
+    const base =
+        "soil_nitrification 0.001 0.0002 7000 14 1.4 1.4 0.125 0.125 0.3 0.1 0.5 2.667 3.429 1.143\n" ++
+        "soil_denitrification 0.001 1.4 1.4 0.014 1 0.429 0.429 0.214 0.875\n" ++
+        "soil_autotrophic_denitrification 0.5 0.333\nsoil_chemodenitrification 0.0005 0.001 1e-12 0.5 0 0.5\n" ++
+        "nitrous_acid_dissociation_mol_per_m3 0.45\nsoil_microbial_thermal_adaptation_offset_k 0\n" ++
+        "soil_nitrifier_indices 5 0 1 1\nsoil_nitrifier_environment 0.55 0.1 0.1 0.01 0.01 12 0.1\n" ++
+        "soil_oxygen_uptake 1e-6 2.3866348449e11 0.064 -1.5e4 0.5 12 12 0.5 0.7 0.001 1e-12\n" ++
+        "soil_heterotrophic_respiration 0.125 0.1 0.01 12 12 0.5 0.42016806722689076 0.1 2.667 0.01 0.01 1e-6 1 0.7142857142857143\n" ++
+        "soil_microbial_mineral_exchange 0.014 0.0125 0.40 0.014 0.03 0.35 0.003 0.009 0.18 31\n" ++
+        "soil_nonsymbiotic_nitrogen_fixation 5 6 0.25 0.02 0.14 0.25\n" ++
+        "soil_microbial_turnover 0.01 0.001 0.167 0.333 0.333 0.333 0.150 0.300 0.333 0.25 2.0 5.0 1.0 0.5";
+    if (!with_energy_record) return nitrogen_parameters.parse(base);
+    // NITRO.F 179--187 source values.
+    return nitrogen_parameters.parse(base ++ "\nsoil_anaerobic_growth_energy 3.0 1.5 37.5 37.5 37.5 0.4 0.5");
+}
+
+test "absent anaerobic energy record reproduces the legacy constants bit for bit" {
+    var fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    const parameters = try anaerobicTestParameters(false);
+    try std.testing.expect(parameters.anaerobic_growth_energy == null);
+    var context = fixture.context(parameters, false);
+    try applyTile(&context, .{ .first = 0, .end = 1 });
+    const fermenter_unit = AnaerobicFixture.fermenter_population;
+    const acetotrophic_unit = AnaerobicFixture.acetotrophic_population;
+    const doc_share = fixture.result.doc_competition_fraction[fermenter_unit];
+    // Legacy fermenter supply used doc_respiration_requirement = 0.5, and the
+    // fixture is supply-limited, so the published value must equal it exactly.
+    const legacy_supply = 10 * doc_share * 0.5;
+    try std.testing.expectApproxEqRel(legacy_supply, fixture.result.doc_respiration_demand_g_c[fermenter_unit], 1e-15);
+    // Legacy acetotroph supply used acetate_respiration_requirement = EO2A.
+    const acetate_share = fixture.result.doc_competition_fraction[acetotrophic_unit];
+    try std.testing.expectApproxEqRel(2 * acetate_share * 0.42016806722689076, fixture.result.acetate_respiration_demand_g_c[acetotrophic_unit], 1e-15);
+    try std.testing.expect(fixture.result.substrate_limited_respiration_g_c[fermenter_unit] > 0);
+}
+
+test "source anaerobic energy record raises both requirements above the constants" {
+    var legacy_fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer legacy_fixture.deinit();
+    var legacy_context = legacy_fixture.context(try anaerobicTestParameters(false), false);
+    try applyTile(&legacy_context, .{ .first = 0, .end = 1 });
+
+    var source_fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer source_fixture.deinit();
+    const source_parameters = try anaerobicTestParameters(true);
+    try std.testing.expect(source_parameters.anaerobic_growth_energy != null);
+    var source_context = source_fixture.context(source_parameters, true);
+    try applyTile(&source_context, .{ .first = 0, .end = 1 });
+
+    // Both anaerobic branches are supply-limited in this fixture, so a larger
+    // ECHZ must raise the published respiration. The unfed source values are
+    // 1/(1+3/37.5)=0.9259 vs the 0.5 constant and 1/(1+1.5/37.5)=0.9615 vs
+    // the 0.42017 constant, and the fixture's acetate and hydrogen are both
+    // below their inhibition references, so the feedback only reinforces this.
+    const fermenter = AnaerobicFixture.fermenter_population;
+    const acetotroph = AnaerobicFixture.acetotrophic_population;
+    try std.testing.expect(source_fixture.result.doc_respiration_demand_g_c[fermenter] >
+        legacy_fixture.result.doc_respiration_demand_g_c[fermenter]);
+    try std.testing.expect(source_fixture.result.acetate_respiration_demand_g_c[acetotroph] >
+        legacy_fixture.result.acetate_respiration_demand_g_c[acetotroph]);
+    // Carbon cannot exceed the pool it is drawn from, in either configuration.
+    try std.testing.expect(source_fixture.result.doc_respiration_demand_g_c[fermenter] <= 10);
+    try std.testing.expect(source_fixture.result.acetate_respiration_demand_g_c[acetotroph] <= 2);
+}
+
+test "fermenter and diazotroph branches are distinguished only by floor and requirement" {
+    var fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    fixture.organic_state.dissolved_acetate_carbon_g_c[0] = 1.0e-12;
+    fixture.gas_state.dissolved_mass_g[try gas.massIndex(0, .hydrogen, 1)] = 0;
+    var context = fixture.context(try anaerobicTestParameters(true), true);
+    try applyTile(&context, .{ .first = 0, .end = 1 });
+    const feedback = try anaerobic.fermenterFeedback(
+        fixture.model_grid.soil_temperature_k[0],
+        fixture.organic_state.dissolved_acetate_carbon_g_c[0] /
+            fixture.result.layer_biologically_active_water_m3[0],
+        try anaerobic.hydrogenFeedbackEnergy_kilojoule_per_mol(
+            fixture.model_grid.soil_temperature_k[0],
+            0,
+            anaerobic.source_feedback_environment,
+        ),
+        anaerobic.source_feedback_environment,
+        anaerobic.source_carbon_basis,
+    );
+    // Both feedback terms are negative when products sit below their
+    // inhibition references, and the source subtracts GHAX from GCHX.
+    try std.testing.expect(feedback.hydrogen_kilojoule_per_g_c < 0);
+    try std.testing.expect(feedback.acetate_kilojoule_per_g_c < 0);
+    const energy = context.parameters.anaerobic_growth_energy.?;
+    const fermenter_requirement =
+        try anaerobic.fermenterRequirement_g_c_per_g_c(energy, feedback, .fermenter);
+    const diazotroph_requirement =
+        try anaerobic.fermenterRequirement_g_c_per_g_c(energy, feedback, .anaerobic_diazotroph);
+    // Measured finding, recorded in
+    // docs/traceability/nitro_anaerobic_growth_respiration.md: at the source
+    // defaults EOMF and EOMY are both 37.5, so the two branches differ ONLY by
+    // their floors EO2X=0.4 and ENFY=0.5. The fermenter floor needs
+    // GCHX-GHAX >= 56.25 kilojoule per gram carbon, which at 293.15 K needs an
+    // aqueous acetate ratio COQA/OAKI below exp(-772), and the diazotroph floor
+    // needs below exp(-496). Both are unrepresentable in f64 at any physical
+    // acetate concentration, so neither floor can bind and the two branches
+    // agree exactly. This is source behaviour, not an approximation.
+    try std.testing.expectEqual(fermenter_requirement, diazotroph_requirement);
+    try std.testing.expect(fermenter_requirement > 0.5);
+    try std.testing.expect(fermenter_requirement < 1);
+
+    // The floor logic itself is still real and must select per branch. Prove it
+    // with an energy requirement small enough to make each floor bind, which
+    // isolates the floor selection from its physical reachability.
+    const steep: nitrogen_parameters.AnaerobicGrowthEnergyParameters = .{
+        .fermentation_energy_yield_kilojoule_per_g_c = 3.0,
+        .acetotrophic_methanogenesis_energy_yield_kilojoule_per_g_c = 1.5,
+        .fermenter_growth_energy_requirement_kilojoule_per_g_c = 0.1,
+        .anaerobic_diazotroph_growth_energy_requirement_kilojoule_per_g_c = 0.1,
+        .acetotrophic_methanogen_growth_energy_requirement_kilojoule_per_g_c = 0.1,
+        .minimum_growth_respiration_requirement_g_c_per_g_c = 0.4,
+        .anaerobic_diazotroph_minimum_growth_respiration_requirement_g_c_per_g_c = 0.5,
+    };
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 0.4),
+        try anaerobic.fermenterRequirement_g_c_per_g_c(steep, feedback, .fermenter),
+        1e-15,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 0.5),
+        try anaerobic.fermenterRequirement_g_c_per_g_c(steep, feedback, .anaerobic_diazotroph),
+        1e-15,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 0.4),
+        try anaerobic.acetotrophicRequirement_g_c_per_g_c(steep, 1e6),
+        1e-15,
+    );
+
+    // Source asymmetry, and the reason the two branches cannot share a
+    // constant. For the fermenter, acetate is a PRODUCT: source 925 subtracts
+    // GHAX from GCHX, so accumulation shrinks the net energy, drives ECHZ to 1,
+    // and by source line 171 collapses growth yield 1-ECHZ to zero. That is the
+    // thermodynamic brake on fermentation. For the acetotrophic methanogen,
+    // acetate is the SUBSTRATE: source 1004 adds GOMM to GC4X, so accumulation
+    // raises the available energy and drives ECHZ down toward EO2X instead,
+    // raising growth yield. Applying one constant to both, as production did,
+    // erases both directions.
+    const accumulated_products: anaerobic.FermenterFeedback = .{
+        .hydrogen_kilojoule_per_g_c = 10,
+        .acetate_kilojoule_per_mol = 720,
+        .acetate_kilojoule_per_g_c = 10,
+        .combined_kilojoule_per_g_c = 20,
+    };
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 1),
+        try anaerobic.fermenterRequirement_g_c_per_g_c(energy, accumulated_products, .fermenter),
+        1e-15,
+    );
+    // GC4X=1.5, EOMH=37.5, GOMM=10: 1/(1+11.5/37.5).
+    try std.testing.expectApproxEqRel(
+        1.0 / (1.0 + (1.5 + 10.0) / 37.5),
+        try anaerobic.acetotrophicRequirement_g_c_per_g_c(energy, 10),
+        1e-15,
+    );
+    // Depleted acetate reverses the acetotroph: GC4X+GOMM below zero is floored
+    // at zero by source 1004, so ECHZ saturates at complete dissipation.
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 1),
+        try anaerobic.acetotrophicRequirement_g_c_per_g_c(energy, -2),
+        1e-15,
+    );
+}
+
+test "active energy record without its hydrogen owner is rejected atomically" {
+    var fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    fixture.result.doc_respiration_demand_g_c[AnaerobicFixture.fermenter_population] = 7;
+    var context = fixture.context(try anaerobicTestParameters(true), false);
+    try std.testing.expectError(
+        error.MissingAnaerobicHydrogenFeedbackOwner,
+        applyTile(&context, .{ .first = 0, .end = 1 }),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 7),
+        fixture.result.doc_respiration_demand_g_c[AnaerobicFixture.fermenter_population],
+    );
+}
+
+test "ECHZ correction keeps the anaerobic carbon draw inside its donor pools" {
+    // Tier 3, conservation closure. ECHZ scales a supply CEILING, so the one
+    // conservation statement that must survive the correction is that the
+    // published anaerobic respiration never withdraws more carbon than the
+    // donor pool it is drawn from, summed over every competing population in
+    // the layer. The competition shares are normalized to at most one, so this
+    // is the real closure test, not a per-population one.
+    var fixture = try AnaerobicFixture.init(std.testing.allocator);
+    defer fixture.deinit();
+    var context = fixture.context(try anaerobicTestParameters(true), true);
+    try applyTile(&context, .{ .first = 0, .end = 1 });
+    for (0..AnaerobicFixture.substrate_count) |substrate| {
+        var doc_drawn_g_c: f64 = 0;
+        var acetate_drawn_g_c: f64 = 0;
+        for (0..AnaerobicFixture.population_count) |population| {
+            const unit = substrate * AnaerobicFixture.population_count + population;
+            doc_drawn_g_c += fixture.result.doc_respiration_demand_g_c[unit];
+            acetate_drawn_g_c += fixture.result.acetate_respiration_demand_g_c[unit];
+            // Every published value stays finite and nonnegative: a supply
+            // ceiling can never produce a negative withdrawal.
+            try std.testing.expect(fixture.result.doc_respiration_demand_g_c[unit] >= 0);
+            try std.testing.expect(fixture.result.acetate_respiration_demand_g_c[unit] >= 0);
+            // The published limited respiration is exactly the sum of its two
+            // substrate components, so no carbon is created at publication.
+            try std.testing.expectApproxEqAbs(
+                fixture.result.doc_respiration_demand_g_c[unit] +
+                    fixture.result.acetate_respiration_demand_g_c[unit],
+                fixture.result.substrate_limited_respiration_g_c[unit],
+                1e-15,
+            );
+        }
+        try std.testing.expect(doc_drawn_g_c <= fixture.organic_state.dissolved[substrate].carbon_g_c);
+        try std.testing.expect(acetate_drawn_g_c <= fixture.organic_state.dissolved_acetate_carbon_g_c[substrate]);
+    }
+}
+
+test "the ECHZ correction raises the anaerobic supply ceiling and never lowers it" {
+    // docs/model_changes.md "NITRO anaerobic ECHZ product-energy feedback".
+    // This is the tier-2 magnitude claim, pinned so the recorded sign and
+    // bounds cannot drift silently. Reproduce independently of Zig with
+    // `pwsh tools/a3_echz_magnitude.ps1`.
+    //
+    // ECHZ multiplies the anaerobic supply cap RGOFX/RGOGX. Production used
+    // fixed 0.5 (= ENFY, the anaerobic diazotroph FLOOR) for the fermenter and
+    // 0.42016806722689076 (= EO2A, the AEROBIC acetate requirement) for the
+    // acetotroph. Both sit at or below the floor of their source range, so the
+    // corrected value is strictly larger at every physical product energy and
+    // the change is one-signed: POSITIVE.
+    const energy = (try anaerobicTestParameters(true)).anaerobic_growth_energy.?;
+    const legacy_fermenter: f64 = 0.5;
+    const legacy_acetotroph: f64 = 0.42016806722689076;
+    var minimum_fermenter_ratio: f64 = std.math.inf(f64);
+    var maximum_fermenter_ratio: f64 = 0;
+    var minimum_acetotroph_ratio: f64 = std.math.inf(f64);
+    var maximum_acetotroph_ratio: f64 = 0;
+    // Physical soil temperatures and a five-decade acetate range spanning the
+    // OAKI = 12 g C m-3 inhibition reference, crossed with a four-decade
+    // aqueous hydrogen range spanning the H2KI = 1 g H m-3 reference.
+    for ([_]f64{ 275.15, 293.15, 308.15 }) |temperature_k| {
+        for ([_]f64{ 1e-6, 1e-3, 0.1, 1, 12, 120, 1200 }) |acetate_g_c_per_m3| {
+            for ([_]f64{ 0, 1e-3, 1e-2, 0.1, 1, 10 }) |hydrogen_g_h_per_m3| {
+                const hydrogen_feedback = try anaerobic.hydrogenFeedbackEnergy_kilojoule_per_mol(
+                    temperature_k,
+                    hydrogen_g_h_per_m3,
+                    anaerobic.source_feedback_environment,
+                );
+                const feedback = try anaerobic.fermenterFeedback(
+                    temperature_k,
+                    acetate_g_c_per_m3,
+                    hydrogen_feedback,
+                    anaerobic.source_feedback_environment,
+                    anaerobic.source_carbon_basis,
+                );
+                const fermenter = try anaerobic.fermenterRequirement_g_c_per_g_c(energy, feedback, .fermenter);
+                const diazotroph = try anaerobic.fermenterRequirement_g_c_per_g_c(energy, feedback, .anaerobic_diazotroph);
+                const acetotroph = try anaerobic.acetotrophicRequirement_g_c_per_g_c(
+                    energy,
+                    try anaerobic.acetotrophicFeedback_kilojoule_per_g_c(
+                        temperature_k,
+                        acetate_g_c_per_m3,
+                        anaerobic.source_feedback_environment,
+                        anaerobic.source_carbon_basis,
+                    ),
+                );
+                // Tier 1: ECHZ is gram carbon per gram carbon, so it is
+                // dimensionless and the source AMAX1/AMIN1 pair confines it to
+                // [floor, 1]. A value outside that is not a physical yield.
+                for ([_]f64{ fermenter, diazotroph, acetotroph }) |value| {
+                    try std.testing.expect(std.math.isFinite(value));
+                    try std.testing.expect(value >= energy.minimum_growth_respiration_requirement_g_c_per_g_c);
+                    try std.testing.expect(value <= 1);
+                }
+                // Tier 2: one-signed change. Never below the legacy constant.
+                try std.testing.expect(fermenter >= legacy_fermenter);
+                try std.testing.expect(diazotroph >= legacy_fermenter);
+                try std.testing.expect(acetotroph >= legacy_acetotroph);
+                minimum_fermenter_ratio = @min(minimum_fermenter_ratio, fermenter / legacy_fermenter);
+                maximum_fermenter_ratio = @max(maximum_fermenter_ratio, fermenter / legacy_fermenter);
+                minimum_acetotroph_ratio = @min(minimum_acetotroph_ratio, acetotroph / legacy_acetotroph);
+                maximum_acetotroph_ratio = @max(maximum_acetotroph_ratio, acetotroph / legacy_acetotroph);
+            }
+        }
+    }
+    // Recorded magnitude. The fermenter cap grows by roughly 1.8x and the
+    // acetotroph cap by roughly 2.3x, and neither exceeds the arithmetic
+    // ceilings 1/0.5 = 2 and 1/0.42016806722689076 = 2.38 that ECHZ <= 1 imposes.
+    try std.testing.expect(minimum_fermenter_ratio > 1.7);
+    try std.testing.expect(maximum_fermenter_ratio <= 1.0 / legacy_fermenter);
+    try std.testing.expect(minimum_acetotroph_ratio > 2.2);
+    try std.testing.expect(maximum_acetotroph_ratio <= 1.0 / legacy_acetotroph);
+}
+
+test "anaerobic requirement is monotone in acetate for the fermenter branch" {
+    var previous: f64 = 0;
+    for ([_]f64{ 0.02, 0.2, 2, 20, 200 }) |acetate_g_c| {
+        var fixture = try AnaerobicFixture.init(std.testing.allocator);
+        defer fixture.deinit();
+        fixture.organic_state.dissolved_acetate_carbon_g_c[0] = acetate_g_c;
+        var context = fixture.context(try anaerobicTestParameters(true), true);
+        try applyTile(&context, .{ .first = 0, .end = 1 });
+        const respiration_g_c =
+            fixture.result.doc_respiration_demand_g_c[AnaerobicFixture.fermenter_population];
+        // Rising acetate raises GOAF, shrinks GCHX-GHAX, raises ECHZ, and so
+        // relaxes the fermenter's DOC supply cap RGOFX, until the kinetic
+        // demand RGOFZ binds instead. Growth yield 1-ECHZ falls at the same
+        // time, which is where the thermodynamic limitation actually acts.
+        try std.testing.expect(respiration_g_c >= previous - 1e-15);
+        previous = respiration_g_c;
     }
 }

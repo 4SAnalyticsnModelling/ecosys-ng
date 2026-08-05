@@ -132,7 +132,11 @@ pub fn advance(
                         .water_to_air_mass_solubility_ratio = environment.water_to_air_mass_solubility_ratio,
                         .atmosphere_concentration_g_per_m3 = atmospheric_concentration_g_per_m3[@intFromEnum(gas_species)],
                         .atmosphere_conductance_m3_per_h = environment.gaseous_diffusivity_m2_per_h * cross_section_m,
-                        .phase_equilibration_fraction = std.math.clamp(roots.current_porosity_fraction[plant], 0, 1),
+                        .phase_equilibration_fraction = std.math.clamp(
+                            roots.current_porosity_fraction_by_domain[try roots.domainIndex(plant, 0)],
+                            0,
+                            1,
+                        ),
                         .maximum_iterations = settings.maximum_iterations,
                         .absolute_tolerance_g = settings.absolute_tolerance_g,
                         .relative_tolerance = settings.relative_tolerance,
@@ -206,6 +210,13 @@ fn exchangeSoilAqueous(
         &roots.soil_to_root_gas_exchange_g_per_h[ledger],
         exchange_g,
     );
+    if (gas == .ammonia) {
+        if (band) {
+            roots.ammonia_band_soil_exchange_g_n_per_h[root] += exchange_g;
+        } else {
+            roots.ammonia_nonband_soil_exchange_g_n_per_h[root] += exchange_g;
+        }
+    }
 }
 
 fn transportSpecies(gas: root_exchange.TransportedGas) gas_transport.Species {

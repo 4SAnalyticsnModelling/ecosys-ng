@@ -1,3 +1,27 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 3216--3247. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: diagnostic-only. This kernel resets legacy running totals that no
+//! production module accumulates and no production module reads. Production
+//! reconstructs the equivalent totals on demand in
+//! `landscape_mass_balance_runtime.reconstruct`, which cannot drift from the
+//! state it summarizes. Binding a reset for an accumulator that nothing
+//! accumulates would add cost and no behaviour.
+//!
+//! Superseded by: `landscape_mass_inventory` / `landscape_mass_balance_runtime.reconstruct`.
+//!
+//! The seven-domain conservation closure the project actually gates on
+//! reconstructs organic carbon from the pools, so a stored inventory would be a
+//! second number that can disagree with the pools it summarizes. A conservation
+//! check whose reference value can drift is not a conservation check.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 pub const DisturbanceMode = enum {

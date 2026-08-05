@@ -6,7 +6,7 @@ pub const LayerExposure = enum {
 };
 
 pub const AboveBoundary = struct {
-    forward_scattered_shortwave_mj_per_m2_h: f64,
+    forward_scattered_shortwave_megajoules_per_m2_h: f64,
     forward_scattered_par_umol_per_m2_s: f64,
     direct_transmittance: f64,
     diffuse_transmittance: f64,
@@ -15,7 +15,7 @@ pub const AboveBoundary = struct {
 pub const LayerState = struct {
     accumulated_direct_interception_fraction: f64,
     accumulated_diffuse_interception_fraction: f64,
-    forward_scattered_shortwave_mj_per_m2_h: f64,
+    forward_scattered_shortwave_megajoules_per_m2_h: f64,
     forward_scattered_par_umol_per_m2_s: f64,
     direct_transmittance: f64,
     direct_interception_fraction: f64,
@@ -52,8 +52,8 @@ pub fn apply(
                 1.0 - state.accumulated_diffuse_interception_fraction;
         },
         .submerged => {
-            state.forward_scattered_shortwave_mj_per_m2_h =
-                above.forward_scattered_shortwave_mj_per_m2_h;
+            state.forward_scattered_shortwave_megajoules_per_m2_h =
+                above.forward_scattered_shortwave_megajoules_per_m2_h;
             state.forward_scattered_par_umol_per_m2_s =
                 above.forward_scattered_par_umol_per_m2_s;
             state.direct_transmittance = above.direct_transmittance;
@@ -74,13 +74,13 @@ fn validate(
     inline for (.{
         direct_delta,
         diffuse_delta,
-        above.forward_scattered_shortwave_mj_per_m2_h,
+        above.forward_scattered_shortwave_megajoules_per_m2_h,
         above.forward_scattered_par_umol_per_m2_s,
         above.direct_transmittance,
         above.diffuse_transmittance,
         state.accumulated_direct_interception_fraction,
         state.accumulated_diffuse_interception_fraction,
-        state.forward_scattered_shortwave_mj_per_m2_h,
+        state.forward_scattered_shortwave_megajoules_per_m2_h,
         state.forward_scattered_par_umol_per_m2_s,
         state.direct_transmittance,
         state.direct_interception_fraction,
@@ -100,14 +100,14 @@ test "exposed layer finalizes accumulated interception in source order" {
     var state: LayerState = .{
         .accumulated_direct_interception_fraction = 0.2,
         .accumulated_diffuse_interception_fraction = 0.1,
-        .forward_scattered_shortwave_mj_per_m2_h = 7,
+        .forward_scattered_shortwave_megajoules_per_m2_h = 7,
         .forward_scattered_par_umol_per_m2_s = 8,
         .direct_transmittance = 9,
         .direct_interception_fraction = 10,
         .diffuse_transmittance = 11,
     };
     try apply(.exposed, 0.3, 0.4, .{
-        .forward_scattered_shortwave_mj_per_m2_h = 1,
+        .forward_scattered_shortwave_megajoules_per_m2_h = 1,
         .forward_scattered_par_umol_per_m2_s = 2,
         .direct_transmittance = 0.8,
         .diffuse_transmittance = 0.7,
@@ -117,26 +117,26 @@ test "exposed layer finalizes accumulated interception in source order" {
     try std.testing.expectEqual(@as(f64, 0.5), state.direct_transmittance);
     try std.testing.expectEqual(@as(f64, 0.5), state.direct_interception_fraction);
     try std.testing.expectEqual(@as(f64, 0.5), state.diffuse_transmittance);
-    try std.testing.expectEqual(@as(f64, 7), state.forward_scattered_shortwave_mj_per_m2_h);
+    try std.testing.expectEqual(@as(f64, 7), state.forward_scattered_shortwave_megajoules_per_m2_h);
 }
 
 test "submerged layer inherits the boundary above" {
     var state: LayerState = .{
         .accumulated_direct_interception_fraction = 0.2,
         .accumulated_diffuse_interception_fraction = 0.3,
-        .forward_scattered_shortwave_mj_per_m2_h = 7,
+        .forward_scattered_shortwave_megajoules_per_m2_h = 7,
         .forward_scattered_par_umol_per_m2_s = 8,
         .direct_transmittance = 0.1,
         .direct_interception_fraction = 0.9,
         .diffuse_transmittance = 0.2,
     };
     try apply(.submerged, 0, 0, .{
-        .forward_scattered_shortwave_mj_per_m2_h = 1,
+        .forward_scattered_shortwave_megajoules_per_m2_h = 1,
         .forward_scattered_par_umol_per_m2_s = 2,
         .direct_transmittance = 0.8,
         .diffuse_transmittance = 0.7,
     }, &state);
-    try std.testing.expectEqual(@as(f64, 1), state.forward_scattered_shortwave_mj_per_m2_h);
+    try std.testing.expectEqual(@as(f64, 1), state.forward_scattered_shortwave_megajoules_per_m2_h);
     try std.testing.expectEqual(@as(f64, 2), state.forward_scattered_par_umol_per_m2_s);
     try std.testing.expectEqual(@as(f64, 0.8), state.direct_transmittance);
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), state.direct_interception_fraction, 1e-15);

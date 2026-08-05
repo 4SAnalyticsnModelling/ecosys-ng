@@ -17,7 +17,7 @@ pub const ColumnTotals = struct {
 };
 
 pub const Inputs = struct {
-    ice_density_Mg_per_m3: f64,
+    ice_density_megagrams_per_m3: f64,
     absolute_phase_balance_tolerance_m3: f64,
     relative_phase_balance_tolerance: f64,
     /// Signed external transport over one model step [snow_layer].
@@ -78,8 +78,8 @@ fn validateDimensions(inputs: Inputs, state: State, workspace: Workspace) !void 
 }
 
 fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
-    if (!std.math.isFinite(inputs.ice_density_Mg_per_m3) or
-        inputs.ice_density_Mg_per_m3 <= 0 or
+    if (!std.math.isFinite(inputs.ice_density_megagrams_per_m3) or
+        inputs.ice_density_megagrams_per_m3 <= 0 or
         !std.math.isFinite(inputs.absolute_phase_balance_tolerance_m3) or
         inputs.absolute_phase_balance_tolerance_m3 < 0 or
         !std.math.isFinite(inputs.relative_phase_balance_tolerance) or
@@ -136,7 +136,7 @@ fn validateTotals(totals: ColumnTotals) !void {
 
 fn validatePhaseBalance(inputs: Inputs, phase: PhaseStorage) !void {
     const ice_water_equivalent_m3 =
-        phase.ice_volume_m3 * inputs.ice_density_Mg_per_m3;
+        phase.ice_volume_m3 * inputs.ice_density_megagrams_per_m3;
     if (!std.math.isFinite(ice_water_equivalent_m3))
         return error.NonFiniteSnowpackPhaseResult;
     const residual_m3 =
@@ -210,7 +210,7 @@ fn testInputs(
     phase: []const PhaseStorage,
 ) Inputs {
     return .{
-        .ice_density_Mg_per_m3 = 0.9,
+        .ice_density_megagrams_per_m3 = 0.9,
         .absolute_phase_balance_tolerance_m3 = 1.0e-12,
         .relative_phase_balance_tolerance = 1.0e-12,
         .transport_increment_by_layer = transport,

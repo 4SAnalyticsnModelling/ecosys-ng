@@ -12,9 +12,9 @@ pub const State = struct {
     soil_albedo: []f64,
     initial_snow_depth_m: []f64,
     surface_albedo: []f64,
-    incident_shortwave_mj_per_m2: []f64,
-    absorbed_shortwave_mj_per_m2: []f64,
-    reflected_shortwave_mj_per_m2: []f64,
+    incident_shortwave_megajoules_per_m2: []f64,
+    absorbed_shortwave_megajoules_per_m2: []f64,
+    reflected_shortwave_megajoules_per_m2: []f64,
     incident_par_micromol_per_m2_per_s: []f64,
     absorbed_par_micromol_per_m2_per_s: []f64,
     reflected_par_micromol_per_m2_per_s: []f64,
@@ -75,20 +75,20 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
         const diffuse_transmission = if (context.interception) |interception| interception.diffuse_transmission_fraction[cell] else 1.0;
         var diffuse_terrain_projection: f64 = 0;
         for (0..context.terrain.sky_sector_count) |sky| diffuse_terrain_projection += context.terrain.diffuse_sky_incidence_fraction[cell * context.terrain.sky_sector_count + sky];
-        const direct_shortwave = context.radiation.direct_shortwave_mj_per_m2[cell] * direct_transmission * context.terrain.direct_solar_incidence_fraction[cell];
-        var diffuse_shortwave = context.radiation.diffuse_shortwave_mj_per_m2[cell] * diffuse_transmission * diffuse_terrain_projection;
+        const direct_shortwave = context.radiation.direct_shortwave_megajoules_per_m2[cell] * direct_transmission * context.terrain.direct_solar_incidence_fraction[cell];
+        var diffuse_shortwave = context.radiation.diffuse_shortwave_megajoules_per_m2[cell] * diffuse_transmission * diffuse_terrain_projection;
         const direct_par = context.radiation.direct_par_micromol_per_m2_per_s[cell] * direct_transmission * context.terrain.direct_solar_incidence_fraction[cell];
         var diffuse_par = context.radiation.diffuse_par_micromol_per_m2_per_s[cell] * diffuse_transmission * diffuse_terrain_projection;
         if (context.interception) |interception| {
             const bottom_boundary = cell * (interception.layer_count + 1);
-            diffuse_shortwave += interception.downward_scattered_shortwave_by_boundary_mj_per_m2[bottom_boundary];
+            diffuse_shortwave += interception.downward_scattered_shortwave_by_boundary_megajoules_per_m2[bottom_boundary];
             diffuse_par += interception.downward_scattered_par_by_boundary_micromol_per_m2_per_s[bottom_boundary];
         }
         const shortwave = try partitionEnergy(direct_shortwave + diffuse_shortwave, result.surface_albedo[cell]);
         const par = try partitionEnergy(direct_par + diffuse_par, result.surface_albedo[cell]);
-        result.incident_shortwave_mj_per_m2[cell] = shortwave.incident;
-        result.absorbed_shortwave_mj_per_m2[cell] = shortwave.absorbed;
-        result.reflected_shortwave_mj_per_m2[cell] = shortwave.reflected;
+        result.incident_shortwave_megajoules_per_m2[cell] = shortwave.incident;
+        result.absorbed_shortwave_megajoules_per_m2[cell] = shortwave.absorbed;
+        result.reflected_shortwave_megajoules_per_m2[cell] = shortwave.reflected;
         result.incident_par_micromol_per_m2_per_s[cell] = par.incident;
         result.absorbed_par_micromol_per_m2_per_s[cell] = par.absorbed;
         result.reflected_par_micromol_per_m2_per_s[cell] = par.reflected;

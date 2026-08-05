@@ -13,7 +13,7 @@ pub const Inventory = struct {
 pub const Environment = struct {
     litter_water_volume_m3: f64,
     litter_water_volume_fraction: f64,
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
     biologically_active_water_volume_m3: f64,
     active_biomass_respiration_g_c_per_step: f64,
     microbial_temperature_factor: f64,
@@ -24,7 +24,7 @@ pub const Parameters = struct {
     ammonium_dissolution_fraction_per_step: f64,
     ammonia_dissolution_fraction_per_step: f64,
     nitrate_dissolution_fraction_per_step: f64,
-    minimum_urea_half_saturation_mol_n_per_Mg: f64,
+    minimum_urea_half_saturation_mol_n_per_megagram: f64,
     microbial_activity_inhibition_g_c_per_m3_per_h: f64,
     specific_urea_hydrolysis_mol_n_per_g_c: f64,
     urease_inhibition_decline_fraction_per_step: f64,
@@ -81,9 +81,9 @@ pub const State = struct {
             @min(100_000.0, environment.active_biomass_respiration_g_c_per_step / (environment.biologically_active_water_volume_m3 * environment.step_duration_h))
         else
             100_000.0;
-        const effective_half_saturation = parameters.minimum_urea_half_saturation_mol_n_per_Mg *
+        const effective_half_saturation = parameters.minimum_urea_half_saturation_mol_n_per_megagram *
             (1.0 + activity_g_c_per_m3_per_h / parameters.microbial_activity_inhibition_g_c_per_m3_per_h);
-        const urea_concentration = if (environment.litter_dry_mass_Mg > 0) staged.urea_mol_n / environment.litter_dry_mass_Mg else 0;
+        const urea_concentration = if (environment.litter_dry_mass_megagrams > 0) staged.urea_mol_n / environment.litter_dry_mass_megagrams else 0;
         const substrate_factor = if (urea_concentration > 0) urea_concentration / (urea_concentration + effective_half_saturation) else 0;
         const hydrolysis = @min(staged.urea_mol_n, parameters.specific_urea_hydrolysis_mol_n_per_g_c * environment.active_biomass_respiration_g_c_per_step * substrate_factor * environment.microbial_temperature_factor * (1.0 - staged.current_urease_inhibition_fraction));
         const fluxes = Fluxes{
@@ -164,12 +164,12 @@ test "zero biologically active litter water saturates COQCK and preserves hydrol
     state.cells[0] = .{ .ammonium_mol_n = 0, .ammonia_mol_n = 10, .urea_mol_n = 4, .nitrate_mol_n = 0, .initial_urease_inhibition_fraction = 0, .current_urease_inhibition_fraction = 0 };
     const fluxes = try state.calculateAndCommit(
         0,
-        .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_Mg = 2, .biologically_active_water_volume_m3 = 0, .active_biomass_respiration_g_c_per_step = 10, .microbial_temperature_factor = 1, .step_duration_h = 1 },
+        .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_megagrams = 2, .biologically_active_water_volume_m3 = 0, .active_biomass_respiration_g_c_per_step = 10, .microbial_temperature_factor = 1, .step_duration_h = 1 },
         .{
             .ammonium_dissolution_fraction_per_step = 0.2,
             .ammonia_dissolution_fraction_per_step = 0.25,
             .nitrate_dissolution_fraction_per_step = 0.5,
-            .minimum_urea_half_saturation_mol_n_per_Mg = 1,
+            .minimum_urea_half_saturation_mol_n_per_megagram = 1,
             .microbial_activity_inhibition_g_c_per_m3_per_h = 2,
             .specific_urea_hydrolysis_mol_n_per_g_c = 1,
             .urease_inhibition_decline_fraction_per_step = 0.1,
@@ -189,7 +189,7 @@ test "surface litter fertilizer fluxes commit atomically" {
     var state = try State.init(std.testing.allocator, 2);
     defer state.deinit();
     state.cells[1] = .{ .ammonium_mol_n = 10, .ammonia_mol_n = 8, .urea_mol_n = 6, .nitrate_mol_n = 4, .initial_urease_inhibition_fraction = 0, .current_urease_inhibition_fraction = 0 };
-    const fluxes = try state.calculateAndCommit(1, .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_Mg = 2, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 2, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.2, .ammonia_dissolution_fraction_per_step = 0.25, .nitrate_dissolution_fraction_per_step = 0.5, .minimum_urea_half_saturation_mol_n_per_Mg = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 2, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 });
+    const fluxes = try state.calculateAndCommit(1, .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_megagrams = 2, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 2, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.2, .ammonia_dissolution_fraction_per_step = 0.25, .nitrate_dissolution_fraction_per_step = 0.5, .minimum_urea_half_saturation_mol_n_per_megagram = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 2, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 });
     try std.testing.expectEqual(@as(f64, 1), fluxes.ammonium_dissolution_mol_n);
     try std.testing.expectEqual(@as(f64, 2), fluxes.ammonia_dissolution_mol_n);
     try std.testing.expectEqual(@as(f64, 1), fluxes.nitrate_dissolution_mol_n);
@@ -202,7 +202,7 @@ test "invalid litter input leaves inventory unchanged" {
     defer state.deinit();
     state.cells[0].ammonium_mol_n = 2;
     const before = state.cells[0];
-    try std.testing.expectError(error.InvalidLitterEnvironment, state.calculateAndCommit(0, .{ .litter_water_volume_m3 = std.math.nan(f64), .litter_water_volume_fraction = 0.5, .litter_dry_mass_Mg = 1, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 1, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.1, .ammonia_dissolution_fraction_per_step = 0.1, .nitrate_dissolution_fraction_per_step = 0.1, .minimum_urea_half_saturation_mol_n_per_Mg = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 1, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 }));
+    try std.testing.expectError(error.InvalidLitterEnvironment, state.calculateAndCommit(0, .{ .litter_water_volume_m3 = std.math.nan(f64), .litter_water_volume_fraction = 0.5, .litter_dry_mass_megagrams = 1, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 1, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.1, .ammonia_dissolution_fraction_per_step = 0.1, .nitrate_dissolution_fraction_per_step = 0.1, .minimum_urea_half_saturation_mol_n_per_megagram = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 1, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 }));
     try std.testing.expectEqualDeep(before, state.cells[0]);
 }
 
@@ -212,7 +212,7 @@ test "surface fertilizer dissolution transfers nitrogen atomically into litter w
     fertilizer.cells[0] = .{ .ammonium_mol_n = 10, .ammonia_mol_n = 8, .urea_mol_n = 6, .nitrate_mol_n = 4, .initial_urease_inhibition_fraction = 0, .current_urease_inhibition_fraction = 0 };
     var chemistry = try litter_chemistry.State.init(std.testing.allocator, 1);
     defer chemistry.deinit();
-    const fluxes = try calculateAndApplyToChemistry(&fertilizer, &chemistry, 0, .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_Mg = 2, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 2, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.2, .ammonia_dissolution_fraction_per_step = 0.25, .nitrate_dissolution_fraction_per_step = 0.5, .minimum_urea_half_saturation_mol_n_per_Mg = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 2, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 });
+    const fluxes = try calculateAndApplyToChemistry(&fertilizer, &chemistry, 0, .{ .litter_water_volume_m3 = 2, .litter_water_volume_fraction = 0.5, .litter_dry_mass_megagrams = 2, .biologically_active_water_volume_m3 = 1, .active_biomass_respiration_g_c_per_step = 2, .microbial_temperature_factor = 1, .step_duration_h = 1 }, .{ .ammonium_dissolution_fraction_per_step = 0.2, .ammonia_dissolution_fraction_per_step = 0.25, .nitrate_dissolution_fraction_per_step = 0.5, .minimum_urea_half_saturation_mol_n_per_megagram = 1, .microbial_activity_inhibition_g_c_per_m3_per_h = 2, .specific_urea_hydrolysis_mol_n_per_g_c = 1, .urease_inhibition_decline_fraction_per_step = 0.1 });
     try std.testing.expectApproxEqAbs(fluxes.ammonium_dissolution_mol_n / 2, chemistry.cells[0].ammonium_mol_per_m3, 1e-14);
     try std.testing.expectApproxEqAbs((fluxes.ammonia_dissolution_mol_n + fluxes.urea_hydrolysis_mol_n) / 2, chemistry.cells[0].ammonia_mol_per_m3, 1e-14);
     try std.testing.expectApproxEqAbs(fluxes.nitrate_dissolution_mol_n / 2, chemistry.cells[0].nitrate_mol_per_m3, 1e-14);

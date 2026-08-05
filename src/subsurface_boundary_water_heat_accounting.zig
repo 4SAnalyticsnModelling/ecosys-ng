@@ -26,14 +26,14 @@ pub const Face = enum(u8) {
 pub const BoundaryFlux = struct {
     micropore_water_m3_per_step: f64 = 0,
     macropore_water_m3_per_step: f64 = 0,
-    convective_heat_mj_per_step: f64 = 0,
+    convective_heat_megajoules_per_step: f64 = 0,
     artificial_drainage_micropore_water_m3_per_step: f64 = 0,
     artificial_drainage_macropore_water_m3_per_step: f64 = 0,
 };
 
 pub const Inputs = struct {
-    grid_column_count: usize,
-    grid_row_count: usize,
+    lon_count: usize,
+    lat_count: usize,
     soil_layer_count: usize,
     external_boundary_window: ExternalBoundaryWindow,
     horizontal_exchange_by_cell: []const HorizontalSubsurfaceExchange,
@@ -43,7 +43,7 @@ pub const Inputs = struct {
 
 pub const State = struct {
     cumulative_outward_water_m3: f64,
-    cumulative_outward_heat_mj: f64,
+    cumulative_outward_heat_megajoules: f64,
     net_outward_water_m3_per_step_by_cell: []f64,
     cumulative_outward_water_m3_by_cell: []f64,
     artificial_drainage_outward_m3_per_step_by_cell: []f64,
@@ -68,7 +68,7 @@ pub fn apply(inputs: Inputs, state: *State) !void {
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             for (0..inputs.soil_layer_count) |layer| {
                 const record = cell * inputs.soil_layer_count + layer;
                 for (std.meta.tags(Face)) |face| {
@@ -76,13 +76,13 @@ pub fn apply(inputs: Inputs, state: *State) !void {
                         continue;
                     const flux = inputs.flux_by_face[@intFromEnum(face)][record];
                     const direction = inwardSign(face);
-                    const signed_heat_mj =
-                        checkedProduct(direction, flux.convective_heat_mj_per_step) catch
+                    const signed_heat_megajoules =
+                        checkedProduct(direction, flux.convective_heat_megajoules_per_step) catch
                             unreachable;
-                    state.cumulative_outward_heat_mj =
+                    state.cumulative_outward_heat_megajoules =
                         checkedSum(
-                            state.cumulative_outward_heat_mj,
-                            -signed_heat_mj,
+                            state.cumulative_outward_heat_megajoules,
+                            -signed_heat_megajoules,
                         ) catch unreachable;
                     const signed_water_m3 =
                         calculateSignedOrdinaryWater(flux, direction) catch unreachable;
@@ -123,11 +123,11 @@ const Dimensions = struct {
 
 fn preflightUpdates(inputs: Inputs, state: State) !void {
     var cumulative_outward_water_m3 = state.cumulative_outward_water_m3;
-    var cumulative_outward_heat_mj = state.cumulative_outward_heat_mj;
+    var cumulative_outward_heat_megajoules = state.cumulative_outward_heat_megajoules;
     const window = inputs.external_boundary_window;
     for (window.first_column..window.last_column_inclusive + 1) |column| {
         for (window.first_row..window.last_row_inclusive + 1) |row| {
-            const cell = row * inputs.grid_column_count + column;
+            const cell = row * inputs.lon_count + column;
             var net_outward_water_m3 =
                 state.net_outward_water_m3_per_step_by_cell[cell];
             var cell_cumulative_outward_water_m3 =
@@ -141,11 +141,11 @@ fn preflightUpdates(inputs: Inputs, state: State) !void {
                         continue;
                     const flux = inputs.flux_by_face[@intFromEnum(face)][record];
                     const direction = inwardSign(face);
-                    const signed_heat_mj =
-                        try checkedProduct(direction, flux.convective_heat_mj_per_step);
-                    cumulative_outward_heat_mj = try checkedSum(
-                        cumulative_outward_heat_mj,
-                        -signed_heat_mj,
+                    const signed_heat_megajoules =
+                        try checkedProduct(direction, flux.convective_heat_megajoules_per_step);
+                    cumulative_outward_heat_megajoules = try checkedSum(
+                        cumulative_outward_heat_megajoules,
+                        -signed_heat_megajoules,
                     );
                     const signed_water_m3 =
                         try calculateSignedOrdinaryWater(flux, direction);
@@ -199,14 +199,14 @@ fn calculateSignedArtificialDrainage(
 }
 
 fn validateDimensions(inputs: Inputs, state: State) !Dimensions {
-    if (inputs.grid_column_count == 0 or
-        inputs.grid_row_count == 0 or
+    if (inputs.lon_count == 0 or
+        inputs.lat_count == 0 or
         inputs.soil_layer_count == 0)
         return error.InvalidSubsurfaceBoundaryDimensions;
     const cell_count = std.math.mul(
         usize,
-        inputs.grid_column_count,
-        inputs.grid_row_count,
+        inputs.lon_count,
+        inputs.lat_count,
     ) catch return error.InvalidSubsurfaceBoundaryDimensions;
     const record_count = std.math.mul(
         usize,
@@ -224,8 +224,8 @@ fn validateDimensions(inputs: Inputs, state: State) !Dimensions {
     const window = inputs.external_boundary_window;
     if (window.first_column > window.last_column_inclusive or
         window.first_row > window.last_row_inclusive or
-        window.last_column_inclusive >= inputs.grid_column_count or
-        window.last_row_inclusive >= inputs.grid_row_count)
+        window.last_column_inclusive >= inputs.lon_count or
+        window.last_row_inclusive >= inputs.lat_count)
         return error.InvalidSubsurfaceBoundaryWindow;
     return .{ .cell_count = cell_count, .record_count = record_count };
 }
@@ -241,7 +241,7 @@ fn validateInputsAndState(
                 if (!std.math.isFinite(@field(flux, field.name)))
                     return error.InvalidSubsurfaceBoundaryInput;
     if (!std.math.isFinite(state.cumulative_outward_water_m3) or
-        !std.math.isFinite(state.cumulative_outward_heat_mj))
+        !std.math.isFinite(state.cumulative_outward_heat_megajoules))
         return error.InvalidSubsurfaceBoundaryState;
     for (0..dimensions.cell_count) |cell|
         inline for (.{
@@ -303,7 +303,7 @@ fn zeroState(
 ) State {
     return .{
         .cumulative_outward_water_m3 = 0,
-        .cumulative_outward_heat_mj = 0,
+        .cumulative_outward_heat_megajoules = 0,
         .net_outward_water_m3_per_step_by_cell = net,
         .cumulative_outward_water_m3_by_cell = cumulative,
         .artificial_drainage_outward_m3_per_step_by_cell = drainage,
@@ -316,7 +316,7 @@ test "REDIST subsurface boundary accounts layers and lower face in source order"
         .{
             .micropore_water_m3_per_step = 1,
             .macropore_water_m3_per_step = 2,
-            .convective_heat_mj_per_step = 3,
+            .convective_heat_megajoules_per_step = 3,
             .artificial_drainage_micropore_water_m3_per_step = 4,
             .artificial_drainage_macropore_water_m3_per_step = 5,
         },
@@ -327,7 +327,7 @@ test "REDIST subsurface boundary accounts layers and lower face in source order"
         .{
             .micropore_water_m3_per_step = 6,
             .macropore_water_m3_per_step = 7,
-            .convective_heat_mj_per_step = 8,
+            .convective_heat_megajoules_per_step = 8,
             .artificial_drainage_micropore_water_m3_per_step = 9,
             .artificial_drainage_macropore_water_m3_per_step = 10,
         },
@@ -337,8 +337,8 @@ test "REDIST subsurface boundary accounts layers and lower face in source order"
     var drainage = [_]f64{0};
     var state = zeroState(&net, &cumulative, &drainage);
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
@@ -351,7 +351,7 @@ test "REDIST subsurface boundary accounts layers and lower face in source order"
     }, &state);
 
     try std.testing.expectEqual(@as(f64, 16), state.cumulative_outward_water_m3);
-    try std.testing.expectEqual(@as(f64, 11), state.cumulative_outward_heat_mj);
+    try std.testing.expectEqual(@as(f64, 11), state.cumulative_outward_heat_megajoules);
     try std.testing.expectEqual(@as(f64, 16), net[0]);
     try std.testing.expectEqual(@as(f64, 16), cumulative[0]);
     try std.testing.expectEqual(@as(f64, 28), drainage[0]);
@@ -359,19 +359,19 @@ test "REDIST subsurface boundary accounts layers and lower face in source order"
 
 test "standalone cell suppresses lateral exchange but retains lower drainage" {
     const lateral = [_]BoundaryFlux{
-        .{ .micropore_water_m3_per_step = 20, .convective_heat_mj_per_step = 20 },
+        .{ .micropore_water_m3_per_step = 20, .convective_heat_megajoules_per_step = 20 },
     };
     const empty = [_]BoundaryFlux{.{}};
     const lower = [_]BoundaryFlux{
-        .{ .micropore_water_m3_per_step = 2, .convective_heat_mj_per_step = 3 },
+        .{ .micropore_water_m3_per_step = 2, .convective_heat_megajoules_per_step = 3 },
     };
     var net = [_]f64{0};
     var cumulative = [_]f64{0};
     var drainage = [_]f64{0};
     var state = zeroState(&net, &cumulative, &drainage);
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
@@ -383,14 +383,14 @@ test "standalone cell suppresses lateral exchange but retains lower drainage" {
         .flux_by_face = .{ &lateral, &empty, &empty, &empty, &lower },
     }, &state);
     try std.testing.expectEqual(@as(f64, 2), state.cumulative_outward_water_m3);
-    try std.testing.expectEqual(@as(f64, 3), state.cumulative_outward_heat_mj);
+    try std.testing.expectEqual(@as(f64, 3), state.cumulative_outward_heat_megajoules);
 }
 
 test "heat advances while exact ordinary-water cancellation gates drainage" {
     const cancelling = [_]BoundaryFlux{.{
         .micropore_water_m3_per_step = 1,
         .macropore_water_m3_per_step = -1,
-        .convective_heat_mj_per_step = 2,
+        .convective_heat_megajoules_per_step = 2,
         .artificial_drainage_micropore_water_m3_per_step = 5,
         .artificial_drainage_macropore_water_m3_per_step = 6,
     }};
@@ -400,8 +400,8 @@ test "heat advances while exact ordinary-water cancellation gates drainage" {
     var drainage = [_]f64{0};
     var state = zeroState(&net, &cumulative, &drainage);
     try apply(.{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
@@ -413,14 +413,14 @@ test "heat advances while exact ordinary-water cancellation gates drainage" {
         .flux_by_face = .{ &cancelling, &empty, &empty, &empty, &empty },
     }, &state);
     try std.testing.expectEqual(@as(f64, 0), state.cumulative_outward_water_m3);
-    try std.testing.expectEqual(@as(f64, 2), state.cumulative_outward_heat_mj);
+    try std.testing.expectEqual(@as(f64, 2), state.cumulative_outward_heat_megajoules);
     try std.testing.expectEqual(@as(f64, 0), drainage[0]);
 }
 
 test "runtime grid water ledger closes against per-cell cumulative values" {
     const active: BoundaryFlux = .{
         .micropore_water_m3_per_step = 1,
-        .convective_heat_mj_per_step = 2,
+        .convective_heat_megajoules_per_step = 2,
     };
     const east = [_]BoundaryFlux{
         .{}, .{}, .{},    active,
@@ -432,8 +432,8 @@ test "runtime grid water ledger closes against per-cell cumulative values" {
     var drainage = [_]f64{ 0, 0, 0, 0 };
     var state = zeroState(&net, &cumulative, &drainage);
     try apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 2,
+        .lon_count = 2,
+        .lat_count = 2,
         .soil_layer_count = 2,
         .external_boundary_window = .{
             .first_column = 0,
@@ -450,26 +450,26 @@ test "runtime grid water ledger closes against per-cell cumulative values" {
     for (cumulative) |value| cell_total_m3 += value;
     try std.testing.expectEqual(state.cumulative_outward_water_m3, cell_total_m3);
     try std.testing.expectEqualSlices(f64, &.{ 0, 1, 0, 1 }, &cumulative);
-    try std.testing.expectEqual(@as(f64, 4), state.cumulative_outward_heat_mj);
+    try std.testing.expectEqual(@as(f64, 4), state.cumulative_outward_heat_megajoules);
 }
 
 test "late non-finite boundary flux leaves every ledger unchanged" {
     var east = [_]BoundaryFlux{ .{}, .{} };
-    east[1].convective_heat_mj_per_step = std.math.nan(f64);
+    east[1].convective_heat_megajoules_per_step = std.math.nan(f64);
     const empty = [_]BoundaryFlux{ .{}, .{} };
     var net = [_]f64{ 1, 2 };
     var cumulative = [_]f64{ 3, 4 };
     var drainage = [_]f64{ 5, 6 };
     var state: State = .{
         .cumulative_outward_water_m3 = 7,
-        .cumulative_outward_heat_mj = 8,
+        .cumulative_outward_heat_megajoules = 8,
         .net_outward_water_m3_per_step_by_cell = &net,
         .cumulative_outward_water_m3_by_cell = &cumulative,
         .artificial_drainage_outward_m3_per_step_by_cell = &drainage,
     };
     try std.testing.expectError(error.InvalidSubsurfaceBoundaryInput, apply(.{
-        .grid_column_count = 2,
-        .grid_row_count = 1,
+        .lon_count = 2,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .external_boundary_window = .{
             .first_column = 0,
@@ -481,7 +481,7 @@ test "late non-finite boundary flux leaves every ledger unchanged" {
         .flux_by_face = .{ &east, &empty, &empty, &empty, &empty },
     }, &state));
     try std.testing.expectEqual(@as(f64, 7), state.cumulative_outward_water_m3);
-    try std.testing.expectEqual(@as(f64, 8), state.cumulative_outward_heat_mj);
+    try std.testing.expectEqual(@as(f64, 8), state.cumulative_outward_heat_megajoules);
     try std.testing.expectEqualSlices(f64, &.{ 1, 2 }, &net);
     try std.testing.expectEqualSlices(f64, &.{ 3, 4 }, &cumulative);
     try std.testing.expectEqualSlices(f64, &.{ 5, 6 }, &drainage);
@@ -494,8 +494,8 @@ test "invalid runtime layer extent and boundary window fail explicitly" {
     var drainage = [_]f64{0};
     var state = zeroState(&net, &cumulative, &drainage);
     const base: Inputs = .{
-        .grid_column_count = 1,
-        .grid_row_count = 1,
+        .lon_count = 1,
+        .lat_count = 1,
         .soil_layer_count = 1,
         .external_boundary_window = .{
             .first_column = 0,

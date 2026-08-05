@@ -98,14 +98,27 @@ pub fn advance(
         const water = post_runoff_water_m3[cell];
         for (0..species_count) |species| {
             const amount = candidate[cell * species_count + species];
-            if (!std.math.isFinite(amount) or amount < -1e-12 or (water == 0 and amount > 1e-12)) return error.InvalidSurfaceMineralTransportCandidate;
+            // A dry cell holding dissolved mineral mass is a legitimate state once
+            // surface evaporation is active, and it is handled below by holding the
+            // stored concentrations rather than dividing by zero. Rejecting it here
+            // was the fourth blocker on enabling evaporation. See EXEC-004.
+            _ = water;
+            if (!std.math.isFinite(amount) or amount < -1e-12) return error.InvalidSurfaceMineralTransportCandidate;
         }
     }
     for (0..cells) |cell|
         try chemistry.renormalizeMinerals(cell, post_runoff_water_m3[cell]);
     for (0..cells) |cell| {
         const water = post_runoff_water_m3[cell];
-        const inverse_water = if (water > 0) 1.0 / water else 0;
+        if (water <= 0) {
+            // Dry cell: hold the stored concentrations. Writing zero here would
+            // silently destroy the dissolved mineral mass, which is why this case
+            // used to be rejected outright. The litter carrier rebase remembers the
+            // carrier these concentrations refer to, so the extensive amount stays
+            // recoverable on rewetting.
+            continue;
+        }
+        const inverse_water = 1.0 / water;
         chemistry.cells[cell].ammonium_mol_per_m3 = @max(0, candidate[cell * species_count + @intFromEnum(Species.ammonium)]) * inverse_water;
         chemistry.cells[cell].ammonia_mol_per_m3 = @max(0, candidate[cell * species_count + @intFromEnum(Species.ammonia)]) * inverse_water;
         chemistry.cells[cell].nitrate_mol_per_m3 = @max(0, candidate[cell * species_count + @intFromEnum(Species.nitrate)]) * inverse_water;
@@ -143,6 +156,52 @@ test "surface mineral runoff conserves internal transfer and reports external N 
     try std.testing.expectApproxEqAbs(@as(f64, 42), nitrogen_export[1], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 7), nitrite[1], 1e-14);
     try std.testing.expectApproxEqAbs(@as(f64, 31), phosphorus_export[1], 1e-14);
+}
+
+test "a dry surface cell preserves its dissolved mineral concentrations" {
+    // EXEC-004: this used to fail with InvalidSurfaceMineralTransportCandidate,
+    // the fourth blocker on enabling surface evaporation. The guard existed for a
+    // real reason: the writeback used `inverse_water = 0` for a dry cell, which
+    // would have silently zeroed the concentrations and destroyed the mass. The fix
+    // holds them instead, so both the error and the mass loss are gone.
+    var chemistry = try Chemistry.init(std.testing.allocator, 1);
+    defer chemistry.deinit();
+    chemistry.cells[0].ammonium_mol_per_m3 = 2;
+    chemistry.cells[0].nitrate_mol_per_m3 = 3;
+    chemistry.cells[0].h2po4_mol_p_per_m3 = 1.5;
+    var nitrogen_export = [_]f64{0};
+    var phosphorus_export = [_]f64{0};
+    var nitrite = [_]f64{0};
+    const zero = [_]f64{0};
+    // Evaporate the carrier to exactly dry with no runoff.
+    try advance(std.testing.allocator, &chemistry, &nitrite, 1, 1, &.{1}, &.{0}, .{
+        .east_m3 = &zero,
+        .west_m3 = &zero,
+        .south_m3 = &zero,
+        .north_m3 = &zero,
+    }, 1, 14, 31, .{
+        .inorganic_nitrogen_export_g_n_by_cell = &nitrogen_export,
+        .inorganic_phosphorus_export_g_p_by_cell = &phosphorus_export,
+    });
+    // A wet baseline first: with a unit carrier the concentrations are unchanged.
+    try std.testing.expectApproxEqAbs(@as(f64, 2), chemistry.cells[0].ammonium_mol_per_m3, 1e-15);
+
+    // Now dry it out. This must not error and must not zero the pools.
+    try advance(std.testing.allocator, &chemistry, &nitrite, 1, 1, &.{0}, &.{0}, .{
+        .east_m3 = &zero,
+        .west_m3 = &zero,
+        .south_m3 = &zero,
+        .north_m3 = &zero,
+    }, 1, 14, 31, .{
+        .inorganic_nitrogen_export_g_n_by_cell = &nitrogen_export,
+        .inorganic_phosphorus_export_g_p_by_cell = &phosphorus_export,
+    });
+    try std.testing.expect(chemistry.cells[0].ammonium_mol_per_m3 > 0);
+    try std.testing.expect(chemistry.cells[0].nitrate_mol_per_m3 > 0);
+    try std.testing.expect(chemistry.cells[0].h2po4_mol_p_per_m3 > 0);
+    // Specifically, they are held at their previous values rather than scaled.
+    try std.testing.expectApproxEqAbs(@as(f64, 2), chemistry.cells[0].ammonium_mol_per_m3, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), chemistry.cells[0].nitrate_mol_per_m3, 1e-15);
 }
 
 test "failed surface mineral transport leaves chemistry unchanged" {

@@ -70,7 +70,7 @@ pub fn appendOwnedTileContributions(
     maximum_transport_fraction: f64,
     contributions: *std.ArrayList(lateral_store.Contribution),
 ) !void {
-    const cell_count = plan.grid_row_count * plan.grid_column_count;
+    const cell_count = plan.lat_count * plan.lon_count;
     if (component_count == 0 or
         original_amount.len != cell_count * component_count or
         pre_runoff_water_m3.len != cell_count)
@@ -96,8 +96,8 @@ pub fn appendOwnedTileContributions(
         else
             maximum_transport_fraction;
         const neighbors = neighborCells(
-            plan.grid_column_count,
-            plan.grid_row_count,
+            plan.lon_count,
+            plan.lat_count,
             source,
         );
         for (directional, neighbors) |water_m3, neighbor| {
@@ -138,7 +138,7 @@ pub fn commitOwnedTileContributions(
     accepted_amount: []f64,
     boundary_export: []f64,
 ) !void {
-    const cell_count = plan.grid_row_count * plan.grid_column_count;
+    const cell_count = plan.lat_count * plan.lon_count;
     if (component_count == 0 or
         original_amount.len != cell_count * component_count or
         accepted_amount.len != original_amount.len or

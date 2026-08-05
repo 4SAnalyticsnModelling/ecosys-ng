@@ -6,7 +6,7 @@ const respiration = @import("surface_microbial_respiration_step.zig");
 pub const Parameters = struct {
     exchange_rate_per_h: f64,
     adsorption_coefficient: f64,
-    surface_anion_exchange_capacity_mol_per_Mg: f64,
+    surface_anion_exchange_capacity_mol_per_megagram: f64,
 };
 
 pub const State = struct {
@@ -46,7 +46,7 @@ pub const ApplyContext = struct {
     result: *State,
     surface_organic: *const organic.State,
     litter_water_m3: []const f64,
-    litter_dry_mass_Mg: []const f64,
+    litter_dry_mass_megagrams: []const f64,
     timestep_h: f64,
     negligible_mass_g: f64,
     parameters: Parameters,
@@ -85,7 +85,7 @@ pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
             const sorbed_acetate = context.surface_organic.adsorbed_acetate_carbon_g_c[mobile];
             const dissolved_carbon_fraction: f64 = if (dissolved.carbon_g_c > context.negligible_mass_g and acetate > context.negligible_mass_g) dissolved.carbon_g_c / (dissolved.carbon_g_c + acetate) else if (dissolved.carbon_g_c > context.negligible_mass_g) 1 else 0;
             const acetate_fraction: f64 = if (dissolved.carbon_g_c > context.negligible_mass_g and acetate > context.negligible_mass_g) 1 - dissolved_carbon_fraction else if (acetate > context.negligible_mass_g) 1 else 0;
-            const sorption_capacity_volume = context.litter_dry_mass_Mg[cell] * context.parameters.surface_anion_exchange_capacity_mol_per_Mg * context.parameters.adsorption_coefficient * complex_fraction;
+            const sorption_capacity_volume = context.litter_dry_mass_megagrams[cell] * context.parameters.surface_anion_exchange_capacity_mol_per_megagram * context.parameters.adsorption_coefficient * complex_fraction;
             const water_volume = context.litter_water_m3[cell] * complex_fraction;
             context.result.doc_sorption_g_c[compact] = transfer(@max(context.negligible_mass_g, dissolved.carbon_g_c), @max(context.negligible_mass_g, sorbed.carbon_g_c), sorption_capacity_volume, water_volume, dissolved_carbon_fraction, context.parameters.exchange_rate_per_h, context.timestep_h);
             context.result.acetate_sorption_g_c[compact] = transfer(@max(context.negligible_mass_g, acetate), @max(context.negligible_mass_g, sorbed_acetate), sorption_capacity_volume, water_volume, acetate_fraction, context.parameters.exchange_rate_per_h, context.timestep_h);
@@ -105,9 +105,9 @@ fn transfer(dissolved: f64, sorbed: f64, capacity_volume: f64, water_volume: f64
 
 fn validate(context: ApplyContext, range: compute.CellRange) !void {
     const cells = context.result.cell_count;
-    if (range.first > range.end or range.end > cells or context.surface_organic.layer_count != cells or context.litter_water_m3.len != cells or context.litter_dry_mass_Mg.len != cells) return error.SurfaceOrganicSorptionDimensionMismatch;
-    inline for (.{ context.timestep_h, context.negligible_mass_g, context.parameters.exchange_rate_per_h, context.parameters.adsorption_coefficient, context.parameters.surface_anion_exchange_capacity_mol_per_Mg }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSurfaceOrganicSorptionParameter;
-    if (context.timestep_h <= 0 or context.parameters.adsorption_coefficient <= 0 or context.parameters.surface_anion_exchange_capacity_mol_per_Mg <= 0) return error.InvalidSurfaceOrganicSorptionParameter;
+    if (range.first > range.end or range.end > cells or context.surface_organic.layer_count != cells or context.litter_water_m3.len != cells or context.litter_dry_mass_megagrams.len != cells) return error.SurfaceOrganicSorptionDimensionMismatch;
+    inline for (.{ context.timestep_h, context.negligible_mass_g, context.parameters.exchange_rate_per_h, context.parameters.adsorption_coefficient, context.parameters.surface_anion_exchange_capacity_mol_per_megagram }) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidSurfaceOrganicSorptionParameter;
+    if (context.timestep_h <= 0 or context.parameters.adsorption_coefficient <= 0 or context.parameters.surface_anion_exchange_capacity_mol_per_megagram <= 0) return error.InvalidSurfaceOrganicSorptionParameter;
 }
 
 test "surface DOC DON DOP and acetate sorption is conservative by construction" {
@@ -120,7 +120,7 @@ test "surface DOC DON DOP and acetate sorption is conservative by construction" 
     organic_state.adsorbed_acetate_carbon_g_c[0] = 0.05;
     var state = try State.init(std.testing.allocator, 1);
     defer state.deinit();
-    var context: ApplyContext = .{ .result = &state, .surface_organic = &organic_state, .litter_water_m3 = &.{1}, .litter_dry_mass_Mg = &.{0.01}, .timestep_h = 1, .negligible_mass_g = 1e-12, .parameters = .{ .exchange_rate_per_h = 0.1, .adsorption_coefficient = 1, .surface_anion_exchange_capacity_mol_per_Mg = 500 } };
+    var context: ApplyContext = .{ .result = &state, .surface_organic = &organic_state, .litter_water_m3 = &.{1}, .litter_dry_mass_megagrams = &.{0.01}, .timestep_h = 1, .negligible_mass_g = 1e-12, .parameters = .{ .exchange_rate_per_h = 0.1, .adsorption_coefficient = 1, .surface_anion_exchange_capacity_mol_per_megagram = 500 } };
     try applyTile(&context, .{ .first = 0, .end = 1 });
     try std.testing.expect(state.doc_sorption_g_c[0] > 0);
     try std.testing.expect(state.acetate_sorption_g_c[0] > 0);

@@ -1,17 +1,17 @@
 const std = @import("std");
 
 pub const State = struct {
-    net_radiation_mj_by_species: []f64,
-    latent_heat_mj_by_species: []f64,
-    sensible_heat_mj_by_species: []f64,
-    ground_heat_mj_by_species: []f64,
+    net_radiation_megajoules_by_species: []f64,
+    latent_heat_megajoules_by_species: []f64,
+    sensible_heat_megajoules_by_species: []f64,
+    ground_heat_megajoules_by_species: []f64,
     transpiration_m3_by_species: []f64,
     net_canopy_carbon_g_c_by_species: []f64,
 };
 
 /// Exact runtime-species HOUR1 reset from hour1.f:223-230.
 pub fn apply(state: *State, first_subhourly_iteration: bool) !bool {
-    const count = state.net_radiation_mj_by_species.len;
+    const count = state.net_radiation_megajoules_by_species.len;
     inline for (@typeInfo(State).@"struct".fields) |field| {
         const values = @field(state.*, field.name);
         if (values.len != count)
@@ -35,10 +35,10 @@ fn exampleState(
     carbon: []f64,
 ) State {
     return .{
-        .net_radiation_mj_by_species = radiation,
-        .latent_heat_mj_by_species = latent,
-        .sensible_heat_mj_by_species = sensible,
-        .ground_heat_mj_by_species = ground,
+        .net_radiation_megajoules_by_species = radiation,
+        .latent_heat_megajoules_by_species = latent,
+        .sensible_heat_megajoules_by_species = sensible,
+        .ground_heat_megajoules_by_species = ground,
         .transpiration_m3_by_species = transpiration,
         .net_canopy_carbon_g_c_by_species = carbon,
     };

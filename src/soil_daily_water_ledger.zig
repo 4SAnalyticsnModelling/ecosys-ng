@@ -6,6 +6,7 @@ pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     rainfall_m3: []f64,
+    boundary_water_inflow_m3: []f64,
     evaporation_m3: []f64,
     runoff_m3: []f64,
     water_outflow_m3: []f64,
@@ -14,32 +15,34 @@ pub const State = struct {
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
         if (cell_count == 0) return error.EmptyDailyWaterGrid;
-        const storage = try allocator.alloc(f64, try std.math.mul(usize, cell_count, 6));
+        const storage = try allocator.alloc(f64, try std.math.mul(usize, cell_count, 7));
         @memset(storage, 0);
         return .{
             .allocator = allocator,
             .cell_count = cell_count,
             .rainfall_m3 = storage[0 * cell_count .. 1 * cell_count],
-            .evaporation_m3 = storage[1 * cell_count .. 2 * cell_count],
-            .runoff_m3 = storage[2 * cell_count .. 3 * cell_count],
-            .water_outflow_m3 = storage[3 * cell_count .. 4 * cell_count],
-            .lateral_water_outflow_m3 = storage[4 * cell_count .. 5 * cell_count],
-            .sediment_outflow_m3 = storage[5 * cell_count .. 6 * cell_count],
+            .boundary_water_inflow_m3 = storage[1 * cell_count .. 2 * cell_count],
+            .evaporation_m3 = storage[2 * cell_count .. 3 * cell_count],
+            .runoff_m3 = storage[3 * cell_count .. 4 * cell_count],
+            .water_outflow_m3 = storage[4 * cell_count .. 5 * cell_count],
+            .lateral_water_outflow_m3 = storage[5 * cell_count .. 6 * cell_count],
+            .sediment_outflow_m3 = storage[6 * cell_count .. 7 * cell_count],
         };
     }
 
     pub fn deinit(self: *State) void {
-        self.allocator.free(self.rainfall_m3.ptr[0 .. self.cell_count * 6]);
+        self.allocator.free(self.rainfall_m3.ptr[0 .. self.cell_count * 7]);
         self.* = undefined;
     }
 
     pub fn resetDaily(self: *State) void {
-        @memset(self.rainfall_m3.ptr[0 .. self.cell_count * 6], 0);
+        @memset(self.rainfall_m3.ptr[0 .. self.cell_count * 7], 0);
     }
 
     pub fn accumulateHour(self: *State, inputs: HourlyInputs) !void {
         inline for (.{
             inputs.rainfall_m3,
+            inputs.boundary_water_inflow_m3,
             inputs.evaporation_m3,
             inputs.runoff_m3,
             inputs.water_outflow_m3,
@@ -50,6 +53,7 @@ pub const State = struct {
         // Validate the complete transaction before changing any accumulator.
         for (0..self.cell_count) |cell| inline for (.{
             inputs.rainfall_m3,
+            inputs.boundary_water_inflow_m3,
             inputs.evaporation_m3,
             inputs.runoff_m3,
             inputs.water_outflow_m3,
@@ -61,6 +65,7 @@ pub const State = struct {
 
         for (0..self.cell_count) |cell| {
             self.rainfall_m3[cell] += inputs.rainfall_m3[cell];
+            self.boundary_water_inflow_m3[cell] += inputs.boundary_water_inflow_m3[cell];
             self.evaporation_m3[cell] += inputs.evaporation_m3[cell];
             self.runoff_m3[cell] += inputs.runoff_m3[cell];
             self.water_outflow_m3[cell] += inputs.water_outflow_m3[cell];
@@ -77,6 +82,7 @@ pub const State = struct {
             if (!std.math.isFinite(value) or value < 0) return error.InvalidHourlyWaterAmount;
         }
         self.rainfall_m3[cell] += inputs.rainfall_m3;
+        self.boundary_water_inflow_m3[cell] += inputs.boundary_water_inflow_m3;
         self.evaporation_m3[cell] += inputs.evaporation_m3;
         self.runoff_m3[cell] += inputs.runoff_m3;
         self.water_outflow_m3[cell] += inputs.water_outflow_m3;
@@ -84,6 +90,7 @@ pub const State = struct {
         self.sediment_outflow_m3[cell] += inputs.sediment_outflow_m3;
         inline for (.{
             self.rainfall_m3[cell],
+            self.boundary_water_inflow_m3[cell],
             self.evaporation_m3[cell],
             self.runoff_m3[cell],
             self.water_outflow_m3[cell],
@@ -95,6 +102,7 @@ pub const State = struct {
     pub fn validateFinite(self: State) !void {
         inline for (.{
             self.rainfall_m3,
+            self.boundary_water_inflow_m3,
             self.evaporation_m3,
             self.runoff_m3,
             self.water_outflow_m3,
@@ -106,6 +114,7 @@ pub const State = struct {
 
 pub const HourlyInputs = struct {
     rainfall_m3: []const f64,
+    boundary_water_inflow_m3: []const f64,
     evaporation_m3: []const f64,
     runoff_m3: []const f64,
     water_outflow_m3: []const f64,
@@ -115,6 +124,7 @@ pub const HourlyInputs = struct {
 
 pub const CellHourlyInputs = struct {
     rainfall_m3: f64,
+    boundary_water_inflow_m3: f64,
     evaporation_m3: f64,
     runoff_m3: f64,
     water_outflow_m3: f64,
@@ -126,6 +136,7 @@ test "OUTSD water ledger accumulates runtime cells and resets without allocation
     var state = try State.init(std.testing.allocator, 2);
     defer state.deinit();
     const rainfall = [_]f64{ 1, 2 };
+    const zero = [_]f64{ 0, 0 };
     const evaporation = [_]f64{ 0.1, 0.2 };
     const runoff = [_]f64{ 0.01, 0.02 };
     const outflow = [_]f64{ 0.03, 0.04 };
@@ -133,6 +144,7 @@ test "OUTSD water ledger accumulates runtime cells and resets without allocation
     const sediment = [_]f64{ 0.07, 0.08 };
     const inputs: HourlyInputs = .{
         .rainfall_m3 = &rainfall,
+        .boundary_water_inflow_m3 = &zero,
         .evaporation_m3 = &evaporation,
         .runoff_m3 = &runoff,
         .water_outflow_m3 = &outflow,
@@ -154,6 +166,7 @@ test "OUTSD water ledger rejects a late nonfinite input atomically" {
     const invalid = [_]f64{ 0, std.math.nan(f64) };
     try std.testing.expectError(error.InvalidHourlyWaterAmount, state.accumulateHour(.{
         .rainfall_m3 = &zero,
+        .boundary_water_inflow_m3 = &zero,
         .evaporation_m3 = &zero,
         .runoff_m3 = &zero,
         .water_outflow_m3 = &zero,

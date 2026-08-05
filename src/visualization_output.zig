@@ -312,16 +312,16 @@ pub const Streams = struct {
     pub fn writeHourly(
         self: *Streams,
         cell: usize,
-        grid_column: usize,
-        grid_row: usize,
+        longitude_degrees_east: f64,
+        latitude_degrees_north: f64,
         timestamp: output_record.Timestamp,
         values: []const f64,
     ) !bool {
         return self.write(
             true,
             cell,
-            grid_column,
-            grid_row,
+            longitude_degrees_east,
+            latitude_degrees_north,
             timestamp,
             values,
         );
@@ -330,16 +330,16 @@ pub const Streams = struct {
     pub fn writeDaily(
         self: *Streams,
         cell: usize,
-        grid_column: usize,
-        grid_row: usize,
+        longitude_degrees_east: f64,
+        latitude_degrees_north: f64,
         timestamp: output_record.Timestamp,
         values: []const f64,
     ) !bool {
         return self.write(
             false,
             cell,
-            grid_column,
-            grid_row,
+            longitude_degrees_east,
+            latitude_degrees_north,
             timestamp,
             values,
         );
@@ -348,8 +348,8 @@ pub const Streams = struct {
     pub fn calculateAndWriteHourly(
         self: *Streams,
         cell: usize,
-        grid_column: usize,
-        grid_row: usize,
+        longitude_degrees_east: f64,
+        latitude_degrees_north: f64,
         timestamp: output_record.Timestamp,
         inputs: HourlyInputs,
     ) !bool {
@@ -361,8 +361,8 @@ pub const Streams = struct {
         try hourlyInto(row, inputs);
         return self.writeHourly(
             cell,
-            grid_column,
-            grid_row,
+            longitude_degrees_east,
+            latitude_degrees_north,
             timestamp,
             row,
         );
@@ -371,8 +371,8 @@ pub const Streams = struct {
     pub fn calculateAndWriteDaily(
         self: *Streams,
         cell: usize,
-        grid_column: usize,
-        grid_row: usize,
+        longitude_degrees_east: f64,
+        latitude_degrees_north: f64,
         timestamp: output_record.Timestamp,
         inputs: DailyInputs,
     ) !bool {
@@ -384,8 +384,8 @@ pub const Streams = struct {
         try dailyInto(row, inputs);
         return self.writeDaily(
             cell,
-            grid_column,
-            grid_row,
+            longitude_degrees_east,
+            latitude_degrees_north,
             timestamp,
             row,
         );
@@ -400,8 +400,8 @@ pub const Streams = struct {
         self: *Streams,
         hourly_output: bool,
         cell: usize,
-        grid_column: usize,
-        grid_row: usize,
+        longitude_degrees_east: f64,
+        latitude_degrees_north: f64,
         timestamp: output_record.Timestamp,
         values: []const f64,
     ) !bool {
@@ -426,15 +426,17 @@ pub const Streams = struct {
             return error.VisualizationStreamRecordDimensionMismatch;
         const row = try bank.row(cell);
         if (row.ptr != values.ptr) @memcpy(row, values);
-        const file_name = try std.fmt.allocPrint(
+        // Same self-describing convention as the model's other output, so a
+        // visualization file is locatable without knowing the grid layout. The
+        // earlier `visual_hourly_c<column>_r<row>_<year>.txt` form used grid
+        // indices, which for a single-cell run were always `c1_r1`.
+        const file_name = try output_record.buildOutputFileName(
             self.allocator,
-            "visual_{s}_c{d}_r{d}_{d:0>4}.txt",
-            .{
-                if (hourly_output) "hourly" else "daily",
-                grid_column,
-                grid_row,
-                @as(u32, @intCast(timestamp.year)),
-            },
+            latitude_degrees_north,
+            longitude_degrees_east,
+            .soil_or_eco,
+            timestamp.year,
+            if (hourly_output) "visual_hourly" else "visual_daily",
         );
         defer self.allocator.free(file_name);
         const selection: output_selection.Selection = .{
@@ -450,8 +452,10 @@ pub const Streams = struct {
             enabled_variables,
             .{
                 .timestamp = timestamp,
-                .grid_column = grid_column,
-                .grid_row = grid_row,
+                // The file name keeps the FOUTS grid-index stem; the row
+                // carries the physical site coordinates the user entered.
+                .longitude_degrees_east = longitude_degrees_east,
+                .latitude_degrees_north = latitude_degrees_north,
                 .values = row,
             },
         );
@@ -469,9 +473,9 @@ pub const HourlyInputs = struct {
     net_biome_productivity_g: f64,
     carbon_dioxide_flux_g: f64,
     methane_flux_g: f64,
-    net_radiation_mj_h: f64,
-    latent_heat_flux_mj_h: f64,
-    sensible_heat_flux_mj_h: f64,
+    net_radiation_megajoules_h: f64,
+    latent_heat_flux_megajoules_h: f64,
+    sensible_heat_flux_megajoules_h: f64,
     liquid_water_m3_by_layer: []const f64,
     air_volume_m3_by_layer: []const f64,
     macropore_water_m3_by_layer: []const f64,
@@ -539,9 +543,9 @@ pub fn hourlyInto(values: []f64, inputs: HourlyInputs) !void {
         inputs.net_biome_productivity_g,
         inputs.carbon_dioxide_flux_g,
         inputs.methane_flux_g,
-        inputs.net_radiation_mj_h,
-        inputs.latent_heat_flux_mj_h,
-        inputs.sensible_heat_flux_mj_h,
+        inputs.net_radiation_megajoules_h,
+        inputs.latent_heat_flux_megajoules_h,
+        inputs.sensible_heat_flux_megajoules_h,
     }) |value| try finite(value);
     for (
         inputs.liquid_water_m3_by_layer,
@@ -564,7 +568,7 @@ pub fn hourlyInto(values: []f64, inputs: HourlyInputs) !void {
         values[i] = -value * carbon_rate;
         i += 1;
     }
-    for ([_]f64{ inputs.ecosystem_gross_primary_productivity_g * carbon_rate, inputs.ecosystem_net_primary_productivity_g * carbon_rate, -inputs.ecosystem_autotrophic_respiration_g * carbon_rate, -inputs.ecosystem_heterotrophic_respiration_g * carbon_rate, inputs.net_biome_productivity_g * carbon_rate, -inputs.carbon_dioxide_flux_g * carbon_rate, -inputs.methane_flux_g * carbon_rate, inputs.net_radiation_mj_h * 277.8 / inputs.cell_area_m2, -inputs.latent_heat_flux_mj_h * 277.8 / inputs.cell_area_m2, -inputs.sensible_heat_flux_mj_h * 277.8 / inputs.cell_area_m2 }) |value| {
+    for ([_]f64{ inputs.ecosystem_gross_primary_productivity_g * carbon_rate, inputs.ecosystem_net_primary_productivity_g * carbon_rate, -inputs.ecosystem_autotrophic_respiration_g * carbon_rate, -inputs.ecosystem_heterotrophic_respiration_g * carbon_rate, inputs.net_biome_productivity_g * carbon_rate, -inputs.carbon_dioxide_flux_g * carbon_rate, -inputs.methane_flux_g * carbon_rate, inputs.net_radiation_megajoules_h * 277.8 / inputs.cell_area_m2, -inputs.latent_heat_flux_megajoules_h * 277.8 / inputs.cell_area_m2, -inputs.sensible_heat_flux_megajoules_h * 277.8 / inputs.cell_area_m2 }) |value| {
         values[i] = value;
         i += 1;
     }
@@ -700,7 +704,7 @@ test "VISUAL hourly expands beyond three species and eleven layers" {
     const macro = [_]f64{0.5} ** 13;
     const volume = [_]f64{10} ** 13;
     const temperature = [_]f64{280} ** 13;
-    var output = try hourly(std.testing.allocator, .{ .cell_area_m2 = 2, .species_cumulative_gross_carbon_g = &species, .species_cumulative_respired_carbon_g = &respiration, .ecosystem_gross_primary_productivity_g = 0, .ecosystem_net_primary_productivity_g = 0, .ecosystem_autotrophic_respiration_g = 0, .ecosystem_heterotrophic_respiration_g = 0, .net_biome_productivity_g = 0, .carbon_dioxide_flux_g = 0, .methane_flux_g = 0, .net_radiation_mj_h = 2, .latent_heat_flux_mj_h = 1, .sensible_heat_flux_mj_h = 0.5, .liquid_water_m3_by_layer = &liquid, .air_volume_m3_by_layer = &air, .macropore_water_m3_by_layer = &macro, .total_volume_m3_by_layer = &volume, .soil_temperature_k_by_layer = &temperature });
+    var output = try hourly(std.testing.allocator, .{ .cell_area_m2 = 2, .species_cumulative_gross_carbon_g = &species, .species_cumulative_respired_carbon_g = &respiration, .ecosystem_gross_primary_productivity_g = 0, .ecosystem_net_primary_productivity_g = 0, .ecosystem_autotrophic_respiration_g = 0, .ecosystem_heterotrophic_respiration_g = 0, .net_biome_productivity_g = 0, .carbon_dioxide_flux_g = 0, .methane_flux_g = 0, .net_radiation_megajoules_h = 2, .latent_heat_flux_megajoules_h = 1, .sensible_heat_flux_megajoules_h = 0.5, .liquid_water_m3_by_layer = &liquid, .air_volume_m3_by_layer = &air, .macropore_water_m3_by_layer = &macro, .total_volume_m3_by_layer = &volume, .soil_temperature_k_by_layer = &temperature });
     defer output.deinit();
     try std.testing.expectEqual(@as(usize, 50), output.values.len);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0005), output.values[0], 1e-15);
@@ -726,9 +730,9 @@ test "VISUAL hourly allocation-free kernel exactly matches owned record" {
         .net_biome_productivity_g = 1.5,
         .carbon_dioxide_flux_g = 0.25,
         .methane_flux_g = 0.125,
-        .net_radiation_mj_h = 2,
-        .latent_heat_flux_mj_h = 1,
-        .sensible_heat_flux_mj_h = 0.5,
+        .net_radiation_megajoules_h = 2,
+        .latent_heat_flux_megajoules_h = 1,
+        .sensible_heat_flux_megajoules_h = 0.5,
         .liquid_water_m3_by_layer = &liquid,
         .air_volume_m3_by_layer = &air,
         .macropore_water_m3_by_layer = &macro,
@@ -763,9 +767,9 @@ test "VISUAL kernels reject complete invalid records before mutating reusable ro
             .net_biome_productivity_g = 0,
             .carbon_dioxide_flux_g = 0,
             .methane_flux_g = 0,
-            .net_radiation_mj_h = 0,
-            .latent_heat_flux_mj_h = 0,
-            .sensible_heat_flux_mj_h = 0,
+            .net_radiation_megajoules_h = 0,
+            .latent_heat_flux_megajoules_h = 0,
+            .sensible_heat_flux_megajoules_h = 0,
             .liquid_water_m3_by_layer = &.{0},
             .air_volume_m3_by_layer = &.{1},
             .macropore_water_m3_by_layer = &.{0},
@@ -865,8 +869,8 @@ test "VISUAL streams are bounded tab delimited and year gated" {
     try streams.configureScene(false, 2001, 2002);
     try std.testing.expect(!try streams.writeHourly(
         0,
-        3,
-        4,
+        -75.7,
+        45.3,
         .{
             .year = 2001,
             .day_of_year = 1,
@@ -879,8 +883,8 @@ test "VISUAL streams are bounded tab delimited and year gated" {
     try streams.configureScene(true, 2001, 2002);
     try std.testing.expect(!try streams.writeHourly(
         0,
-        3,
-        4,
+        -75.7,
+        45.3,
         .{
             .year = 2000,
             .day_of_year = 1,
@@ -892,8 +896,8 @@ test "VISUAL streams are bounded tab delimited and year gated" {
     ));
     try std.testing.expect(try streams.writeHourly(
         0,
-        3,
-        4,
+        -75.7,
+        45.3,
         .{
             .year = 2001,
             .day_of_year = 1,
@@ -905,8 +909,8 @@ test "VISUAL streams are bounded tab delimited and year gated" {
     ));
     try std.testing.expect(try streams.writeDaily(
         0,
-        3,
-        4,
+        -75.7,
+        45.3,
         .{
             .year = 2002,
             .day_of_year = 365,
@@ -919,14 +923,14 @@ test "VISUAL streams are bounded tab delimited and year gated" {
     try streams.finish();
     const hourly_text = try temporary.dir.readFileAlloc(
         std.testing.io,
-        "visual_hourly_c3_r4_2001.txt",
+        "lat_45.30_lon_-75.70_soil_or_eco_2001_visual_hourly.txt",
         std.testing.allocator,
         .limited(16 * 1024),
     );
     defer std.testing.allocator.free(hourly_text);
     const daily_text = try temporary.dir.readFileAlloc(
         std.testing.io,
-        "visual_daily_c3_r4_2002.txt",
+        "lat_45.30_lon_-75.70_soil_or_eco_2002_visual_daily.txt",
         std.testing.allocator,
         .limited(16 * 1024),
     );

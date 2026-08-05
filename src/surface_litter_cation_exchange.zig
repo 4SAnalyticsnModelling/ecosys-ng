@@ -22,25 +22,25 @@ pub const Selectivity = struct {
 };
 
 pub const Inputs = struct {
-    cation_exchange_capacity_mol_charge_per_Mg: f64,
+    cation_exchange_capacity_mol_charge_per_megagram: f64,
     aqueous_concentration_mol_per_m3: Cations,
     aqueous_activity_mol_per_m3: Cations,
-    exchange_concentration_mol_per_Mg: Cations,
+    exchange_concentration_mol_per_megagram: Cations,
     activity_roots: initialization.MultivalentActivityRoots,
     selectivity: Selectivity,
-    litter_mass_per_water_volume_Mg_per_m3: f64,
+    litter_mass_per_water_volume_megagrams_per_m3: f64,
     substrate_limit_fraction_per_step: f64,
     maximum_cation_adsorption_mol_charge_per_m3_step: f64,
     /// SOLUTE surface lines 4449--4453 read `RXNBQ` without assigning it in
     /// the surface block. The comparator requires the retained soil/band value
     /// explicitly rather than reproducing implicit or uninitialized storage.
-    retained_band_ammonium_raw_charge_change_mol_per_Mg_step: f64,
+    retained_band_ammonium_raw_charge_change_mol_per_megagram_step: f64,
 };
 
 pub const Normalization = struct {
-    calcium_basis_mol_per_Mg: f64,
-    equilibrium_total_mol_per_Mg: f64,
-    current_total_mol_charge_per_Mg: f64,
+    calcium_basis_mol_per_megagram: f64,
+    equilibrium_total_mol_per_megagram: f64,
+    current_total_mol_charge_per_megagram: f64,
     equilibrium_scale: f64,
     current_scale: f64,
 };
@@ -48,16 +48,16 @@ pub const Normalization = struct {
 pub const ActiveResult = struct {
     normalization: Normalization,
     /// The source treats these unweighted ion targets as charge during rates.
-    equilibrium_target_mol_per_Mg: Cations,
-    current_charge_mol_per_Mg: Cations,
-    raw_charge_change_mol_per_Mg_step: Cations,
-    retained_band_ammonium_raw_charge_change_mol_per_Mg_step: f64,
-    ion_change_mol_per_Mg_step: Cations,
-    discarded_band_ammonium_change_mol_per_Mg_step: f64,
-    substrate_scaling_m3_per_Mg_step: f64,
-    maximum_charge_change_mol_per_Mg_step: f64,
-    raw_charge_sum_mol_per_Mg_step: f64,
-    raw_charge_magnitude_mol_per_Mg_step: f64,
+    equilibrium_target_mol_per_megagram: Cations,
+    current_charge_mol_per_megagram: Cations,
+    raw_charge_change_mol_per_megagram_step: Cations,
+    retained_band_ammonium_raw_charge_change_mol_per_megagram_step: f64,
+    ion_change_mol_per_megagram_step: Cations,
+    discarded_band_ammonium_change_mol_per_megagram_step: f64,
+    substrate_scaling_m3_per_megagram_step: f64,
+    maximum_charge_change_mol_per_megagram_step: f64,
+    raw_charge_sum_mol_per_megagram_step: f64,
+    raw_charge_magnitude_mol_per_megagram_step: f64,
 };
 
 pub const Result = union(enum) {
@@ -80,17 +80,17 @@ const NormalizedTargets = struct {
 pub fn calculateSourceOrder(inputs: Inputs) !Result {
     try validateInputs(inputs);
     const calcium_root = inputs.activity_roots.calcium_mol_per_m3_squareroot;
-    const capacity = inputs.cation_exchange_capacity_mol_charge_per_Mg;
+    const capacity = inputs.cation_exchange_capacity_mol_charge_per_megagram;
     if (calcium_root <= 0 or capacity <= 0)
         return .equilibrium_inactive;
 
     const targets = try normalizedTargets(inputs);
     const substrate_scaling =
         inputs.substrate_limit_fraction_per_step /
-        inputs.litter_mass_per_water_volume_Mg_per_m3;
+        inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const maximum =
         inputs.maximum_cation_adsorption_mol_charge_per_m3_step /
-        inputs.litter_mass_per_water_volume_Mg_per_m3;
+        inputs.litter_mass_per_water_volume_megagrams_per_m3;
     if (!std.math.isFinite(substrate_scaling) or
         !std.math.isFinite(maximum))
     {
@@ -105,7 +105,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
         maximum,
     );
     const retained_band =
-        inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step;
+        inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step;
     const raw_sum = sum(raw) + retained_band;
     const raw_magnitude = sumAbsolute(raw) + @abs(retained_band);
     if (!std.math.isFinite(raw_sum) or !std.math.isFinite(raw_magnitude))
@@ -118,22 +118,22 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
     closeChargeAndConvertToIonMoles(&raw, raw_sum, raw_magnitude);
     const active: ActiveResult = .{
         .normalization = targets.normalization,
-        .equilibrium_target_mol_per_Mg = targets.equilibrium,
-        .current_charge_mol_per_Mg = targets.current,
-        .raw_charge_change_mol_per_Mg_step = rawChargeChanges(
+        .equilibrium_target_mol_per_megagram = targets.equilibrium,
+        .current_charge_mol_per_megagram = targets.current,
+        .raw_charge_change_mol_per_megagram_step = rawChargeChanges(
             inputs,
             targets.equilibrium,
             targets.current,
             substrate_scaling,
             maximum,
         ),
-        .retained_band_ammonium_raw_charge_change_mol_per_Mg_step = retained_band,
-        .ion_change_mol_per_Mg_step = raw,
-        .discarded_band_ammonium_change_mol_per_Mg_step = band_after_closure,
-        .substrate_scaling_m3_per_Mg_step = substrate_scaling,
-        .maximum_charge_change_mol_per_Mg_step = maximum,
-        .raw_charge_sum_mol_per_Mg_step = raw_sum,
-        .raw_charge_magnitude_mol_per_Mg_step = raw_magnitude,
+        .retained_band_ammonium_raw_charge_change_mol_per_megagram_step = retained_band,
+        .ion_change_mol_per_megagram_step = raw,
+        .discarded_band_ammonium_change_mol_per_megagram_step = band_after_closure,
+        .substrate_scaling_m3_per_megagram_step = substrate_scaling,
+        .maximum_charge_change_mol_per_megagram_step = maximum,
+        .raw_charge_sum_mol_per_megagram_step = raw_sum,
+        .raw_charge_magnitude_mol_per_megagram_step = raw_magnitude,
     };
     try validateActiveResult(active);
     return .{ .active = active };
@@ -144,7 +144,7 @@ fn normalizedTargets(inputs: Inputs) !NormalizedTargets {
     const roots = inputs.activity_roots;
     const selectivity = inputs.selectivity;
     const calcium_root = roots.calcium_mol_per_m3_squareroot;
-    const capacity = inputs.cation_exchange_capacity_mol_charge_per_Mg;
+    const capacity = inputs.cation_exchange_capacity_mol_charge_per_megagram;
 
     // SOLUTE.F 4361--4368.
     const calcium_basis = capacity /
@@ -186,21 +186,21 @@ fn normalizedTargets(inputs: Inputs) !NormalizedTargets {
     };
     const equilibrium_total = sum(equilibrium);
     const current_total =
-        currentChargeTotal(inputs.exchange_concentration_mol_per_Mg);
+        currentChargeTotal(inputs.exchange_concentration_mol_per_megagram);
     const equilibrium_scale =
         if (equilibrium_total > 0) capacity / equilibrium_total else 0;
     const current_scale =
         if (current_total > 0) capacity / current_total else 0;
     scale(&equilibrium, equilibrium_scale);
     const current =
-        currentCharge(inputs.exchange_concentration_mol_per_Mg, current_scale);
+        currentCharge(inputs.exchange_concentration_mol_per_megagram, current_scale);
     try validateCations(equilibrium);
     try validateCations(current);
     return .{
         .normalization = .{
-            .calcium_basis_mol_per_Mg = calcium_basis,
-            .equilibrium_total_mol_per_Mg = equilibrium_total,
-            .current_total_mol_charge_per_Mg = current_total,
+            .calcium_basis_mol_per_megagram = calcium_basis,
+            .equilibrium_total_mol_per_megagram = equilibrium_total,
+            .current_total_mol_charge_per_megagram = current_total,
             .equilibrium_scale = equilibrium_scale,
             .current_scale = current_scale,
         },
@@ -216,7 +216,7 @@ fn rawChargeChanges(
     substrate_scaling: f64,
     maximum: f64,
 ) Cations {
-    const exchange = inputs.exchange_concentration_mol_per_Mg;
+    const exchange = inputs.exchange_concentration_mol_per_megagram;
     const aqueous = inputs.aqueous_concentration_mol_per_m3;
     return .{
         .ammonium = boundedChargeChange(
@@ -342,7 +342,7 @@ fn validateInputs(inputs: Inputs) !void {
         inline for (.{
             @field(inputs.aqueous_concentration_mol_per_m3, field.name),
             @field(inputs.aqueous_activity_mol_per_m3, field.name),
-            @field(inputs.exchange_concentration_mol_per_Mg, field.name),
+            @field(inputs.exchange_concentration_mol_per_megagram, field.name),
         }) |value| {
             if (!std.math.isFinite(value) or value < 0)
                 return error.InvalidSurfaceLitterCationExchangeInput;
@@ -358,16 +358,16 @@ fn validateInputs(inputs: Inputs) !void {
         if (!std.math.isFinite(value) or value < 0)
             return error.InvalidSurfaceLitterCationExchangeInput;
     }
-    if (!std.math.isFinite(inputs.cation_exchange_capacity_mol_charge_per_Mg) or
-        inputs.cation_exchange_capacity_mol_charge_per_Mg < 0 or
-        !std.math.isFinite(inputs.litter_mass_per_water_volume_Mg_per_m3) or
-        inputs.litter_mass_per_water_volume_Mg_per_m3 <= 0 or
+    if (!std.math.isFinite(inputs.cation_exchange_capacity_mol_charge_per_megagram) or
+        inputs.cation_exchange_capacity_mol_charge_per_megagram < 0 or
+        !std.math.isFinite(inputs.litter_mass_per_water_volume_megagrams_per_m3) or
+        inputs.litter_mass_per_water_volume_megagrams_per_m3 <= 0 or
         !std.math.isFinite(inputs.substrate_limit_fraction_per_step) or
         inputs.substrate_limit_fraction_per_step < 0 or
         inputs.substrate_limit_fraction_per_step > 1 or
         !std.math.isFinite(inputs.maximum_cation_adsorption_mol_charge_per_m3_step) or
         inputs.maximum_cation_adsorption_mol_charge_per_m3_step < 0 or
-        !std.math.isFinite(inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step))
+        !std.math.isFinite(inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step))
     {
         return error.InvalidSurfaceLitterCationExchangeInput;
     }
@@ -382,12 +382,12 @@ fn validateCations(values: Cations) !void {
 }
 
 fn validateActiveResult(result: ActiveResult) !void {
-    try validateCations(result.equilibrium_target_mol_per_Mg);
-    try validateCations(result.current_charge_mol_per_Mg);
+    try validateCations(result.equilibrium_target_mol_per_megagram);
+    try validateCations(result.current_charge_mol_per_megagram);
     inline for (@typeInfo(Cations).@"struct".fields) |field| {
         inline for (.{
-            @field(result.raw_charge_change_mol_per_Mg_step, field.name),
-            @field(result.ion_change_mol_per_Mg_step, field.name),
+            @field(result.raw_charge_change_mol_per_megagram_step, field.name),
+            @field(result.ion_change_mol_per_megagram_step, field.name),
         }) |value| {
             if (!std.math.isFinite(value))
                 return error.NonFiniteSurfaceLitterCationExchangeResult;
@@ -399,12 +399,12 @@ fn validateActiveResult(result: ActiveResult) !void {
             return error.NonFiniteSurfaceLitterCationExchangeResult;
     }
     inline for (.{
-        result.retained_band_ammonium_raw_charge_change_mol_per_Mg_step,
-        result.discarded_band_ammonium_change_mol_per_Mg_step,
-        result.substrate_scaling_m3_per_Mg_step,
-        result.maximum_charge_change_mol_per_Mg_step,
-        result.raw_charge_sum_mol_per_Mg_step,
-        result.raw_charge_magnitude_mol_per_Mg_step,
+        result.retained_band_ammonium_raw_charge_change_mol_per_megagram_step,
+        result.discarded_band_ammonium_change_mol_per_megagram_step,
+        result.substrate_scaling_m3_per_megagram_step,
+        result.maximum_charge_change_mol_per_megagram_step,
+        result.raw_charge_sum_mol_per_megagram_step,
+        result.raw_charge_magnitude_mol_per_megagram_step,
     }) |value| {
         if (!std.math.isFinite(value))
             return error.NonFiniteSurfaceLitterCationExchangeResult;
@@ -413,7 +413,7 @@ fn validateActiveResult(result: ActiveResult) !void {
 
 fn testInputs() Inputs {
     return .{
-        .cation_exchange_capacity_mol_charge_per_Mg = 2,
+        .cation_exchange_capacity_mol_charge_per_megagram = 2,
         .aqueous_concentration_mol_per_m3 = .{
             .ammonium = 0.7,
             .hydrogen = 0.4,
@@ -434,7 +434,7 @@ fn testInputs() Inputs {
             .sodium = 0.54,
             .potassium = 0.225,
         },
-        .exchange_concentration_mol_per_Mg = .{
+        .exchange_concentration_mol_per_megagram = .{
             .ammonium = 0.3,
             .hydrogen = 0.2,
             .aluminum = 0.04,
@@ -458,10 +458,10 @@ fn testInputs() Inputs {
             .calcium_sodium = 1.3,
             .calcium_potassium = 1.4,
         },
-        .litter_mass_per_water_volume_Mg_per_m3 = 1.4,
+        .litter_mass_per_water_volume_megagrams_per_m3 = 1.4,
         .substrate_limit_fraction_per_step = 0.2,
         .maximum_cation_adsorption_mol_charge_per_m3_step = 0.1,
-        .retained_band_ammonium_raw_charge_change_mol_per_Mg_step = 0,
+        .retained_band_ammonium_raw_charge_change_mol_per_megagram_step = 0,
     };
 }
 
@@ -472,7 +472,7 @@ test "surface Gapon equilibrium preserves source unweighted multivalent targets"
     const roots = inputs.activity_roots;
     const s = inputs.selectivity;
     const calcium_root = roots.calcium_mol_per_m3_squareroot;
-    const basis = inputs.cation_exchange_capacity_mol_charge_per_Mg /
+    const basis = inputs.cation_exchange_capacity_mol_charge_per_megagram /
         (1.0 +
             s.calcium_ammonium * activity.ammonium / calcium_root +
             s.calcium_hydrogen * activity.hydrogen / calcium_root +
@@ -491,24 +491,24 @@ test "surface Gapon equilibrium preserves source unweighted multivalent targets"
 
     try std.testing.expectEqual(
         basis,
-        active.normalization.calcium_basis_mol_per_Mg,
+        active.normalization.calcium_basis_mol_per_megagram,
     );
     try std.testing.expectEqual(
         scale_factor * raw_aluminum,
-        active.equilibrium_target_mol_per_Mg.aluminum,
+        active.equilibrium_target_mol_per_megagram.aluminum,
     );
     try std.testing.expectEqual(
         scale_factor * raw_calcium,
-        active.equilibrium_target_mol_per_Mg.calcium,
+        active.equilibrium_target_mol_per_megagram.calcium,
     );
     try std.testing.expectApproxEqAbs(
-        inputs.cation_exchange_capacity_mol_charge_per_Mg,
-        sum(active.equilibrium_target_mol_per_Mg),
+        inputs.cation_exchange_capacity_mol_charge_per_megagram,
+        sum(active.equilibrium_target_mol_per_megagram),
         1.0e-14,
     );
     try std.testing.expectApproxEqAbs(
-        inputs.cation_exchange_capacity_mol_charge_per_Mg,
-        sum(active.current_charge_mol_per_Mg),
+        inputs.cation_exchange_capacity_mol_charge_per_megagram,
+        sum(active.current_charge_mol_per_megagram),
         1.0e-14,
     );
 }
@@ -525,7 +525,7 @@ test "surface and soil Gapon equations differ only by controlled source formulat
     };
     const surface = (try calculateSourceOrder(inputs)).active;
     const soil = try soil_exchange.calculateSourceOrder(.{
-        .cation_exchange_capacity_mol_charge_per_Mg = inputs.cation_exchange_capacity_mol_charge_per_Mg,
+        .cation_exchange_capacity_mol_charge_per_megagram = inputs.cation_exchange_capacity_mol_charge_per_megagram,
         .aqueous_concentration_mol_per_m3 = .{
             .ammonium_non_band = inputs.aqueous_concentration_mol_per_m3.ammonium,
             .ammonium_band = 0,
@@ -548,20 +548,20 @@ test "surface and soil Gapon equations differ only by controlled source formulat
             .sodium = activity.sodium,
             .potassium = activity.potassium,
         },
-        .exchange_concentration_mol_per_Mg = .{
-            .ammonium_non_band = inputs.exchange_concentration_mol_per_Mg.ammonium,
+        .exchange_concentration_mol_per_megagram = .{
+            .ammonium_non_band = inputs.exchange_concentration_mol_per_megagram.ammonium,
             .ammonium_band = 0,
-            .hydrogen = inputs.exchange_concentration_mol_per_Mg.hydrogen,
-            .aluminum = inputs.exchange_concentration_mol_per_Mg.aluminum,
-            .iron = inputs.exchange_concentration_mol_per_Mg.iron,
-            .calcium = inputs.exchange_concentration_mol_per_Mg.calcium,
-            .magnesium = inputs.exchange_concentration_mol_per_Mg.magnesium,
-            .sodium = inputs.exchange_concentration_mol_per_Mg.sodium,
-            .potassium = inputs.exchange_concentration_mol_per_Mg.potassium,
+            .hydrogen = inputs.exchange_concentration_mol_per_megagram.hydrogen,
+            .aluminum = inputs.exchange_concentration_mol_per_megagram.aluminum,
+            .iron = inputs.exchange_concentration_mol_per_megagram.iron,
+            .calcium = inputs.exchange_concentration_mol_per_megagram.calcium,
+            .magnesium = inputs.exchange_concentration_mol_per_megagram.magnesium,
+            .sodium = inputs.exchange_concentration_mol_per_megagram.sodium,
+            .potassium = inputs.exchange_concentration_mol_per_megagram.potassium,
         },
         .ammonium_non_band_fraction = 1,
         .ammonium_band_fraction = 0,
-        .soil_mass_per_water_volume_Mg_per_m3 = inputs.litter_mass_per_water_volume_Mg_per_m3,
+        .soil_mass_per_water_volume_megagrams_per_m3 = inputs.litter_mass_per_water_volume_megagrams_per_m3,
     }, .{
         .selectivity = .{
             .calcium_ammonium = inputs.selectivity.calcium_ammonium,
@@ -576,13 +576,13 @@ test "surface and soil Gapon equations differ only by controlled source formulat
     }, .{ .minimum_activity_mol_per_m3 = 1.0e-32 });
 
     try std.testing.expect(
-        @abs(surface.ion_change_mol_per_Mg_step.ammonium -
+        @abs(surface.ion_change_mol_per_megagram_step.ammonium -
             soil.ammonium_non_band) > 1.0e-3,
     );
     try std.testing.expect(
-        @abs(surface.equilibrium_target_mol_per_Mg.aluminum -
+        @abs(surface.equilibrium_target_mol_per_megagram.aluminum -
             3.0 * surface.normalization.equilibrium_scale *
-                surface.normalization.calcium_basis_mol_per_Mg *
+                surface.normalization.calcium_basis_mol_per_megagram *
                 inputs.activity_roots.aluminum_mol_per_m3_cuberoot /
                 inputs.activity_roots.calcium_mol_per_m3_squareroot *
                 inputs.selectivity.calcium_aluminum_and_iron) > 1.0e-3,
@@ -593,13 +593,13 @@ test "surface Gapon rates preserve nested limits and charge closure" {
     const inputs = testInputs();
     const active = (try calculateSourceOrder(inputs)).active;
     const scaling = inputs.substrate_limit_fraction_per_step /
-        inputs.litter_mass_per_water_volume_Mg_per_m3;
+        inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const maximum =
         inputs.maximum_cation_adsorption_mol_charge_per_m3_step /
-        inputs.litter_mass_per_water_volume_Mg_per_m3;
+        inputs.litter_mass_per_water_volume_megagrams_per_m3;
     const aluminum_limit = scaling * 3.0 *
         @min(
-            inputs.exchange_concentration_mol_per_Mg.aluminum,
+            inputs.exchange_concentration_mol_per_megagram.aluminum,
             inputs.aqueous_concentration_mol_per_m3.aluminum,
         );
     const expected_raw_aluminum = @max(
@@ -608,16 +608,16 @@ test "surface Gapon rates preserve nested limits and charge closure" {
         @min(
             maximum,
             aluminum_limit,
-            active.equilibrium_target_mol_per_Mg.aluminum -
-                active.current_charge_mol_per_Mg.aluminum,
+            active.equilibrium_target_mol_per_megagram.aluminum -
+                active.current_charge_mol_per_megagram.aluminum,
         ),
     );
     try std.testing.expectEqual(
         expected_raw_aluminum,
-        active.raw_charge_change_mol_per_Mg_step.aluminum,
+        active.raw_charge_change_mol_per_megagram_step.aluminum,
     );
 
-    const change = active.ion_change_mol_per_Mg_step;
+    const change = active.ion_change_mol_per_megagram_step;
     const charge = change.ammonium +
         change.hydrogen +
         3.0 * change.aluminum +
@@ -626,22 +626,22 @@ test "surface Gapon rates preserve nested limits and charge closure" {
         2.0 * change.magnesium +
         change.sodium +
         change.potassium +
-        active.discarded_band_ammonium_change_mol_per_Mg_step;
+        active.discarded_band_ammonium_change_mol_per_megagram_step;
     try std.testing.expectApproxEqAbs(@as(f64, 0), charge, 1.0e-14);
 }
 
 test "surface source closure exposes retained subsurface band ammonium" {
     var inputs = testInputs();
-    inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step = 0.05;
+    inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step = 0.05;
     const with_band = (try calculateSourceOrder(inputs)).active;
-    inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step = 0;
+    inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step = 0;
     const without_band = (try calculateSourceOrder(inputs)).active;
 
     try std.testing.expect(
-        with_band.ion_change_mol_per_Mg_step.calcium !=
-            without_band.ion_change_mol_per_Mg_step.calcium,
+        with_band.ion_change_mol_per_megagram_step.calcium !=
+            without_band.ion_change_mol_per_megagram_step.calcium,
     );
-    const surface = with_band.ion_change_mol_per_Mg_step;
+    const surface = with_band.ion_change_mol_per_megagram_step;
     const surface_charge = surface.ammonium +
         surface.hydrogen +
         3.0 * surface.aluminum +
@@ -651,7 +651,7 @@ test "surface source closure exposes retained subsurface band ammonium" {
         surface.sodium +
         surface.potassium;
     try std.testing.expectApproxEqAbs(
-        -with_band.discarded_band_ammonium_change_mol_per_Mg_step,
+        -with_band.discarded_band_ammonium_change_mol_per_megagram_step,
         surface_charge,
         1.0e-14,
     );
@@ -659,7 +659,7 @@ test "surface source closure exposes retained subsurface band ammonium" {
 
 test "surface Gapon inactive and zero-magnitude states are explicit" {
     var inputs = testInputs();
-    inputs.cation_exchange_capacity_mol_charge_per_Mg = 0;
+    inputs.cation_exchange_capacity_mol_charge_per_megagram = 0;
     try std.testing.expectEqual(
         Result.equilibrium_inactive,
         try calculateSourceOrder(inputs),
@@ -667,8 +667,8 @@ test "surface Gapon inactive and zero-magnitude states are explicit" {
 
     inputs = testInputs();
     inputs.aqueous_concentration_mol_per_m3 = std.mem.zeroes(Cations);
-    inputs.exchange_concentration_mol_per_Mg = std.mem.zeroes(Cations);
-    inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step = 0;
+    inputs.exchange_concentration_mol_per_megagram = std.mem.zeroes(Cations);
+    inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step = 0;
     try std.testing.expectError(
         error.ZeroSurfaceLitterCationExchangeClosureMagnitude,
         calculateSourceOrder(inputs),
@@ -677,14 +677,14 @@ test "surface Gapon inactive and zero-magnitude states are explicit" {
 
 test "surface Gapon exchange rejects invalid input and derived overflow" {
     var inputs = testInputs();
-    inputs.exchange_concentration_mol_per_Mg.calcium = -1;
+    inputs.exchange_concentration_mol_per_megagram.calcium = -1;
     try std.testing.expectError(
         error.InvalidSurfaceLitterCationExchangeInput,
         calculateSourceOrder(inputs),
     );
 
     inputs = testInputs();
-    inputs.retained_band_ammonium_raw_charge_change_mol_per_Mg_step =
+    inputs.retained_band_ammonium_raw_charge_change_mol_per_megagram_step =
         std.math.nan(f64);
     try std.testing.expectError(
         error.InvalidSurfaceLitterCationExchangeInput,
@@ -692,7 +692,7 @@ test "surface Gapon exchange rejects invalid input and derived overflow" {
     );
 
     inputs = testInputs();
-    inputs.litter_mass_per_water_volume_Mg_per_m3 =
+    inputs.litter_mass_per_water_volume_megagrams_per_m3 =
         std.math.floatMin(f64);
     inputs.maximum_cation_adsorption_mol_charge_per_m3_step =
         std.math.floatMax(f64);

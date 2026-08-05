@@ -1,18 +1,18 @@
 const std = @import("std");
 
 pub const SpeciesRadiation = struct {
-    leaf_shortwave_mj_m2_h: []const f64,
-    stalk_shortwave_mj_m2_h: []const f64,
-    standing_dead_shortwave_mj_m2_h: []const f64,
+    leaf_shortwave_megajoules_m2_h: []const f64,
+    stalk_shortwave_megajoules_m2_h: []const f64,
+    standing_dead_shortwave_megajoules_m2_h: []const f64,
     leaf_par_umol_m2_s: []const f64,
     stalk_par_umol_m2_s: []const f64,
     standing_dead_par_umol_m2_s: []const f64,
 };
 
 pub const Outputs = struct {
-    leaf_shortwave_mj_m2_h: []f64,
-    stalk_shortwave_mj_m2_h: []f64,
-    standing_dead_shortwave_mj_m2_h: []f64,
+    leaf_shortwave_megajoules_m2_h: []f64,
+    stalk_shortwave_megajoules_m2_h: []f64,
+    standing_dead_shortwave_megajoules_m2_h: []f64,
     leaf_par_umol_m2_s: []f64,
     stalk_par_umol_m2_s: []f64,
     standing_dead_par_umol_m2_s: []f64,
@@ -38,14 +38,14 @@ pub fn apply(
         const projected_incidence = @abs(signed_incidence);
         for (0..species_count) |species| {
             const direct_index = angle * species_count + species;
-            outputs.leaf_shortwave_mj_m2_h[direct_index] =
-                species_radiation.leaf_shortwave_mj_m2_h[species] *
+            outputs.leaf_shortwave_megajoules_m2_h[direct_index] =
+                species_radiation.leaf_shortwave_megajoules_m2_h[species] *
                 projected_incidence;
-            outputs.stalk_shortwave_mj_m2_h[direct_index] =
-                species_radiation.stalk_shortwave_mj_m2_h[species] *
+            outputs.stalk_shortwave_megajoules_m2_h[direct_index] =
+                species_radiation.stalk_shortwave_megajoules_m2_h[species] *
                 projected_incidence;
-            outputs.standing_dead_shortwave_mj_m2_h[direct_index] =
-                species_radiation.standing_dead_shortwave_mj_m2_h[species] *
+            outputs.standing_dead_shortwave_megajoules_m2_h[direct_index] =
+                species_radiation.standing_dead_shortwave_megajoules_m2_h[species] *
                 projected_incidence;
             outputs.leaf_par_umol_m2_s[direct_index] =
                 species_radiation.leaf_par_umol_m2_s[species] *
@@ -72,7 +72,7 @@ fn validate(
     layer_count: usize,
     outputs: Outputs,
 ) !usize {
-    const species_count = species_radiation.leaf_shortwave_mj_m2_h.len;
+    const species_count = species_radiation.leaf_shortwave_megajoules_m2_h.len;
     if (incidence.len == 0 or species_count == 0 or layer_count == 0)
         return error.ZeroCanopyDirectRadiationExtent;
     inline for (@typeInfo(SpeciesRadiation).@"struct".fields) |field| {
@@ -87,9 +87,9 @@ fn validate(
     const direct_count = try std.math.mul(usize, incidence.len, species_count);
     const layer_value_count = try std.math.mul(usize, direct_count, layer_count);
     inline for (.{
-        outputs.leaf_shortwave_mj_m2_h,
-        outputs.stalk_shortwave_mj_m2_h,
-        outputs.standing_dead_shortwave_mj_m2_h,
+        outputs.leaf_shortwave_megajoules_m2_h,
+        outputs.stalk_shortwave_megajoules_m2_h,
+        outputs.standing_dead_shortwave_megajoules_m2_h,
         outputs.leaf_par_umol_m2_s,
         outputs.stalk_par_umol_m2_s,
         outputs.standing_dead_par_umol_m2_s,
@@ -111,16 +111,16 @@ test "angle species layer traversal initializes absorbed radiation" {
     var diffuse_par: [12]f64 = undefined;
     var total_par: [12]f64 = undefined;
     try apply(&.{ 0.5, -0.25 }, .{
-        .leaf_shortwave_mj_m2_h = &.{ 2, 4 },
-        .stalk_shortwave_mj_m2_h = &.{ 1, 2 },
-        .standing_dead_shortwave_mj_m2_h = &.{ 0.5, 1 },
+        .leaf_shortwave_megajoules_m2_h = &.{ 2, 4 },
+        .stalk_shortwave_megajoules_m2_h = &.{ 1, 2 },
+        .standing_dead_shortwave_megajoules_m2_h = &.{ 0.5, 1 },
         .leaf_par_umol_m2_s = &.{ 100, 200 },
         .stalk_par_umol_m2_s = &.{ 50, 100 },
         .standing_dead_par_umol_m2_s = &.{ 25, 50 },
     }, 3, .{
-        .leaf_shortwave_mj_m2_h = &leaf_sw,
-        .stalk_shortwave_mj_m2_h = &stalk_sw,
-        .standing_dead_shortwave_mj_m2_h = &dead_sw,
+        .leaf_shortwave_megajoules_m2_h = &leaf_sw,
+        .stalk_shortwave_megajoules_m2_h = &stalk_sw,
+        .standing_dead_shortwave_megajoules_m2_h = &dead_sw,
         .leaf_par_umol_m2_s = &leaf_par,
         .stalk_par_umol_m2_s = &stalk_par,
         .standing_dead_par_umol_m2_s = &dead_par,
@@ -137,18 +137,18 @@ test "dimension mismatch leaves outputs unchanged" {
     try std.testing.expectError(error.CanopyDirectRadiationDimensionMismatch, apply(
         &.{0.5},
         .{
-            .leaf_shortwave_mj_m2_h = &.{1},
-            .stalk_shortwave_mj_m2_h = &.{1},
-            .standing_dead_shortwave_mj_m2_h = &.{1},
+            .leaf_shortwave_megajoules_m2_h = &.{1},
+            .stalk_shortwave_megajoules_m2_h = &.{1},
+            .standing_dead_shortwave_megajoules_m2_h = &.{1},
             .leaf_par_umol_m2_s = &.{1},
             .stalk_par_umol_m2_s = &.{1},
             .standing_dead_par_umol_m2_s = &.{1},
         },
         2,
         .{
-            .leaf_shortwave_mj_m2_h = &one,
-            .stalk_shortwave_mj_m2_h = &one,
-            .standing_dead_shortwave_mj_m2_h = &one,
+            .leaf_shortwave_megajoules_m2_h = &one,
+            .stalk_shortwave_megajoules_m2_h = &one,
+            .standing_dead_shortwave_megajoules_m2_h = &one,
             .leaf_par_umol_m2_s = &one,
             .stalk_par_umol_m2_s = &one,
             .standing_dead_par_umol_m2_s = &one,

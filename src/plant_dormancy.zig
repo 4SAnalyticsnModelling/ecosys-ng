@@ -12,6 +12,11 @@ pub const State = struct {
     shoot_remobilization_enabled: bool = false,
     phenological_remobilization_enabled: bool = false,
     remobilization_elapsed_h: f64 = 0,
+    /// Legacy IFLGR: reproductive growth is disabled while end-of-season
+    /// reproductive and stalk material turns over.
+    reproductive_growth_disabled: bool = false,
+    /// Legacy FLGQ, accumulated end-of-season litterfall delay (h).
+    reproductive_litterfall_delay_h: f64 = 0,
 };
 
 pub const RuntimeState = struct {
@@ -282,6 +287,29 @@ test "dormancy state is heap sized for arbitrary runtime branches" {
     defer state.deinit();
     try std.testing.expectEqual(@as(usize, 37), state.branches.len);
     try state.validateFinite();
+}
+
+test "runtime dormancy owns branch-local reproductive turnover state" {
+    var state = try RuntimeState.init(std.testing.allocator, 2);
+    defer state.deinit();
+    state.branches[1].reproductive_growth_disabled = true;
+    state.branches[1].reproductive_litterfall_delay_h = 239;
+    try state.validateFinite();
+    try std.testing.expect(state.branches[1].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 239), state.branches[1].reproductive_litterfall_delay_h);
+
+    state.branches[1].reproductive_litterfall_delay_h = std.math.nan(f64);
+    try std.testing.expectError(error.InvalidDormancyState, state.validateFinite());
+}
+
+test "branch reconstruction clears IFLGR and FLGQ for dead-branch reset" {
+    var state = try RuntimeState.init(std.testing.allocator, 2);
+    defer state.deinit();
+    state.branches[1].reproductive_growth_disabled = true;
+    state.branches[1].reproductive_litterfall_delay_h = 120;
+    try state.clearRangeForReconstruction(1, 2);
+    try std.testing.expect(!state.branches[1].reproductive_growth_disabled);
+    try std.testing.expectEqual(@as(f64, 0), state.branches[1].reproductive_litterfall_delay_h);
 }
 
 test "GROSUB remobilization gates preserve elapsed time and reset semantics" {

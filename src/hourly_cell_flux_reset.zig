@@ -15,14 +15,14 @@ pub const ScalarFluxes = struct {
     nitrous_oxide_exchange_g_n: f64,
     ammonia_exchange_g_n: f64,
     ecosystem_respiration_g_c: f64,
-    net_radiation_mj: f64,
-    latent_heat_mj: f64,
-    sensible_heat_mj: f64,
-    ground_heat_mj: f64,
-    snow_net_radiation_mj: f64,
-    snow_latent_heat_mj: f64,
-    snow_sensible_heat_mj: f64,
-    snow_ground_heat_mj: f64,
+    net_radiation_megajoules: f64,
+    latent_heat_megajoules: f64,
+    sensible_heat_megajoules: f64,
+    ground_heat_megajoules: f64,
+    snow_net_radiation_megajoules: f64,
+    snow_latent_heat_megajoules: f64,
+    snow_sensible_heat_megajoules: f64,
+    snow_ground_heat_megajoules: f64,
     canopy_carbon_g_c: f64,
 };
 
@@ -136,7 +136,7 @@ test "dimension mismatch leaves every ledger unchanged" {
         apply(&state, true),
     );
     try std.testing.expectEqual(@as(f64, 1), carbon[0]);
-    try std.testing.expectEqual(@as(f64, 5), state.scalar.ground_heat_mj);
+    try std.testing.expectEqual(@as(f64, 5), state.scalar.ground_heat_megajoules);
 }
 
 test "nonfinite late scalar leaves every ledger unchanged" {

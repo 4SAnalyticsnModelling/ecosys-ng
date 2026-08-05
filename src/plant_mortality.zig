@@ -185,7 +185,7 @@ test "GROSUB perennial storage exhaustion kills all runtime branches and transfe
     defer roots.deinit();
     var retention = try RetentionState.init(allocator, 1, 1);
     defer retention.deinit();
-    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
+    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
     defer plants.deinit();
 
     canopy.plant_seed_storage_carbon_g[0] = 1;
@@ -268,7 +268,7 @@ test "GROSUB all-branch death preserves winter-annual population and transfers c
     defer roots.deinit();
     var retention = try RetentionState.init(allocator, 1, 1);
     defer retention.deinit();
-    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
+    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
     defer plants.deinit();
     phenology.active[0] = true;
     roots.roots_dead[0] = false;
@@ -302,7 +302,7 @@ test "GROSUB storage exhaustion does not kill annuals" {
     defer roots.deinit();
     var retention = try RetentionState.init(allocator, 1, 1);
     defer retention.deinit();
-    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 1, .grid_rows = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
+    var plants = try PlantState.init(allocator, try @import("config.zig").SimulationConfig.init(.{ .lon_count = 1, .lat_count = 1, .soil_layers = 1, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 1 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 }));
     defer plants.deinit();
     canopy.plant_seed_storage_carbon_g[0] = 0;
     try std.testing.expect(!try applyStorageExhaustion(&canopy, &growth, &development, &phenology, &roots, &retention, &plants, 0, false, 1, 1.0e-12));

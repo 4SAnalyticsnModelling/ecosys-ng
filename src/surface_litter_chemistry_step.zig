@@ -6,6 +6,7 @@ const organic = @import("soil_organic_initialization.zig");
 const chemistry_parameters = @import("soil_chemistry_parameters.zig");
 const chemistry_initialization = @import("soil_chemistry_initialization.zig");
 const cation_exchange = @import("solute_cation_exchange.zig");
+const gas = @import("gas_transport.zig");
 
 pub const Diagnostics = struct {
     allocator: std.mem.Allocator,
@@ -60,7 +61,7 @@ pub const ApplyContext = struct {
     litter_water_m3: []const f64,
     chemistry_parameters: chemistry_parameters.Parameters,
     cation_selectivity_by_cell: []const cation_exchange.Selectivity,
-    litter_dry_mass_Mg_per_g_c: f64,
+    litter_dry_mass_megagrams: []const f64,
     dynamic_salts: bool,
     solver_options: chemistry.Options,
     diagnostics: *Diagnostics,
@@ -68,9 +69,37 @@ pub const ApplyContext = struct {
 
 pub fn applyTile(context: *ApplyContext, range: compute.CellRange) !void {
     const count = context.state.cells.len;
-    if (context.surface_organic.layer_count != count or context.litter_water_m3.len != count or context.cation_selectivity_by_cell.len != count or context.diagnostics.changes.len != count or range.first > range.end or range.end > count) return error.LitterChemistryStepDimensionMismatch;
-    if (!std.math.isFinite(context.litter_dry_mass_Mg_per_g_c) or context.litter_dry_mass_Mg_per_g_c <= 0) return error.InvalidLitterDryMassCoefficient;
+    if (context.surface_organic.layer_count != count or context.litter_water_m3.len != count or context.litter_dry_mass_megagrams.len != count or context.cation_selectivity_by_cell.len != count or context.diagnostics.changes.len != count or range.first > range.end or range.end > count) return error.LitterChemistryStepDimensionMismatch;
     for (range.first..range.end) |cell| try applyCell(context, cell);
+}
+
+/// Publishes the accepted aqueous CO2 coordinate change to the authoritative
+/// litter gas inventory. Carbonate, bicarbonate, and calcite remain owned by
+/// litter chemistry, while aqueous CO2 storage is counted only by gas state.
+pub fn publishAcceptedCarbonDioxideChanges(
+    gas_state: *gas.State,
+    diagnostics: *const Diagnostics,
+    carbon_g_per_mol: f64,
+) !void {
+    if (gas_state.cell_count != diagnostics.changes.len or
+        diagnostics.solved.len != diagnostics.changes.len)
+        return error.LitterChemistryGasDimensionMismatch;
+    if (!std.math.isFinite(carbon_g_per_mol) or carbon_g_per_mol <= 0)
+        return error.InvalidCarbonMolarMass;
+    const species = @intFromEnum(gas.Species.carbon_dioxide);
+    for (diagnostics.changes, diagnostics.solved, 0..) |change, solved, cell| {
+        if (!solved) continue;
+        const delta_g_c = change.carbon_dioxide_mol * carbon_g_per_mol;
+        const index = cell * gas.species_count + species;
+        const next = gas_state.dissolved_mass_g[index] + delta_g_c;
+        if (!std.math.isFinite(delta_g_c) or !std.math.isFinite(next) or next < 0)
+            return error.InvalidLitterCarbonDioxidePublication;
+    }
+    for (diagnostics.changes, diagnostics.solved, 0..) |change, solved, cell| {
+        if (!solved) continue;
+        const index = cell * gas.species_count + species;
+        gas_state.dissolved_mass_g[index] += change.carbon_dioxide_mol * carbon_g_per_mol;
+    }
 }
 
 fn applyCell(context: *ApplyContext, cell: usize) !void {
@@ -79,20 +108,20 @@ fn applyCell(context: *ApplyContext, cell: usize) !void {
     if (!std.math.isFinite(water_m3) or water_m3 < 0) return error.InvalidLitterWaterVolume;
     try context.state.renormalizeMinerals(cell, water_m3);
     if (carbon_g_c == 0 or water_m3 == 0) return;
-    const dry_mass_Mg = context.litter_dry_mass_Mg_per_g_c * carbon_g_c;
-    if (!std.math.isFinite(dry_mass_Mg) or dry_mass_Mg <= 0) return error.InvalidLitterDryMass;
-    const density = dry_mass_Mg / water_m3;
-    const capacity = try chemistry_initialization.surfaceLitterCationExchangeCapacity_mol_charge_per_Mg_litter(carbon_g_c, dry_mass_Mg, context.chemistry_parameters.surface_litter.carboxyl_sites_mol_per_Mg_c);
+    const dry_mass_megagrams = context.litter_dry_mass_megagrams[cell];
+    if (!std.math.isFinite(dry_mass_megagrams) or dry_mass_megagrams <= 0) return error.InvalidLitterDryMass;
+    const density = dry_mass_megagrams / water_m3;
+    const capacity = try chemistry_initialization.surfaceLitterCationExchangeCapacity_mol_charge_per_megagram_litter(carbon_g_c, dry_mass_megagrams, context.chemistry_parameters.surface_litter.carboxyl_sites_mol_per_megagram_c);
     const before = context.state.cells[cell];
     const activity = try chemistry.activityCoefficients(before, water_m3);
     const rates_context = context.chemistry_parameters.forSurfaceLitter(activity, context.cation_selectivity_by_cell[cell], capacity, density, context.dynamic_salts);
     // STARTE initializes occupied carboxyl sites from H activity before its
     // first equilibrium cycle. Preserve a nonzero restored value thereafter.
-    if (context.state.cells[cell].carboxyl_hydrogen_mol_per_Mg == 0 and capacity > 0) {
+    if (context.state.cells[cell].carboxyl_hydrogen_mol_per_megagram == 0 and capacity > 0) {
         const hydrogen_activity = before.hydrogen_mol_per_m3 * activity.monovalent_activity_coefficient;
-        context.state.cells[cell].carboxyl_hydrogen_mol_per_Mg = capacity * @min(1.0, hydrogen_activity / context.chemistry_parameters.surface_litter.carboxyl_dissociation_constant);
+        context.state.cells[cell].carboxyl_hydrogen_mol_per_megagram = capacity * @min(1.0, hydrogen_activity / context.chemistry_parameters.surface_litter.carboxyl_dissociation_constant);
     }
-    const result = extensive.solveCellAndCapture(context.state, cell, &rates_context, context.solver_options, .{ .litter_water_volume_m3 = water_m3, .litter_dry_mass_Mg = dry_mass_Mg }, &context.diagnostics.changes[cell]) catch |err| {
+    const result = extensive.solveCellAndCapture(context.state, cell, &rates_context, context.solver_options, .{ .litter_water_volume_m3 = water_m3, .litter_dry_mass_megagrams = dry_mass_megagrams }, &context.diagnostics.changes[cell]) catch |err| {
         context.state.cells[cell] = before;
         return err;
     };
@@ -115,7 +144,7 @@ test "dry litter cells skip without mutating chemistry" {
     context.surface_organic = &surface;
     context.litter_water_m3 = &.{0};
     context.cation_selectivity_by_cell = &.{.{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }};
-    context.litter_dry_mass_Mg_per_g_c = 1.82e-6;
+    context.litter_dry_mass_megagrams = &.{0};
     context.dynamic_salts = false;
     context.solver_options = .{};
     context.diagnostics = &diagnostics;
@@ -124,6 +153,46 @@ test "dry litter cells skip without mutating chemistry" {
     try applyTile(&context, .{ .first = 0, .end = 1 });
     try std.testing.expect(!diagnostics.solved[0]);
     try std.testing.expectEqual(std.mem.zeroes(chemistry.Cell), state.cells[0]);
+}
+
+test "accepted litter chemistry CO2 change closes authoritative gas carbon" {
+    var gas_state = try gas.State.init(std.testing.allocator, 2);
+    defer gas_state.deinit();
+    var diagnostics = try Diagnostics.init(std.testing.allocator, 2);
+    defer diagnostics.deinit();
+    const co2 = @intFromEnum(gas.Species.carbon_dioxide);
+    gas_state.dissolved_mass_g[co2] = 10;
+    gas_state.dissolved_mass_g[gas.species_count + co2] = 20;
+    diagnostics.solved[0] = true;
+    diagnostics.changes[0].carbon_dioxide_mol = -0.25;
+    diagnostics.changes[0].bicarbonate_mol = 0.25;
+
+    try publishAcceptedCarbonDioxideChanges(&gas_state, &diagnostics, 12);
+    try std.testing.expectEqual(@as(f64, 7), gas_state.dissolved_mass_g[co2]);
+    try std.testing.expectEqual(@as(f64, 20), gas_state.dissolved_mass_g[gas.species_count + co2]);
+    try std.testing.expectEqual(
+        @as(f64, 10),
+        gas_state.dissolved_mass_g[co2] + diagnostics.changes[0].bicarbonate_mol * 12,
+    );
+}
+
+test "invalid litter chemistry CO2 publication is atomic" {
+    var gas_state = try gas.State.init(std.testing.allocator, 2);
+    defer gas_state.deinit();
+    var diagnostics = try Diagnostics.init(std.testing.allocator, 2);
+    defer diagnostics.deinit();
+    const co2 = @intFromEnum(gas.Species.carbon_dioxide);
+    gas_state.dissolved_mass_g[co2] = 10;
+    gas_state.dissolved_mass_g[gas.species_count + co2] = 1;
+    @memset(diagnostics.solved, true);
+    diagnostics.changes[0].carbon_dioxide_mol = 0.5;
+    diagnostics.changes[1].carbon_dioxide_mol = -1;
+    try std.testing.expectError(
+        error.InvalidLitterCarbonDioxidePublication,
+        publishAcceptedCarbonDioxideChanges(&gas_state, &diagnostics, 12),
+    );
+    try std.testing.expectEqual(@as(f64, 10), gas_state.dissolved_mass_g[co2]);
+    try std.testing.expectEqual(@as(f64, 1), gas_state.dissolved_mass_g[gas.species_count + co2]);
 }
 
 test "wet litter tile converges synthetic equilibrium conservatively" {
@@ -173,7 +242,7 @@ test "wet litter tile converges synthetic equilibrium conservatively" {
         .litter_water_m3 = &.{1},
         .chemistry_parameters = parameters,
         .cation_selectivity_by_cell = &.{.{ .calcium_ammonium = 1, .calcium_hydrogen = 1, .calcium_aluminum_and_iron = 1, .calcium_magnesium = 1, .calcium_sodium = 1, .calcium_potassium = 1 }},
-        .litter_dry_mass_Mg_per_g_c = 1,
+        .litter_dry_mass_megagrams = &.{1},
         .dynamic_salts = false,
         .solver_options = .{ .absolute_tolerance = 1e-10, .relative_tolerance = 1e-8, .picard_relaxation = 0.5, .max_iterations = 60 },
         .diagnostics = &diagnostics,

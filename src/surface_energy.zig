@@ -15,11 +15,11 @@ pub const State = struct {
     allocator: std.mem.Allocator,
     cell_count: usize,
     surface_emissivity: []f64,
-    downward_sky_longwave_mj_per_m2: []f64,
-    emitted_sky_longwave_mj_per_m2: []f64,
-    net_longwave_mj_per_m2: []f64,
-    net_radiation_mj_per_m2: []f64,
-    fire_ignition_mj_per_m2: []f64,
+    downward_sky_longwave_megajoules_per_m2: []f64,
+    emitted_sky_longwave_megajoules_per_m2: []f64,
+    net_longwave_megajoules_per_m2: []f64,
+    net_radiation_megajoules_per_m2: []f64,
+    fire_ignition_megajoules_per_m2: []f64,
 
     pub fn init(allocator: std.mem.Allocator, cell_count: usize) !State {
         if (cell_count == 0) return error.EmptySurfaceEnergyGrid;
@@ -70,34 +70,34 @@ pub fn applyTile(context: *ApplyContext, range: CellRange) !void {
     if (context.exposure) |exposure| if (exposure.cell_count != result.cell_count) return error.SurfaceEnergyDimensionMismatch;
     for (range.first..range.end) |cell| {
         const temperature_k = context.grid.surface_temperature_k[cell];
-        const atmospheric_longwave = context.atmosphere.longwave_radiation_mj_per_m2[cell];
+        const atmospheric_longwave = context.atmosphere.longwave_radiation_megajoules_per_m2[cell];
         const ground_exposure = if (context.exposure) |exposure| exposure.ground_exposure_fraction[cell] else 1.0;
         if (!std.math.isFinite(context.snow_depth_m[cell]) or context.snow_depth_m[cell] < 0) return error.InvalidSurfaceSnowDepth;
         const snow_cover = @min(std.math.pow(f64, context.snow_depth_m[cell] / context.settings.snow_full_cover_depth_m, 2), 1.0);
         const emissivity = snow_cover * context.settings.snow_longwave_emissivity + (1.0 - snow_cover) * context.settings.soil_longwave_emissivity;
         const energy = try calculate(
-            context.ground_radiation.absorbed_shortwave_mj_per_m2[cell],
+            context.ground_radiation.absorbed_shortwave_megajoules_per_m2[cell],
             atmospheric_longwave,
-            result.fire_ignition_mj_per_m2[cell],
+            result.fire_ignition_megajoules_per_m2[cell],
             temperature_k,
             ground_exposure,
             emissivity,
         );
         result.surface_emissivity[cell] = emissivity;
-        result.downward_sky_longwave_mj_per_m2[cell] = energy.downward_longwave;
-        result.emitted_sky_longwave_mj_per_m2[cell] = energy.emitted_longwave;
-        result.net_longwave_mj_per_m2[cell] = energy.net_longwave;
-        result.net_radiation_mj_per_m2[cell] = energy.net_radiation;
-        result.fire_ignition_mj_per_m2[cell] = 0;
+        result.downward_sky_longwave_megajoules_per_m2[cell] = energy.downward_longwave;
+        result.emitted_sky_longwave_megajoules_per_m2[cell] = energy.emitted_longwave;
+        result.net_longwave_megajoules_per_m2[cell] = energy.net_longwave;
+        result.net_radiation_megajoules_per_m2[cell] = energy.net_radiation;
+        result.fire_ignition_megajoules_per_m2[cell] = 0;
     }
 }
 
 const Energy = struct { downward_longwave: f64, emitted_longwave: f64, net_longwave: f64, net_radiation: f64 };
 
-fn calculate(absorbed_shortwave: f64, atmospheric_longwave: f64, fire_ignition_mj_per_m2: f64, surface_temperature_k: f64, ground_exposure: f64, emissivity: f64) !Energy {
-    inline for (.{ absorbed_shortwave, atmospheric_longwave, fire_ignition_mj_per_m2, surface_temperature_k, ground_exposure, emissivity }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSurfaceEnergyInput;
-    if (absorbed_shortwave < 0 or atmospheric_longwave < 0 or fire_ignition_mj_per_m2 < 0 or surface_temperature_k <= 0 or ground_exposure < 0 or ground_exposure > 1 or emissivity < 0 or emissivity > 1) return error.InvalidSurfaceEnergyInput;
-    const downward = atmospheric_longwave * ground_exposure + fire_ignition_mj_per_m2;
+fn calculate(absorbed_shortwave: f64, atmospheric_longwave: f64, fire_ignition_megajoules_per_m2: f64, surface_temperature_k: f64, ground_exposure: f64, emissivity: f64) !Energy {
+    inline for (.{ absorbed_shortwave, atmospheric_longwave, fire_ignition_megajoules_per_m2, surface_temperature_k, ground_exposure, emissivity }) |value| if (!std.math.isFinite(value)) return error.NonFiniteSurfaceEnergyInput;
+    if (absorbed_shortwave < 0 or atmospheric_longwave < 0 or fire_ignition_megajoules_per_m2 < 0 or surface_temperature_k <= 0 or ground_exposure < 0 or ground_exposure > 1 or emissivity < 0 or emissivity > 1) return error.InvalidSurfaceEnergyInput;
+    const downward = atmospheric_longwave * ground_exposure + fire_ignition_megajoules_per_m2;
     const emitted = emissivity * 2.04e-10 * std.math.pow(f64, surface_temperature_k, 4) * ground_exposure;
     const net_longwave = downward - emitted;
     const net_radiation = absorbed_shortwave + net_longwave;

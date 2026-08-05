@@ -9,10 +9,10 @@ pub const Inputs = struct {
     aqueous_ammonium_inventory_g_n: f64,
     aqueous_ammonia_inventory_g_n: f64,
     exchangeable_ammonium_inventory_mol_n: f64,
-    litter_dry_mass_Mg: f64,
-    active_litter_dry_mass_threshold_Mg: f64,
+    litter_dry_mass_megagrams: f64,
+    active_litter_dry_mass_threshold_megagrams: f64,
     aqueous_nitrogen_mass_floor_g_n: f64,
-    exchangeable_ammonium_floor_mol_n_per_Mg: f64,
+    exchangeable_ammonium_floor_mol_n_per_megagram: f64,
 };
 
 pub const Result = struct {
@@ -21,7 +21,7 @@ pub const Result = struct {
     ammonia_input_g_n_per_step: f64,
     aqueous_ammonium_mol_n_per_m3: f64,
     aqueous_ammonia_mol_n_per_m3: f64,
-    exchangeable_ammonium_mol_n_per_Mg: f64,
+    exchangeable_ammonium_mol_n_per_megagram: f64,
     aqueous_ammonium_floor_was_applied: bool,
     aqueous_ammonia_floor_was_applied: bool,
     exchangeable_ammonium_floor_was_applied: bool,
@@ -67,19 +67,19 @@ pub fn calculate(inputs: Inputs) !Result {
     // SOLUTE.F 4143--4147. Threshold equality selects the dry branch.
     var exchangeable_ammonium_concentration: f64 = 0;
     var exchangeable_floor_was_applied = false;
-    if (inputs.litter_dry_mass_Mg >
-        inputs.active_litter_dry_mass_threshold_Mg)
+    if (inputs.litter_dry_mass_megagrams >
+        inputs.active_litter_dry_mass_threshold_megagrams)
     {
         const unconstrained_exchangeable =
             inputs.exchangeable_ammonium_inventory_mol_n /
-            inputs.litter_dry_mass_Mg;
+            inputs.litter_dry_mass_megagrams;
         exchangeable_ammonium_concentration = @max(
-            inputs.exchangeable_ammonium_floor_mol_n_per_Mg,
+            inputs.exchangeable_ammonium_floor_mol_n_per_megagram,
             unconstrained_exchangeable,
         );
         exchangeable_floor_was_applied =
             unconstrained_exchangeable <
-            inputs.exchangeable_ammonium_floor_mol_n_per_Mg;
+            inputs.exchangeable_ammonium_floor_mol_n_per_megagram;
     }
 
     const result: Result = .{
@@ -88,7 +88,7 @@ pub fn calculate(inputs: Inputs) !Result {
         .ammonia_input_g_n_per_step = ammonia_input,
         .aqueous_ammonium_mol_n_per_m3 = ammonium_concentration,
         .aqueous_ammonia_mol_n_per_m3 = ammonia_concentration,
-        .exchangeable_ammonium_mol_n_per_Mg = exchangeable_ammonium_concentration,
+        .exchangeable_ammonium_mol_n_per_megagram = exchangeable_ammonium_concentration,
         .aqueous_ammonium_floor_was_applied = aqueous_ammonium_mass <
             inputs.aqueous_nitrogen_mass_floor_g_n,
         .aqueous_ammonia_floor_was_applied = aqueous_ammonia_mass <
@@ -110,10 +110,10 @@ fn validateInputs(inputs: Inputs) !void {
         inputs.aqueous_ammonium_inventory_g_n,
         inputs.aqueous_ammonia_inventory_g_n,
         inputs.exchangeable_ammonium_inventory_mol_n,
-        inputs.litter_dry_mass_Mg,
-        inputs.active_litter_dry_mass_threshold_Mg,
+        inputs.litter_dry_mass_megagrams,
+        inputs.active_litter_dry_mass_threshold_megagrams,
         inputs.aqueous_nitrogen_mass_floor_g_n,
-        inputs.exchangeable_ammonium_floor_mol_n_per_Mg,
+        inputs.exchangeable_ammonium_floor_mol_n_per_megagram,
     }) |value| {
         if (value < 0)
             return error.InvalidSurfaceLitterNitrogenConcentrationInput;
@@ -139,7 +139,7 @@ fn validateResult(result: Result) !void {
         result.ammonia_input_g_n_per_step,
         result.aqueous_ammonium_mol_n_per_m3,
         result.aqueous_ammonia_mol_n_per_m3,
-        result.exchangeable_ammonium_mol_n_per_Mg,
+        result.exchangeable_ammonium_mol_n_per_megagram,
     }) |value| {
         if (!std.math.isFinite(value))
             return error.NonFiniteSurfaceLitterNitrogenConcentration;
@@ -147,7 +147,7 @@ fn validateResult(result: Result) !void {
     if (result.nitrogen_water_scale_g_n_m3_per_mol <= 0 or
         result.aqueous_ammonium_mol_n_per_m3 < 0 or
         result.aqueous_ammonia_mol_n_per_m3 < 0 or
-        result.exchangeable_ammonium_mol_n_per_Mg < 0)
+        result.exchangeable_ammonium_mol_n_per_megagram < 0)
     {
         return error.InvalidSurfaceLitterNitrogenConcentrationResult;
     }
@@ -163,10 +163,10 @@ fn testInputs() Inputs {
         .aqueous_ammonium_inventory_g_n = 22,
         .aqueous_ammonia_inventory_g_n = 10.5,
         .exchangeable_ammonium_inventory_mol_n = 3,
-        .litter_dry_mass_Mg = 1.5,
-        .active_litter_dry_mass_threshold_Mg = 1.0e-12,
+        .litter_dry_mass_megagrams = 1.5,
+        .active_litter_dry_mass_threshold_megagrams = 1.0e-12,
         .aqueous_nitrogen_mass_floor_g_n = 1.0e-20,
-        .exchangeable_ammonium_floor_mol_n_per_Mg = 1.0e-20,
+        .exchangeable_ammonium_floor_mol_n_per_megagram = 1.0e-20,
     };
 }
 
@@ -197,9 +197,9 @@ test "SOLUTE surface nitrogen reconstruction preserves every source expression" 
                 expected_ammonia_input,
         ) / expected_scale;
     const expected_exchangeable = @max(
-        inputs.exchangeable_ammonium_floor_mol_n_per_Mg,
+        inputs.exchangeable_ammonium_floor_mol_n_per_megagram,
         inputs.exchangeable_ammonium_inventory_mol_n /
-            inputs.litter_dry_mass_Mg,
+            inputs.litter_dry_mass_megagrams,
     );
 
     try std.testing.expectEqual(
@@ -224,7 +224,7 @@ test "SOLUTE surface nitrogen reconstruction preserves every source expression" 
     );
     try std.testing.expectEqual(
         expected_exchangeable,
-        result.exchangeable_ammonium_mol_n_per_Mg,
+        result.exchangeable_ammonium_mol_n_per_megagram,
     );
 }
 
@@ -248,8 +248,8 @@ test "surface nitrogen reconstruction recovers valid extensive masses" {
     );
     try std.testing.expectApproxEqAbs(
         inputs.exchangeable_ammonium_inventory_mol_n,
-        result.exchangeable_ammonium_mol_n_per_Mg *
-            inputs.litter_dry_mass_Mg,
+        result.exchangeable_ammonium_mol_n_per_megagram *
+            inputs.litter_dry_mass_megagrams,
         1.0e-14,
     );
 }
@@ -267,12 +267,12 @@ test "surface nitrogen floors and dry-mass threshold are explicit" {
     try std.testing.expect(floored.exchangeable_ammonium_floor_was_applied);
 
     inputs = testInputs();
-    inputs.litter_dry_mass_Mg =
-        inputs.active_litter_dry_mass_threshold_Mg;
+    inputs.litter_dry_mass_megagrams =
+        inputs.active_litter_dry_mass_threshold_megagrams;
     const dry = try calculate(inputs);
     try std.testing.expectEqual(
         @as(f64, 0),
-        dry.exchangeable_ammonium_mol_n_per_Mg,
+        dry.exchangeable_ammonium_mol_n_per_megagram,
     );
     try std.testing.expect(!dry.exchangeable_ammonium_floor_was_applied);
 }

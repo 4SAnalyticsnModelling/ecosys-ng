@@ -8,7 +8,7 @@ pub const State = struct {
     methane_emission_g_c_per_h_by_cell: []f64,
     oxygen_consumption_g_o_per_h_by_cell: []f64,
     charcoal_production_g_c_per_h_by_cell: []f64,
-    heat_release_mj_per_h_by_cell: []f64,
+    heat_release_megajoules_per_h_by_cell: []f64,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -28,7 +28,7 @@ pub const State = struct {
             .methane_emission_g_c_per_h_by_cell = values[cell_count .. 2 * cell_count],
             .oxygen_consumption_g_o_per_h_by_cell = values[2 * cell_count .. 3 * cell_count],
             .charcoal_production_g_c_per_h_by_cell = values[3 * cell_count .. 4 * cell_count],
-            .heat_release_mj_per_h_by_cell = values[4 * cell_count ..],
+            .heat_release_megajoules_per_h_by_cell = values[4 * cell_count ..],
         };
     }
 
@@ -46,7 +46,7 @@ pub const Inputs = struct {
     methane_emission_g_c_per_h_by_plant: []const f64,
     oxygen_consumption_g_o_per_h_by_plant: []const f64,
     charcoal_production_g_c_per_h_by_plant: []const f64,
-    heat_release_mj_per_h_by_plant: []const f64,
+    heat_release_megajoules_per_h_by_plant: []const f64,
 };
 
 /// EXTRACT lines 147–211 publication of the accepted total-canopy fire
@@ -72,7 +72,7 @@ pub fn refresh(state: *State, inputs: Inputs) !void {
         state.methane_emission_g_c_per_h_by_cell[cell] = totals.ch4;
         state.oxygen_consumption_g_o_per_h_by_cell[cell] = totals.oxygen;
         state.charcoal_production_g_c_per_h_by_cell[cell] = totals.charcoal;
-        state.heat_release_mj_per_h_by_cell[cell] = totals.heat;
+        state.heat_release_megajoules_per_h_by_cell[cell] = totals.heat;
     }
 }
 
@@ -94,7 +94,7 @@ fn totalsForCell(state: *const State, inputs: Inputs, cell: usize) !Totals {
             inputs.methane_emission_g_c_per_h_by_plant[plant],
             inputs.oxygen_consumption_g_o_per_h_by_plant[plant],
             inputs.charcoal_production_g_c_per_h_by_plant[plant],
-            inputs.heat_release_mj_per_h_by_plant[plant],
+            inputs.heat_release_megajoules_per_h_by_plant[plant],
         };
         inline for (values) |value|
             if (!std.math.isFinite(value) or value < 0)
@@ -120,7 +120,7 @@ test "canopy fire publication preserves runtime plant order and units" {
         .methane_emission_g_c_per_h_by_plant = &.{ 2, 20, 200, 2000 },
         .oxygen_consumption_g_o_per_h_by_plant = &.{ 3, 30, 300, 3000 },
         .charcoal_production_g_c_per_h_by_plant = &.{ 4, 40, 400, 4000 },
-        .heat_release_mj_per_h_by_plant = &.{ 5, 50, 500, 5000 },
+        .heat_release_megajoules_per_h_by_plant = &.{ 5, 50, 500, 5000 },
     });
     try std.testing.expectEqualSlices(
         f64,
@@ -130,7 +130,7 @@ test "canopy fire publication preserves runtime plant order and units" {
     try std.testing.expectEqual(@as(f64, 22), state.methane_emission_g_c_per_h_by_cell[0]);
     try std.testing.expectEqual(@as(f64, 33), state.oxygen_consumption_g_o_per_h_by_cell[0]);
     try std.testing.expectEqual(@as(f64, 44), state.charcoal_production_g_c_per_h_by_cell[0]);
-    try std.testing.expectEqual(@as(f64, 55), state.heat_release_mj_per_h_by_cell[0]);
+    try std.testing.expectEqual(@as(f64, 55), state.heat_release_megajoules_per_h_by_cell[0]);
 }
 
 test "late invalid active fire preserves complete publication" {
@@ -146,7 +146,7 @@ test "late invalid active fire preserves complete publication" {
             .methane_emission_g_c_per_h_by_plant = &.{ 1, 2, 3, 4 },
             .oxygen_consumption_g_o_per_h_by_plant = &.{ 1, 2, 3, 4 },
             .charcoal_production_g_c_per_h_by_plant = &.{ 1, 2, 3, 4 },
-            .heat_release_mj_per_h_by_plant = &.{ 1, 2, 3, std.math.nan(f64) },
+            .heat_release_megajoules_per_h_by_plant = &.{ 1, 2, 3, std.math.nan(f64) },
         }),
     );
     inline for (@typeInfo(State).@"struct".fields) |field|

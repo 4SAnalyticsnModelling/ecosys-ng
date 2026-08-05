@@ -186,7 +186,7 @@ pub fn publishWaterHeatVaporGeneration(
     micropore_water_flux_m3: []const f64,
     macropore_water_flux_m3: []const f64,
     water_vapor_flux_m3: []const f64,
-    heat_flux_mj: []const f64,
+    heat_flux_megajoules: []const f64,
 ) !void {
     var face_plan = try layered.FacePlan.initTransportFaces(
         allocator,
@@ -208,7 +208,7 @@ pub fn publishWaterHeatVaporGeneration(
             micropore_water_flux_m3,
             macropore_water_flux_m3,
             water_vapor_flux_m3,
-            heat_flux_mj,
+            heat_flux_megajoules,
             &contributions,
         );
         try store.saveSourceTile(
@@ -236,8 +236,8 @@ pub fn publishLayerCellDeltaGeneration(
 ) !void {
     const horizontal_cell_count = try std.math.mul(
         usize,
-        tile_plan.grid_row_count,
-        tile_plan.grid_column_count,
+        tile_plan.lat_count,
+        tile_plan.lon_count,
     );
     const layer_cell_count = try std.math.mul(
         usize,
@@ -454,8 +454,8 @@ fn commitLayerCellGeneration(
 ) !void {
     const horizontal_cell_count = try std.math.mul(
         usize,
-        tile_plan.grid_row_count,
-        tile_plan.grid_column_count,
+        tile_plan.lat_count,
+        tile_plan.lon_count,
     );
     const layer_cell_count = try std.math.mul(
         usize,

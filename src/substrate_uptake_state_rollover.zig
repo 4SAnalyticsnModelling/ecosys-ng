@@ -1,3 +1,28 @@
+﻿//! **A5 DISPOSITION: never production bound.**
+//!
+//! Legacy source: `ecosys_f77/hour1.f` lines 3903--3932. This module is an exact,
+//! tested, source-order translation of that range and is imported only by
+//! `src/root.zig`, so it is reachable by `zig build test` and unreachable
+//! from `executeHourlyScience`. That is intentional and must stay that way.
+//!
+//! Classification: diagnostic-only. This kernel resets legacy running totals that no
+//! production module accumulates and no production module reads. Production
+//! reconstructs the equivalent totals on demand in
+//! `landscape_mass_balance_runtime.reconstruct`, which cannot drift from the
+//! state it summarizes. Binding a reset for an accumulator that nothing
+//! accumulates would add cost and no behaviour.
+//!
+//! Superseded by: the in-module previous-step carry inside each uptake owner.
+//!
+//! Legacy rolls `R*X` into `R*Y` from a central pass. Production keeps the
+//! previous-step value inside the module that consumes it, which is why the
+//! census finds its 16 field names present in other files as owned state rather
+//! than as a shared accumulator. A central rollover would be a second writer of
+//! every one of those.
+//!
+//! Do not bind this module, and do not delete it: the tests are a source-order
+//! comparison oracle for the range above. Full argument and the census behind
+//! it: `docs/traceability/hour1_2039_5200_binding_survey.md`.
 const std = @import("std");
 
 /// Total substrate uptake for one layer and timestep, in g of the named

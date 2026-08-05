@@ -66,13 +66,13 @@ pub const Changes = struct {
 
 pub const Geometry = struct {
     litter_water_volume_m3: f64,
-    litter_dry_mass_Mg: f64,
+    litter_dry_mass_megagrams: f64,
 };
 
 pub fn calculate(before: chemistry.Cell, after: chemistry.Cell, geometry: Geometry) !Changes {
     try validateGeometry(geometry);
     const water = geometry.litter_water_volume_m3;
-    const mass = geometry.litter_dry_mass_Mg;
+    const mass = geometry.litter_dry_mass_megagrams;
     return .{
         .ammonium_mol_n = try extensive(after.ammonium_mol_per_m3, before.ammonium_mol_per_m3, water),
         .ammonia_mol_n = try extensive(after.ammonia_mol_per_m3, before.ammonia_mol_per_m3, water),
@@ -91,23 +91,23 @@ pub fn calculate(before: chemistry.Cell, after: chemistry.Cell, geometry: Geomet
         .carbon_dioxide_mol = try extensive(after.carbon_dioxide_mol_per_m3, before.carbon_dioxide_mol_per_m3, water),
         .sulfate_mol = try extensive(after.sulfate_mol_per_m3, before.sulfate_mol_per_m3, water),
         .water_mol = try extensive(after.water_mol_per_m3, before.water_mol_per_m3, water),
-        .carboxyl_hydrogen_mol = try extensive(after.carboxyl_hydrogen_mol_per_Mg, before.carboxyl_hydrogen_mol_per_Mg, mass),
+        .carboxyl_hydrogen_mol = try extensive(after.carboxyl_hydrogen_mol_per_megagram, before.carboxyl_hydrogen_mol_per_megagram, mass),
         .exchange = .{
-            .ammonium_mol = try extensive(after.exchange.ammonium_mol_per_Mg, before.exchange.ammonium_mol_per_Mg, mass),
-            .hydrogen_mol = try extensive(after.exchange.hydrogen_mol_per_Mg, before.exchange.hydrogen_mol_per_Mg, mass),
-            .aluminum_mol = try extensive(after.exchange.aluminum_mol_per_Mg, before.exchange.aluminum_mol_per_Mg, mass),
-            .iron_mol = try extensive(after.exchange.iron_mol_per_Mg, before.exchange.iron_mol_per_Mg, mass),
-            .calcium_mol = try extensive(after.exchange.calcium_mol_per_Mg, before.exchange.calcium_mol_per_Mg, mass),
-            .magnesium_mol = try extensive(after.exchange.magnesium_mol_per_Mg, before.exchange.magnesium_mol_per_Mg, mass),
-            .sodium_mol = try extensive(after.exchange.sodium_mol_per_Mg, before.exchange.sodium_mol_per_Mg, mass),
-            .potassium_mol = try extensive(after.exchange.potassium_mol_per_Mg, before.exchange.potassium_mol_per_Mg, mass),
+            .ammonium_mol = try extensive(after.exchange.ammonium_mol_per_megagram, before.exchange.ammonium_mol_per_megagram, mass),
+            .hydrogen_mol = try extensive(after.exchange.hydrogen_mol_per_megagram, before.exchange.hydrogen_mol_per_megagram, mass),
+            .aluminum_mol = try extensive(after.exchange.aluminum_mol_per_megagram, before.exchange.aluminum_mol_per_megagram, mass),
+            .iron_mol = try extensive(after.exchange.iron_mol_per_megagram, before.exchange.iron_mol_per_megagram, mass),
+            .calcium_mol = try extensive(after.exchange.calcium_mol_per_megagram, before.exchange.calcium_mol_per_megagram, mass),
+            .magnesium_mol = try extensive(after.exchange.magnesium_mol_per_megagram, before.exchange.magnesium_mol_per_megagram, mass),
+            .sodium_mol = try extensive(after.exchange.sodium_mol_per_megagram, before.exchange.sodium_mol_per_megagram, mass),
+            .potassium_mol = try extensive(after.exchange.potassium_mol_per_megagram, before.exchange.potassium_mol_per_megagram, mass),
         },
         .phosphate_surface = .{
-            .deprotonated_site_mol = try extensive(after.phosphate_surface.deprotonated_site_mol_per_Mg, before.phosphate_surface.deprotonated_site_mol_per_Mg, mass),
-            .hydroxyl_site_mol = try extensive(after.phosphate_surface.hydroxyl_site_mol_per_Mg, before.phosphate_surface.hydroxyl_site_mol_per_Mg, mass),
-            .protonated_site_mol = try extensive(after.phosphate_surface.protonated_site_mol_per_Mg, before.phosphate_surface.protonated_site_mol_per_Mg, mass),
-            .adsorbed_hpo4_mol_p = try extensive(after.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg, before.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg, mass),
-            .adsorbed_h2po4_mol_p = try extensive(after.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg, before.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg, mass),
+            .deprotonated_site_mol = try extensive(after.phosphate_surface.deprotonated_site_mol_per_megagram, before.phosphate_surface.deprotonated_site_mol_per_megagram, mass),
+            .hydroxyl_site_mol = try extensive(after.phosphate_surface.hydroxyl_site_mol_per_megagram, before.phosphate_surface.hydroxyl_site_mol_per_megagram, mass),
+            .protonated_site_mol = try extensive(after.phosphate_surface.protonated_site_mol_per_megagram, before.phosphate_surface.protonated_site_mol_per_megagram, mass),
+            .adsorbed_hpo4_mol_p = try extensive(after.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram, before.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram, mass),
+            .adsorbed_h2po4_mol_p = try extensive(after.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram, before.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram, mass),
         },
         .phosphate_minerals = .{
             .aluminum_phosphate_mol = try extensive(after.phosphate_minerals.aluminum_phosphate_mol_per_m3, before.phosphate_minerals.aluminum_phosphate_mol_per_m3, water),
@@ -129,9 +129,76 @@ pub fn solveCellAndCapture(state: *chemistry.State, cell_index: usize, context: 
     try validateGeometry(geometry);
     if (cell_index >= state.cells.len) return error.LitterChemistryCellIndexOutOfBounds;
     const before = state.cells[cell_index];
+    const phosphorus_before_mol = try phosphorusInventoryMol(before, geometry);
     const result = try rates.solveCell(state, cell_index, context, options);
+    try restorePhosphorusInventory(
+        &state.cells[cell_index],
+        geometry,
+        phosphorus_before_mol,
+        options,
+    );
     output.* = try calculate(before, state.cells[cell_index], geometry);
     return result;
+}
+
+fn phosphorusInventoryMol(cell: chemistry.Cell, geometry: Geometry) !f64 {
+    const water = geometry.litter_water_volume_m3;
+    const dry_mass = geometry.litter_dry_mass_megagrams;
+    const total = water * (cell.hpo4_mol_p_per_m3 +
+        cell.h2po4_mol_p_per_m3 +
+        cell.phosphate_minerals.aluminum_phosphate_mol_per_m3 +
+        cell.phosphate_minerals.iron_phosphate_mol_per_m3 +
+        cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3 +
+        3 * cell.phosphate_minerals.hydroxyapatite_mol_per_m3 +
+        2 * cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3) +
+        dry_mass * (cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram +
+            cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram);
+    if (!std.math.isFinite(total) or total < 0)
+        return error.InvalidLitterPhosphorusInventory;
+    return total;
+}
+
+/// The nonlinear residual accepts small coordinate errors, but reaction
+/// extents are conservative. Project only that accepted roundoff back onto
+/// aqueous H2PO4 so solver tolerance cannot become a material P source/sink.
+fn restorePhosphorusInventory(
+    cell: *chemistry.Cell,
+    geometry: Geometry,
+    target_mol: f64,
+    options: chemistry.Options,
+) !void {
+    const current_mol = try phosphorusInventoryMol(cell.*, geometry);
+    const correction_mol = target_mol - current_mol;
+    const permitted = options.absolute_tolerance * geometry.litter_water_volume_m3 +
+        options.relative_tolerance * @max(target_mol, current_mol);
+    if (!std.math.isFinite(permitted) or @abs(correction_mol) > permitted)
+        return error.NonConservativeLitterPhosphorusReaction;
+    if (correction_mol >= 0) {
+        cell.h2po4_mol_p_per_m3 += correction_mol / geometry.litter_water_volume_m3;
+    } else {
+        var removal_mol = -correction_mol;
+        removeFromPool(&cell.h2po4_mol_p_per_m3, geometry.litter_water_volume_m3, 1, &removal_mol);
+        removeFromPool(&cell.hpo4_mol_p_per_m3, geometry.litter_water_volume_m3, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram, geometry.litter_dry_mass_megagrams, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram, geometry.litter_dry_mass_megagrams, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_minerals.aluminum_phosphate_mol_per_m3, geometry.litter_water_volume_m3, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_minerals.iron_phosphate_mol_per_m3, geometry.litter_water_volume_m3, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3, geometry.litter_water_volume_m3, 1, &removal_mol);
+        removeFromPool(&cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3, geometry.litter_water_volume_m3, 2, &removal_mol);
+        removeFromPool(&cell.phosphate_minerals.hydroxyapatite_mol_per_m3, geometry.litter_water_volume_m3, 3, &removal_mol);
+        if (removal_mol > permitted)
+            return error.LitterPhosphorusProjectionWouldBecomeNegative;
+    }
+    if (!std.math.isFinite(cell.h2po4_mol_p_per_m3))
+        return error.InvalidLitterPhosphorusInventory;
+}
+
+fn removeFromPool(pool: *f64, carrier: f64, phosphorus_per_molecule: f64, remaining_mol: *f64) void {
+    if (remaining_mol.* <= 0) return;
+    const available_mol = pool.* * carrier * phosphorus_per_molecule;
+    const removed_mol = @min(available_mol, remaining_mol.*);
+    pool.* -= removed_mol / (carrier * phosphorus_per_molecule);
+    remaining_mol.* -= removed_mol;
 }
 
 fn extensive(after: f64, before: f64, factor: f64) !f64 {
@@ -141,7 +208,7 @@ fn extensive(after: f64, before: f64, factor: f64) !f64 {
 }
 
 fn validateGeometry(geometry: Geometry) !void {
-    if (!std.math.isFinite(geometry.litter_water_volume_m3) or geometry.litter_water_volume_m3 <= 0 or !std.math.isFinite(geometry.litter_dry_mass_Mg) or geometry.litter_dry_mass_Mg <= 0) return error.InvalidLitterGeometry;
+    if (!std.math.isFinite(geometry.litter_water_volume_m3) or geometry.litter_water_volume_m3 <= 0 or !std.math.isFinite(geometry.litter_dry_mass_megagrams) or geometry.litter_dry_mass_megagrams <= 0) return error.InvalidLitterGeometry;
 }
 
 fn zeroCell() chemistry.Cell {
@@ -162,10 +229,10 @@ test "litter REDIST conversion uses water volume and dry mass by pool" {
     const before = zeroCell();
     var after = before;
     after.ammonium_mol_per_m3 = 2;
-    after.exchange.ammonium_mol_per_Mg = 3;
-    after.carboxyl_hydrogen_mol_per_Mg = 4;
+    after.exchange.ammonium_mol_per_megagram = 3;
+    after.carboxyl_hydrogen_mol_per_megagram = 4;
     after.phosphate_minerals.hydroxyapatite_mol_per_m3 = 5;
-    const changes = try calculate(before, after, .{ .litter_water_volume_m3 = 7, .litter_dry_mass_Mg = 11 });
+    const changes = try calculate(before, after, .{ .litter_water_volume_m3 = 7, .litter_dry_mass_megagrams = 11 });
     try std.testing.expectEqual(@as(f64, 14), changes.ammonium_mol_n);
     try std.testing.expectEqual(@as(f64, 33), changes.exchange.ammonium_mol);
     try std.testing.expectEqual(@as(f64, 44), changes.carboxyl_hydrogen_mol);
@@ -174,5 +241,27 @@ test "litter REDIST conversion uses water volume and dry mass by pool" {
 
 test "invalid litter geometry fails before changing output" {
     const cell = zeroCell();
-    try std.testing.expectError(error.InvalidLitterGeometry, calculate(cell, cell, .{ .litter_water_volume_m3 = 0, .litter_dry_mass_Mg = 1 }));
+    try std.testing.expectError(error.InvalidLitterGeometry, calculate(cell, cell, .{ .litter_water_volume_m3 = 0, .litter_dry_mass_megagrams = 1 }));
+}
+
+test "accepted litter solver tolerance cannot change phosphorus inventory" {
+    var cell = zeroCell();
+    cell.h2po4_mol_p_per_m3 = 2;
+    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram = 3;
+    cell.phosphate_minerals.hydroxyapatite_mol_per_m3 = 5;
+    const geometry: Geometry = .{ .litter_water_volume_m3 = 7, .litter_dry_mass_megagrams = 11 };
+    const target = try phosphorusInventoryMol(cell, geometry);
+    cell.h2po4_mol_p_per_m3 -= 1e-9;
+    try restorePhosphorusInventory(&cell, geometry, target, .{ .relative_tolerance = 1e-8 });
+    try std.testing.expectApproxEqAbs(target, try phosphorusInventoryMol(cell, geometry), 5e-14);
+}
+
+test "material litter phosphorus defect fails instead of being hidden" {
+    var cell = zeroCell();
+    cell.h2po4_mol_p_per_m3 = 2;
+    const geometry: Geometry = .{ .litter_water_volume_m3 = 1, .litter_dry_mass_megagrams = 1 };
+    try std.testing.expectError(
+        error.NonConservativeLitterPhosphorusReaction,
+        restorePhosphorusInventory(&cell, geometry, 3, .{ .relative_tolerance = 1e-8 }),
+    );
 }

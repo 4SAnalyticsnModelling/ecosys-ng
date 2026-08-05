@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Totals = struct {
-    shortwave_radiation_mj_per_m2_day: f64,
+    shortwave_radiation_megajoules_per_m2_day: f64,
     maximum_air_temperature_c: f64,
     minimum_air_temperature_c: f64,
     maximum_vapor_pressure_kpa: f64,
@@ -13,8 +13,8 @@ pub const Totals = struct {
 pub const Hour = struct {
     current_solar_angle_sine: f64,
     seasonal_diffuse_radiation_sine: f64,
-    direct_shortwave_mj_per_m2_h: f64,
-    diffuse_shortwave_mj_per_m2_h: f64,
+    direct_shortwave_megajoules_per_m2_h: f64,
+    diffuse_shortwave_megajoules_per_m2_h: f64,
     air_temperature_c: f64,
     ambient_vapor_pressure_kpa: f64,
     wind_travel_m_per_h: f64,
@@ -36,8 +36,8 @@ pub fn accumulate(totals: *Totals, hour: Hour) !void {
         hour.current_solar_angle_sine > 1 or
         hour.seasonal_diffuse_radiation_sine < 0 or
         hour.seasonal_diffuse_radiation_sine > 1 or
-        hour.direct_shortwave_mj_per_m2_h < 0 or
-        hour.diffuse_shortwave_mj_per_m2_h < 0 or
+        hour.direct_shortwave_megajoules_per_m2_h < 0 or
+        hour.diffuse_shortwave_megajoules_per_m2_h < 0 or
         hour.ambient_vapor_pressure_kpa < 0 or
         hour.wind_travel_m_per_h < 0 or
         hour.rainfall_m_per_h < 0 or
@@ -48,10 +48,10 @@ pub fn accumulate(totals: *Totals, hour: Hour) !void {
 
     var next = totals.*;
     if (hour.current_solar_angle_sine > 0) {
-        next.shortwave_radiation_mj_per_m2_day +=
-            hour.direct_shortwave_mj_per_m2_h *
+        next.shortwave_radiation_megajoules_per_m2_day +=
+            hour.direct_shortwave_megajoules_per_m2_h *
             hour.current_solar_angle_sine +
-            hour.diffuse_shortwave_mj_per_m2_h *
+            hour.diffuse_shortwave_megajoules_per_m2_h *
                 hour.seasonal_diffuse_radiation_sine;
     }
     next.maximum_air_temperature_c =
@@ -76,7 +76,7 @@ pub fn accumulate(totals: *Totals, hour: Hour) !void {
 
 pub fn reset() Totals {
     return .{
-        .shortwave_radiation_mj_per_m2_day = 0,
+        .shortwave_radiation_megajoules_per_m2_day = 0,
         .maximum_air_temperature_c = -100,
         .minimum_air_temperature_c = 100,
         .maximum_vapor_pressure_kpa = 0,
@@ -90,8 +90,8 @@ fn exampleHour() Hour {
     return .{
         .current_solar_angle_sine = 0.5,
         .seasonal_diffuse_radiation_sine = 0.8,
-        .direct_shortwave_mj_per_m2_h = 2,
-        .diffuse_shortwave_mj_per_m2_h = 1,
+        .direct_shortwave_megajoules_per_m2_h = 2,
+        .diffuse_shortwave_megajoules_per_m2_h = 1,
         .air_temperature_c = 15,
         .ambient_vapor_pressure_kpa = 1.2,
         .wind_travel_m_per_h = 3600,
@@ -107,7 +107,7 @@ test "hour updates exact WTHR totals and extrema" {
     try accumulate(&totals, exampleHour());
     try std.testing.expectEqual(
         @as(f64, 1.8),
-        totals.shortwave_radiation_mj_per_m2_day,
+        totals.shortwave_radiation_megajoules_per_m2_day,
     );
     try std.testing.expectEqual(@as(f64, 15), totals.maximum_air_temperature_c);
     try std.testing.expectEqual(@as(f64, 15), totals.minimum_air_temperature_c);
@@ -123,7 +123,7 @@ test "zero solar angle suppresses both direct and diffuse radiation total" {
     try accumulate(&totals, hour);
     try std.testing.expectEqual(
         @as(f64, 0),
-        totals.shortwave_radiation_mj_per_m2_day,
+        totals.shortwave_radiation_megajoules_per_m2_day,
     );
 }
 

@@ -12,11 +12,11 @@ pub const Geometry = struct {
     ammonium_band_water_volume_m3: f64,
     phosphate_non_band_water_volume_m3: f64,
     phosphate_band_water_volume_m3: f64,
-    shared_soil_mass_Mg: f64,
-    ammonium_non_band_soil_mass_Mg: f64,
-    ammonium_band_soil_mass_Mg: f64,
-    phosphate_non_band_soil_mass_Mg: f64,
-    phosphate_band_soil_mass_Mg: f64,
+    shared_soil_mass_megagrams: f64,
+    ammonium_non_band_soil_mass_megagrams: f64,
+    ammonium_band_soil_mass_megagrams: f64,
+    phosphate_non_band_soil_mass_megagrams: f64,
+    phosphate_band_soil_mass_megagrams: f64,
 };
 
 pub const Changes = struct {
@@ -64,21 +64,21 @@ pub fn calculate(before: []const f64, after: []const f64, geometry: Geometry, ou
         cursor += 1;
     }
     inline for (@typeInfo(phosphate_network.State).@"struct".fields) |field| {
-        const factor = if (isExchangeSite(field.name)) geometry.phosphate_non_band_soil_mass_Mg else geometry.phosphate_non_band_water_volume_m3;
+        const factor = if (isExchangeSite(field.name)) geometry.phosphate_non_band_soil_mass_megagrams else geometry.phosphate_non_band_water_volume_m3;
         output_mol[cursor] = try finiteChange(before[cursor], after[cursor], factor);
         cursor += 1;
     }
     inline for (@typeInfo(phosphate_network.State).@"struct".fields) |field| {
-        const factor = if (isExchangeSite(field.name)) geometry.phosphate_band_soil_mass_Mg else geometry.phosphate_band_water_volume_m3;
+        const factor = if (isExchangeSite(field.name)) geometry.phosphate_band_soil_mass_megagrams else geometry.phosphate_band_water_volume_m3;
         output_mol[cursor] = try finiteChange(before[cursor], after[cursor], factor);
         cursor += 1;
     }
     inline for (@typeInfo(cation_exchange.Cations).@"struct".fields) |field| {
-        const mass = if (std.mem.eql(u8, field.name, "ammonium_non_band")) geometry.ammonium_non_band_soil_mass_Mg else if (std.mem.eql(u8, field.name, "ammonium_band")) geometry.ammonium_band_soil_mass_Mg else geometry.shared_soil_mass_Mg;
+        const mass = if (std.mem.eql(u8, field.name, "ammonium_non_band")) geometry.ammonium_non_band_soil_mass_megagrams else if (std.mem.eql(u8, field.name, "ammonium_band")) geometry.ammonium_band_soil_mass_megagrams else geometry.shared_soil_mass_megagrams;
         output_mol[cursor] = try finiteChange(before[cursor], after[cursor], mass);
         cursor += 1;
     }
-    output_mol[cursor] = try finiteChange(before[cursor], after[cursor], geometry.shared_soil_mass_Mg);
+    output_mol[cursor] = try finiteChange(before[cursor], after[cursor], geometry.shared_soil_mass_megagrams);
     cursor += 1;
     inline for (@typeInfo(geochemistry.SolidState).@"struct".fields) |_| {
         output_mol[cursor] = try finiteChange(before[cursor], after[cursor], geometry.shared_water_volume_m3);
@@ -115,7 +115,7 @@ fn aqueousVolume(comptime name: []const u8, geometry: Geometry) f64 {
 }
 
 fn isExchangeSite(comptime name: []const u8) bool {
-    return std.mem.indexOf(u8, name, "site_mol_per_Mg") != null or std.mem.indexOf(u8, name, "adsorbed_") != null;
+    return std.mem.indexOf(u8, name, "site_mol_per_megagram") != null or std.mem.indexOf(u8, name, "adsorbed_") != null;
 }
 
 fn finiteChange(before: f64, after: f64, factor: f64) !f64 {
@@ -152,13 +152,13 @@ test "intensive chemistry differences use pool-specific REDIST geometry" {
     state.aqueous[0].calcium = 1;
     state.aqueous[0].ammonium_band = 1;
     state.non_band_phosphate[0].dissolved_h2po4_mol_p_per_m3 = 1;
-    state.non_band_phosphate[0].adsorbed_h2po4_mol_p_per_Mg = 1;
-    state.cation_exchange_mol_per_Mg[0] = filled(cation_exchange.Cations, 0);
-    state.cation_exchange_mol_per_Mg[0].ammonium_band = 1;
+    state.non_band_phosphate[0].adsorbed_h2po4_mol_p_per_megagram = 1;
+    state.cation_exchange_mol_per_megagram[0] = filled(cation_exchange.Cations, 0);
+    state.cation_exchange_mol_per_megagram[0].ammonium_band = 1;
     state.geochemistry_solids[0].calcite_solid_mol_per_m3 = 1;
     state.water_mol_per_m3[0] = 1;
     try state.packCell(0, after);
-    try calculate(before, after, .{ .shared_water_volume_m3 = 2, .ammonium_non_band_water_volume_m3 = 3, .ammonium_band_water_volume_m3 = 4, .phosphate_non_band_water_volume_m3 = 5, .phosphate_band_water_volume_m3 = 6, .shared_soil_mass_Mg = 7, .ammonium_non_band_soil_mass_Mg = 8, .ammonium_band_soil_mass_Mg = 9, .phosphate_non_band_soil_mass_Mg = 10, .phosphate_band_soil_mass_Mg = 11 }, changes);
+    try calculate(before, after, .{ .shared_water_volume_m3 = 2, .ammonium_non_band_water_volume_m3 = 3, .ammonium_band_water_volume_m3 = 4, .phosphate_non_band_water_volume_m3 = 5, .phosphate_band_water_volume_m3 = 6, .shared_soil_mass_megagrams = 7, .ammonium_non_band_soil_mass_megagrams = 8, .ammonium_band_soil_mass_megagrams = 9, .phosphate_non_band_soil_mass_megagrams = 10, .phosphate_band_soil_mass_megagrams = 11 }, changes);
     var cursor: usize = 0;
     inline for (@typeInfo(aqueous_network.State).@"struct".fields) |field| {
         if (std.mem.eql(u8, field.name, "calcium")) try std.testing.expectApproxEqAbs(@as(f64, 2), changes[cursor], 1e-15);
@@ -167,7 +167,7 @@ test "intensive chemistry differences use pool-specific REDIST geometry" {
     }
     inline for (@typeInfo(phosphate_network.State).@"struct".fields) |field| {
         if (std.mem.eql(u8, field.name, "dissolved_h2po4_mol_p_per_m3")) try std.testing.expectApproxEqAbs(@as(f64, 5), changes[cursor], 1e-15);
-        if (std.mem.eql(u8, field.name, "adsorbed_h2po4_mol_p_per_Mg")) try std.testing.expectApproxEqAbs(@as(f64, 10), changes[cursor], 1e-15);
+        if (std.mem.eql(u8, field.name, "adsorbed_h2po4_mol_p_per_megagram")) try std.testing.expectApproxEqAbs(@as(f64, 10), changes[cursor], 1e-15);
         cursor += 1;
     }
 }
@@ -184,7 +184,7 @@ test "packed extensive changes retain carboxyl geochemistry and water order" {
     defer std.testing.allocator.free(changes);
 
     try state.packCell(0, before);
-    state.carboxyl_bound_hydrogen_mol_per_Mg[0] = 1;
+    state.carboxyl_bound_hydrogen_mol_per_megagram[0] = 1;
     state.geochemistry_solids[0].calcite_solid_mol_per_m3 = 2;
     state.water_mol_per_m3[0] = 3;
     try state.packCell(0, after);
@@ -194,16 +194,16 @@ test "packed extensive changes retain carboxyl geochemistry and water order" {
         .ammonium_band_water_volume_m3 = 5,
         .phosphate_non_band_water_volume_m3 = 5,
         .phosphate_band_water_volume_m3 = 5,
-        .shared_soil_mass_Mg = 7,
-        .ammonium_non_band_soil_mass_Mg = 7,
-        .ammonium_band_soil_mass_Mg = 7,
-        .phosphate_non_band_soil_mass_Mg = 7,
-        .phosphate_band_soil_mass_Mg = 7,
+        .shared_soil_mass_megagrams = 7,
+        .ammonium_non_band_soil_mass_megagrams = 7,
+        .ammonium_band_soil_mass_megagrams = 7,
+        .phosphate_non_band_soil_mass_megagrams = 7,
+        .phosphate_band_soil_mass_megagrams = 7,
     }, changes);
 
     for (changes, 0..) |change, index| {
         const name = chemistry.State.packedComponentName(index).?;
-        if (std.mem.eql(u8, name, "carboxyl_bound_hydrogen_mol_per_Mg")) {
+        if (std.mem.eql(u8, name, "carboxyl_bound_hydrogen_mol_per_megagram")) {
             try std.testing.expectEqual(@as(f64, 7), change);
         } else if (std.mem.eql(u8, name, "geochemistry_solids.calcite_solid_mol_per_m3")) {
             try std.testing.expectEqual(@as(f64, 10), change);

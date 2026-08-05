@@ -30,9 +30,9 @@ pub fn disaggregateHourWithPhase(previous: DailyForcing, current: DailyForcing, 
     if (!std.math.isFinite(latitude_degrees_north) or latitude_degrees_north < -90 or latitude_degrees_north > 90 or !std.math.isFinite(solar_noon_hour) or !std.math.isFinite(altitude_m)) return error.InvalidDailyWeatherGeometry;
     const daylength_h = if (phytotron) 24.0 else calculateDaylength(day_of_year, latitude_degrees_north);
     const maximum_radiation = if (phytotron)
-        current.shortwave_radiation_mj_per_m2_per_day
+        current.shortwave_radiation_megajoules_per_m2_per_day
     else if (daylength_h > 0)
-        current.shortwave_radiation_mj_per_m2_per_day / (daylength_h * 0.658)
+        current.shortwave_radiation_megajoules_per_m2_per_day / (daylength_h * 0.658)
     else
         0.0;
     const hour_f: f64 = @floatFromInt(hour);
@@ -71,9 +71,9 @@ pub fn disaggregateHourWithPhase(previous: DailyForcing, current: DailyForcing, 
         .precipitation_m = rainfall + snowfall,
         .rainfall_m = rainfall,
         .snowfall_water_equivalent_m = snowfall,
-        .shortwave_radiation_mj_per_m2 = shortwave,
+        .shortwave_radiation_megajoules_per_m2 = shortwave,
         .wind_speed_m_per_h = @max(3600.0, current.wind_speed_m_per_h),
-        .longwave_radiation_mj_per_m2 = null,
+        .longwave_radiation_megajoules_per_m2 = null,
     };
     try validate(forcing);
     return .{ .forcing = forcing, .rainfall_m = rainfall, .snowfall_m = snowfall, .daylength_h = daylength_h };
@@ -118,7 +118,7 @@ pub fn calculateDaylength(day_of_year: u16, latitude_degrees: f64) f64 {
 
 fn validate(forcing: HourlyForcing) !void {
     inline for (@typeInfo(HourlyForcing).@"struct".fields) |field| if (field.type == f64 and !std.math.isFinite(@field(forcing, field.name))) return error.NonFiniteDisaggregatedWeather;
-    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.shortwave_radiation_mj_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidDisaggregatedWeather;
+    if (forcing.air_temperature_c < -273.15 or forcing.vapor_pressure_kpa < 0 or forcing.precipitation_m < 0 or forcing.shortwave_radiation_megajoules_per_m2 < 0 or forcing.wind_speed_m_per_h < 0) return error.InvalidDisaggregatedWeather;
 }
 
 test "daily precipitation is assigned to reference hours and conserved when rain" {
@@ -128,7 +128,7 @@ test "daily precipitation is assigned to reference hours and conserved when rain
         .mean_vapor_pressure_kpa = 1,
         .saturation_vapor_pressure_at_minimum_kpa = 1.2,
         .precipitation_m_per_day = 0.02,
-        .shortwave_radiation_mj_per_m2_per_day = 12,
+        .shortwave_radiation_megajoules_per_m2_per_day = 12,
         .wind_speed_m_per_h = 100,
     };
     var total: f64 = 0;
@@ -137,7 +137,7 @@ test "daily precipitation is assigned to reference hours and conserved when rain
 }
 
 test "polar day and night remain finite" {
-    const day: DailyForcing = .{ .maximum_air_temperature_c = -5, .minimum_air_temperature_c = -15, .mean_vapor_pressure_kpa = 0.2, .saturation_vapor_pressure_at_minimum_kpa = 0.1, .precipitation_m_per_day = 0, .shortwave_radiation_mj_per_m2_per_day = 5, .wind_speed_m_per_h = 0 };
+    const day: DailyForcing = .{ .maximum_air_temperature_c = -5, .minimum_air_temperature_c = -15, .mean_vapor_pressure_kpa = 0.2, .saturation_vapor_pressure_at_minimum_kpa = 0.1, .precipitation_m_per_day = 0, .shortwave_radiation_megajoules_per_m2_per_day = 5, .wind_speed_m_per_h = 0 };
     const summer = try disaggregateHour(day, day, day, 180, 2000, 12, 81.8, 12, 290, false);
     const winter = try disaggregateHour(day, day, day, 1, 2000, 12, 81.8, 12, 290, false);
     try std.testing.expectEqual(@as(f64, 24), summer.daylength_h);
@@ -145,7 +145,7 @@ test "polar day and night remain finite" {
 }
 
 test "daily disaggregation preserves DAY modulo-four chronology" {
-    const day: DailyForcing = .{ .maximum_air_temperature_c = 5, .minimum_air_temperature_c = -5, .mean_vapor_pressure_kpa = 0.2, .saturation_vapor_pressure_at_minimum_kpa = 0.1, .precipitation_m_per_day = 0, .shortwave_radiation_mj_per_m2_per_day = 5, .wind_speed_m_per_h = 3600 };
+    const day: DailyForcing = .{ .maximum_air_temperature_c = 5, .minimum_air_temperature_c = -5, .mean_vapor_pressure_kpa = 0.2, .saturation_vapor_pressure_at_minimum_kpa = 0.1, .precipitation_m_per_day = 0, .shortwave_radiation_megajoules_per_m2_per_day = 5, .wind_speed_m_per_h = 3600 };
     _ = try disaggregateHour(day, day, day, 366, 1900, 12, 53.5, 12, 645, false);
     try std.testing.expectError(
         error.InvalidDailyWeatherTime,

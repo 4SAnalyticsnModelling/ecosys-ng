@@ -21,14 +21,14 @@ pub const Inputs = struct {
     surface_temperature_k: f64,
     /// ORGCX-equivalent dry organic C before this removal transaction.
     dry_organic_carbon_before_g_c: f64,
-    dry_organic_heat_capacity_mj_per_g_c_k: f64 = 2.496e-6,
+    dry_organic_heat_capacity_megajoules_per_g_c_k: f64 = 2.496e-6,
 };
 
 pub const Accounting = struct {
     carbon_output_g_c: f64,
     nitrogen_output_g_n: f64,
     phosphorus_output_g_p: f64,
-    heat_output_mj: f64,
+    heat_output_megajoules: f64,
     remaining_organic_carbon_g_c: f64,
     remaining_organic_nitrogen_g_n: f64,
     remaining_organic_phosphorus_g_p: f64,
@@ -82,7 +82,7 @@ pub fn apply(pools: Pools, inputs: Inputs) !Accounting {
         .remaining_charcoal_carbon_g_c = try productFinite(retained_fraction, charcoal_c_before),
         .remaining_charcoal_nitrogen_g_n = try productFinite(retained_fraction, charcoal_n_before),
         .remaining_charcoal_phosphorus_g_p = try productFinite(retained_fraction, charcoal_p_before),
-        .heat_output_mj = undefined,
+        .heat_output_megajoules = undefined,
     };
     const remaining_dry_carbon_g_c = try addFinite(
         accounting.remaining_organic_carbon_g_c,
@@ -93,9 +93,9 @@ pub fn apply(pools: Pools, inputs: Inputs) !Accounting {
     if (!std.math.isFinite(dry_carbon_loss_g_c) or dry_carbon_loss_g_c < 0)
         return error.InconsistentSurfaceOrganicCarbon;
     var result = accounting;
-    result.heat_output_mj = try productFinite(
+    result.heat_output_megajoules = try productFinite(
         try productFinite(
-            inputs.dry_organic_heat_capacity_mj_per_g_c_k,
+            inputs.dry_organic_heat_capacity_megajoules_per_g_c_k,
             dry_carbon_loss_g_c,
         ),
         inputs.surface_temperature_k,
@@ -119,14 +119,14 @@ fn validateInputs(inputs: Inputs) !void {
         inputs.removal_fraction,
         inputs.surface_temperature_k,
         inputs.dry_organic_carbon_before_g_c,
-        inputs.dry_organic_heat_capacity_mj_per_g_c_k,
+        inputs.dry_organic_heat_capacity_megajoules_per_g_c_k,
     }) |value| if (!std.math.isFinite(value))
         return error.NonFiniteSurfaceLitterRemovalInput;
     if (inputs.removal_fraction < 0 or inputs.removal_fraction > 0.999)
         return error.InvalidSurfaceLitterRemovalFraction;
     if (inputs.surface_temperature_k <= 0 or
         inputs.dry_organic_carbon_before_g_c < 0 or
-        inputs.dry_organic_heat_capacity_mj_per_g_c_k <= 0)
+        inputs.dry_organic_heat_capacity_megajoules_per_g_c_k <= 0)
         return error.InvalidSurfaceLitterRemovalInput;
 }
 
@@ -195,7 +195,7 @@ test "operation 21 scales arbitrary runtime pools and accounts C N P heat" {
     try std.testing.expectApproxEqAbs(@as(f64, 3.5), result.phosphorus_output_g_p, 1e-12);
     try std.testing.expectApproxEqAbs(
         2.496e-6 * 37.5 * 300,
-        result.heat_output_mj,
+        result.heat_output_megajoules,
         1e-14,
     );
     try std.testing.expectEqual(@as(f64, 7.5), organic_c[0]);

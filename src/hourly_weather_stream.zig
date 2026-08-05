@@ -141,8 +141,8 @@ fn expandThreeHour(previous: Observation, current: Observation, offset: u8, phas
     const precipitation_m = current.forcing.precipitation_m / 3;
     const is_rain = temperature_c > phase.snowfall_temperature_threshold_c;
     const snowfall_m = if (!is_rain and precipitation_m >= phase.minimum_snowfall_water_equivalent_m) precipitation_m else 0;
-    const previous_longwave = previous.forcing.longwave_radiation_mj_per_m2;
-    const current_longwave = current.forcing.longwave_radiation_mj_per_m2;
+    const previous_longwave = previous.forcing.longwave_radiation_megajoules_per_m2;
+    const current_longwave = current.forcing.longwave_radiation_megajoules_per_m2;
     if ((previous_longwave == null) != (current_longwave == null)) return error.InconsistentThreeHourlyLongwaveRadiation;
     return .{ .timestamp = timestamp, .forcing = .{
         .air_temperature_c = temperature_c,
@@ -150,9 +150,9 @@ fn expandThreeHour(previous: Observation, current: Observation, offset: u8, phas
         .precipitation_m = if (is_rain) precipitation_m else snowfall_m,
         .rainfall_m = if (is_rain) precipitation_m else 0,
         .snowfall_water_equivalent_m = snowfall_m,
-        .shortwave_radiation_mj_per_m2 = interpolate(previous.forcing.shortwave_radiation_mj_per_m2, current.forcing.shortwave_radiation_mj_per_m2, previous_weight, current_weight),
+        .shortwave_radiation_megajoules_per_m2 = interpolate(previous.forcing.shortwave_radiation_megajoules_per_m2, current.forcing.shortwave_radiation_megajoules_per_m2, previous_weight, current_weight),
         .wind_speed_m_per_h = interpolate(previous.forcing.wind_speed_m_per_h, current.forcing.wind_speed_m_per_h, previous_weight, current_weight),
-        .longwave_radiation_mj_per_m2 = if (current_longwave) |value| interpolate(previous_longwave.?, value, previous_weight, current_weight) else null,
+        .longwave_radiation_megajoules_per_m2 = if (current_longwave) |value| interpolate(previous_longwave.?, value, previous_weight, current_weight) else null,
     } };
 }
 
@@ -176,9 +176,9 @@ const HourAccumulator = struct {
     precipitation_m: f64,
     rainfall_m: f64,
     snowfall_water_equivalent_m: f64,
-    shortwave_radiation_mj_per_m2: f64,
+    shortwave_radiation_megajoules_per_m2: f64,
     wind_speed_m_per_h: f64,
-    longwave_radiation_mj_per_m2: ?f64,
+    longwave_radiation_megajoules_per_m2: ?f64,
 
     fn init(observation: Observation) HourAccumulator {
         return .{
@@ -189,23 +189,23 @@ const HourAccumulator = struct {
             .precipitation_m = observation.forcing.precipitation_m,
             .rainfall_m = observation.forcing.rainfall_m,
             .snowfall_water_equivalent_m = observation.forcing.snowfall_water_equivalent_m,
-            .shortwave_radiation_mj_per_m2 = observation.forcing.shortwave_radiation_mj_per_m2,
+            .shortwave_radiation_megajoules_per_m2 = observation.forcing.shortwave_radiation_megajoules_per_m2,
             .wind_speed_m_per_h = observation.forcing.wind_speed_m_per_h,
-            .longwave_radiation_mj_per_m2 = observation.forcing.longwave_radiation_mj_per_m2,
+            .longwave_radiation_megajoules_per_m2 = observation.forcing.longwave_radiation_megajoules_per_m2,
         };
     }
 
     fn add(self: *HourAccumulator, forcing: weather.HourlyForcing) !void {
-        if ((self.longwave_radiation_mj_per_m2 == null) != (forcing.longwave_radiation_mj_per_m2 == null)) return error.InconsistentSubhourlyLongwaveRadiation;
+        if ((self.longwave_radiation_megajoules_per_m2 == null) != (forcing.longwave_radiation_megajoules_per_m2 == null)) return error.InconsistentSubhourlyLongwaveRadiation;
         self.count += 1;
         self.air_temperature_c += forcing.air_temperature_c;
         self.vapor_pressure_kpa += forcing.vapor_pressure_kpa;
         self.precipitation_m += forcing.precipitation_m;
         self.rainfall_m += forcing.rainfall_m;
         self.snowfall_water_equivalent_m += forcing.snowfall_water_equivalent_m;
-        self.shortwave_radiation_mj_per_m2 += forcing.shortwave_radiation_mj_per_m2;
+        self.shortwave_radiation_megajoules_per_m2 += forcing.shortwave_radiation_megajoules_per_m2;
         self.wind_speed_m_per_h += forcing.wind_speed_m_per_h;
-        if (forcing.longwave_radiation_mj_per_m2) |value| self.longwave_radiation_mj_per_m2.? += value;
+        if (forcing.longwave_radiation_megajoules_per_m2) |value| self.longwave_radiation_megajoules_per_m2.? += value;
     }
 
     fn finish(self: HourAccumulator) Observation {
@@ -218,36 +218,36 @@ const HourAccumulator = struct {
             .precipitation_m = self.precipitation_m,
             .rainfall_m = self.rainfall_m,
             .snowfall_water_equivalent_m = self.snowfall_water_equivalent_m,
-            .shortwave_radiation_mj_per_m2 = self.shortwave_radiation_mj_per_m2 / sample_count,
+            .shortwave_radiation_megajoules_per_m2 = self.shortwave_radiation_megajoules_per_m2 / sample_count,
             .wind_speed_m_per_h = self.wind_speed_m_per_h / sample_count,
-            .longwave_radiation_mj_per_m2 = if (self.longwave_radiation_mj_per_m2) |value| value / sample_count else null,
+            .longwave_radiation_megajoules_per_m2 = if (self.longwave_radiation_megajoules_per_m2) |value| value / sample_count else null,
         } };
     }
 };
 
 test "subhour samples aggregate without subhour model cycles" {
     const timestamp: weather.Timestamp = .{ .year = 2001, .day_of_year = 2, .month = null, .day_of_month = null, .hour = 3, .minute = 0 };
-    const first: Observation = .{ .timestamp = timestamp, .forcing = .{ .air_temperature_c = 2, .vapor_pressure_kpa = 1, .precipitation_m = 0.001, .rainfall_m = 0.001, .shortwave_radiation_mj_per_m2 = 0.2, .wind_speed_m_per_h = 3600, .longwave_radiation_mj_per_m2 = 0.1 } };
+    const first: Observation = .{ .timestamp = timestamp, .forcing = .{ .air_temperature_c = 2, .vapor_pressure_kpa = 1, .precipitation_m = 0.001, .rainfall_m = 0.001, .shortwave_radiation_megajoules_per_m2 = 0.2, .wind_speed_m_per_h = 3600, .longwave_radiation_megajoules_per_m2 = 0.1 } };
     var accumulator = HourAccumulator.init(first);
-    try accumulator.add(.{ .air_temperature_c = 6, .vapor_pressure_kpa = 3, .precipitation_m = 0.002, .snowfall_water_equivalent_m = 0.002, .shortwave_radiation_mj_per_m2 = 0.6, .wind_speed_m_per_h = 7200, .longwave_radiation_mj_per_m2 = 0.3 });
+    try accumulator.add(.{ .air_temperature_c = 6, .vapor_pressure_kpa = 3, .precipitation_m = 0.002, .snowfall_water_equivalent_m = 0.002, .shortwave_radiation_megajoules_per_m2 = 0.6, .wind_speed_m_per_h = 7200, .longwave_radiation_megajoules_per_m2 = 0.3 });
     const result = accumulator.finish();
     try std.testing.expectEqual(@as(u8, 0), result.timestamp.minute);
     try std.testing.expectApproxEqAbs(@as(f64, 4), result.forcing.air_temperature_c, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.003), result.forcing.precipitation_m, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.001), result.forcing.rainfall_m, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 0.002), result.forcing.snowfall_water_equivalent_m, 1e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.4), result.forcing.shortwave_radiation_mj_per_m2, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.4), result.forcing.shortwave_radiation_megajoules_per_m2, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 5400), result.forcing.wind_speed_m_per_h, 1e-12);
 }
 
 test "READS three-hour infill interpolates state and conserves precipitation" {
     const previous: Observation = .{
         .timestamp = .{ .year = null, .day_of_year = 1, .month = null, .day_of_month = null, .hour = 3, .minute = 0 },
-        .forcing = .{ .air_temperature_c = -2, .vapor_pressure_kpa = 1, .precipitation_m = 0, .shortwave_radiation_mj_per_m2 = 0, .wind_speed_m_per_h = 3600, .longwave_radiation_mj_per_m2 = 1 },
+        .forcing = .{ .air_temperature_c = -2, .vapor_pressure_kpa = 1, .precipitation_m = 0, .shortwave_radiation_megajoules_per_m2 = 0, .wind_speed_m_per_h = 3600, .longwave_radiation_megajoules_per_m2 = 1 },
     };
     const current: Observation = .{
         .timestamp = .{ .year = null, .day_of_year = 1, .month = null, .day_of_month = null, .hour = 6, .minute = 0 },
-        .forcing = .{ .air_temperature_c = 1, .vapor_pressure_kpa = 4, .precipitation_m = 0.003, .rainfall_m = 0.003, .shortwave_radiation_mj_per_m2 = 3, .wind_speed_m_per_h = 7200, .longwave_radiation_mj_per_m2 = 4 },
+        .forcing = .{ .air_temperature_c = 1, .vapor_pressure_kpa = 4, .precipitation_m = 0.003, .rainfall_m = 0.003, .shortwave_radiation_megajoules_per_m2 = 3, .wind_speed_m_per_h = 7200, .longwave_radiation_megajoules_per_m2 = 4 },
     };
     const first = try expandThreeHour(previous, current, 0, .{});
     const second = try expandThreeHour(previous, current, 1, .{});

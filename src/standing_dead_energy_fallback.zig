@@ -1,16 +1,16 @@
 const std = @import("std");
 
 pub const Diagnostics = struct {
-    net_radiation_mj_per_step: f64,
-    latent_heat_mj_per_step: f64,
-    sensible_heat_mj_per_step: f64,
-    storage_heat_mj_per_step: f64,
-    vapor_convective_heat_mj_per_step: f64,
-    emitted_thermal_radiation_mj_per_step: f64,
+    net_radiation_megajoules_per_step: f64,
+    latent_heat_megajoules_per_step: f64,
+    sensible_heat_megajoules_per_step: f64,
+    storage_heat_megajoules_per_step: f64,
+    vapor_convective_heat_megajoules_per_step: f64,
+    emitted_thermal_radiation_megajoules_per_step: f64,
     evaporation_m3_per_step: f64,
     transpiration_m3_per_step: f64,
     ground_vapor_flux_m3_per_step: f64,
-    ground_sensible_heat_mj_per_step: f64,
+    ground_sensible_heat_megajoules_per_step: f64,
 };
 
 pub const State = struct {
@@ -46,16 +46,16 @@ pub fn apply(
         before.intercepted_water_m3 +
         fallback_inputs.precipitation_retention_rate_m3_per_h *
             fallback_inputs.timestep_h;
-    result.diagnostics.net_radiation_mj_per_step = 0;
-    result.diagnostics.latent_heat_mj_per_step = 0;
-    result.diagnostics.sensible_heat_mj_per_step = 0;
-    result.diagnostics.storage_heat_mj_per_step = 0;
-    result.diagnostics.vapor_convective_heat_mj_per_step = 0;
-    result.diagnostics.emitted_thermal_radiation_mj_per_step = 0;
+    result.diagnostics.net_radiation_megajoules_per_step = 0;
+    result.diagnostics.latent_heat_megajoules_per_step = 0;
+    result.diagnostics.sensible_heat_megajoules_per_step = 0;
+    result.diagnostics.storage_heat_megajoules_per_step = 0;
+    result.diagnostics.vapor_convective_heat_megajoules_per_step = 0;
+    result.diagnostics.emitted_thermal_radiation_megajoules_per_step = 0;
     result.diagnostics.evaporation_m3_per_step = 0;
     result.diagnostics.transpiration_m3_per_step = 0;
     result.diagnostics.ground_vapor_flux_m3_per_step = 0;
-    result.diagnostics.ground_sensible_heat_mj_per_step = 0;
+    result.diagnostics.ground_sensible_heat_megajoules_per_step = 0;
     if (!std.math.isFinite(result.intercepted_water_m3) or
         result.intercepted_water_m3 < 0)
         return error.InvalidStandingDeadEnergyFallbackResult;
@@ -118,16 +118,16 @@ fn testState(value: f64) State {
     return .{
         .intercepted_water_m3 = value,
         .diagnostics = .{
-            .net_radiation_mj_per_step = value,
-            .latent_heat_mj_per_step = value,
-            .sensible_heat_mj_per_step = value,
-            .storage_heat_mj_per_step = value,
-            .vapor_convective_heat_mj_per_step = value,
-            .emitted_thermal_radiation_mj_per_step = value,
+            .net_radiation_megajoules_per_step = value,
+            .latent_heat_megajoules_per_step = value,
+            .sensible_heat_megajoules_per_step = value,
+            .storage_heat_megajoules_per_step = value,
+            .vapor_convective_heat_megajoules_per_step = value,
+            .emitted_thermal_radiation_megajoules_per_step = value,
             .evaporation_m3_per_step = value,
             .transpiration_m3_per_step = value,
             .ground_vapor_flux_m3_per_step = value,
-            .ground_sensible_heat_mj_per_step = value,
+            .ground_sensible_heat_megajoules_per_step = value,
         },
         .canopy_air_temperature_k = 280 + value,
         .canopy_air_vapor_volume_fraction = 0.01,
@@ -158,12 +158,12 @@ test "active energy gate does not evaluate fallback-only inputs" {
 
 test "inactive branch overwrites invalid diagnostics but validates preserved state" {
     var before = testState(1);
-    before.diagnostics.storage_heat_mj_per_step = std.math.nan(f64);
+    before.diagnostics.storage_heat_megajoules_per_step = std.math.nan(f64);
     const result = try apply(false, before, .{
         .precipitation_retention_rate_m3_per_h = 0,
         .timestep_h = 1,
     });
-    try std.testing.expectEqual(@as(f64, 0), result.diagnostics.storage_heat_mj_per_step);
+    try std.testing.expectEqual(@as(f64, 0), result.diagnostics.storage_heat_megajoules_per_step);
 }
 
 test "later invalid fallback input leaves runtime destination unchanged" {

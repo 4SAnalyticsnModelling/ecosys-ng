@@ -262,7 +262,7 @@ test "soil biogeochemistry checkpoint round trips microbial populations and comp
     var microbial_phosphorus = try MicrobialPhosphorus.init(std.testing.allocator, 6, 20);
     defer microbial_phosphorus.deinit();
     chemistry.water_mol_per_m3[5] = 55.5;
-    chemistry.carboxyl_bound_hydrogen_mol_per_Mg[5] = 0.75;
+    chemistry.carboxyl_bound_hydrogen_mol_per_megagram[5] = 0.75;
     available_nutrients.mineral_g_element[0] = 8;
     fertilizer.soil[5].banded_urea_mol_n = 9;
     fertilizer.initial_urease_inhibition_fraction[5] = 1;

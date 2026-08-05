@@ -4,8 +4,8 @@ pub const Inputs = struct {
     execution_day: u32,
     first_execution_day: u32,
     source_hour: u8,
-    current_horizontal_shortwave_mj_per_m2_h: f64,
-    previous_horizontal_shortwave_mj_per_m2_h: f64,
+    current_horizontal_shortwave_megajoules_per_m2_h: f64,
+    previous_horizontal_shortwave_megajoules_per_m2_h: f64,
     current_air_temperature_k: f64,
     previous_air_temperature_k: f64,
     current_atmospheric_vapor_concentration_m3_per_m3: f64,
@@ -13,7 +13,7 @@ pub const Inputs = struct {
 };
 
 pub const Change = struct {
-    horizontal_shortwave_change_mj_per_m2_h: f64,
+    horizontal_shortwave_change_megajoules_per_m2_h: f64,
     air_temperature_change_k: f64,
     atmospheric_vapor_concentration_change_m3_per_m3: f64,
 };
@@ -33,8 +33,8 @@ pub fn calculate(inputs: Inputs) !Change {
         if (!std.math.isFinite(value))
             return error.NonFiniteHourlyForcingChangeInput;
     }
-    if (inputs.current_horizontal_shortwave_mj_per_m2_h < 0 or
-        inputs.previous_horizontal_shortwave_mj_per_m2_h < 0 or
+    if (inputs.current_horizontal_shortwave_megajoules_per_m2_h < 0 or
+        inputs.previous_horizontal_shortwave_megajoules_per_m2_h < 0 or
         inputs.current_air_temperature_k <= 0 or
         inputs.previous_air_temperature_k <= 0 or
         inputs.current_atmospheric_vapor_concentration_m3_per_m3 < 0 or
@@ -46,8 +46,8 @@ pub fn calculate(inputs: Inputs) !Change {
         return std.mem.zeroes(Change);
 
     const result: Change = .{
-        .horizontal_shortwave_change_mj_per_m2_h = inputs.current_horizontal_shortwave_mj_per_m2_h -
-            inputs.previous_horizontal_shortwave_mj_per_m2_h,
+        .horizontal_shortwave_change_megajoules_per_m2_h = inputs.current_horizontal_shortwave_megajoules_per_m2_h -
+            inputs.previous_horizontal_shortwave_megajoules_per_m2_h,
         .air_temperature_change_k = inputs.current_air_temperature_k -
             inputs.previous_air_temperature_k,
         .atmospheric_vapor_concentration_change_m3_per_m3 = inputs.current_atmospheric_vapor_concentration_m3_per_m3 -
@@ -64,8 +64,8 @@ fn exampleInputs() Inputs {
         .execution_day = 100,
         .first_execution_day = 100,
         .source_hour = 2,
-        .current_horizontal_shortwave_mj_per_m2_h = 0.8,
-        .previous_horizontal_shortwave_mj_per_m2_h = 0.3,
+        .current_horizontal_shortwave_megajoules_per_m2_h = 0.8,
+        .previous_horizontal_shortwave_megajoules_per_m2_h = 0.3,
         .current_air_temperature_k = 290,
         .previous_air_temperature_k = 288,
         .current_atmospheric_vapor_concentration_m3_per_m3 = 0.0012,
@@ -77,7 +77,7 @@ test "ordinary hour calculates exact signed forcing differences" {
     const result = try calculate(exampleInputs());
     try std.testing.expectEqual(
         @as(f64, 0.5),
-        result.horizontal_shortwave_change_mj_per_m2_h,
+        result.horizontal_shortwave_change_megajoules_per_m2_h,
     );
     try std.testing.expectEqual(@as(f64, 2), result.air_temperature_change_k);
     try std.testing.expectApproxEqAbs(
@@ -89,11 +89,11 @@ test "ordinary hour calculates exact signed forcing differences" {
 
 test "changes remain signed when hourly forcing decreases" {
     var inputs = exampleInputs();
-    inputs.current_horizontal_shortwave_mj_per_m2_h = 0.1;
+    inputs.current_horizontal_shortwave_megajoules_per_m2_h = 0.1;
     inputs.current_air_temperature_k = 285;
     inputs.current_atmospheric_vapor_concentration_m3_per_m3 = 0.0008;
     const result = try calculate(inputs);
-    try std.testing.expect(result.horizontal_shortwave_change_mj_per_m2_h < 0);
+    try std.testing.expect(result.horizontal_shortwave_change_megajoules_per_m2_h < 0);
     try std.testing.expect(result.air_temperature_change_k < 0);
     try std.testing.expect(
         result.atmospheric_vapor_concentration_change_m3_per_m3 < 0,
@@ -114,7 +114,7 @@ test "hour one on later execution day uses differences" {
     const result = try calculate(inputs);
     try std.testing.expectEqual(
         @as(f64, 0.5),
-        result.horizontal_shortwave_change_mj_per_m2_h,
+        result.horizontal_shortwave_change_megajoules_per_m2_h,
     );
 }
 

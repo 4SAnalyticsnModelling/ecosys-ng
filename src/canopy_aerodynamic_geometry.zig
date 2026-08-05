@@ -9,9 +9,9 @@ pub const Parameters = struct {
     canopy_area_threshold_m2: f64,
     height_tolerance_m: f64,
     water_surface_roughness_m: f64,
-    snow_heat_capacity_threshold_mj_k: f64,
+    snow_heat_capacity_threshold_megajoules_k: f64,
     minimum_air_column_height_m: f64,
-    air_heat_capacity_mj_m3_k: f64,
+    air_heat_capacity_megajoules_m3_k: f64,
     richardson_scale_h2_m: f64,
     resistance_denominator_factor: f64,
     inactive_boundary_layer_resistance_h_m: f64,
@@ -31,7 +31,7 @@ pub const Inputs = struct {
     ground_surface_roughness_m: f64,
     wind_measurement_height_m: f64,
     wind_reference_mode: WindReferenceMode,
-    first_snow_layer_heat_capacity_mj_k: f64,
+    first_snow_layer_heat_capacity_megajoules_k: f64,
     wind_speed_m_h: f64,
 };
 
@@ -41,7 +41,7 @@ pub const Result = struct {
     wind_reference_height_m: f64,
     isothermal_richardson_number: f64,
     isothermal_boundary_layer_resistance_h_m: f64,
-    canopy_air_heat_capacity_mj_k: f64,
+    canopy_air_heat_capacity_megajoules_k: f64,
     canopy_air_volume_m3: f64,
 };
 
@@ -85,9 +85,9 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) CalculationError!Result
                 inputs.canopy_height_m *
                     @max(0.0, 1.0 - 2.0 / canopy_area_index * intercepted_fraction);
 
-            // HOUR1 treats ground roughness as both a length here and as the
-            // lower bound of a dimensionless product. This preserves that
-            // legacy expression pending evidence for the intended scaling.
+            // HOUR1 computes ZE (intermediate roughness) as:
+            // ZE = ZT * max(ZS, exp(-0.5*ARLSG) * (1 - exp(-0.5*ARLSG))),
+            // where ZT is canopy height and ZS is surface roughness.
             candidate_roughness_height_m = inputs.canopy_height_m *
                 @max(inputs.ground_surface_roughness_m, attenuation * intercepted_fraction);
         } else {
@@ -99,8 +99,8 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) CalculationError!Result
             .at_least_two_m_above_displacement => @max(inputs.wind_measurement_height_m, zero_plane_displacement_m + 2.0),
         };
 
-        updated_roughness_height_m = if (inputs.first_snow_layer_heat_capacity_mj_k >
-            parameters.snow_heat_capacity_threshold_mj_k)
+        updated_roughness_height_m = if (inputs.first_snow_layer_heat_capacity_megajoules_k >
+            parameters.snow_heat_capacity_threshold_megajoules_k)
             @max(candidate_roughness_height_m, parameters.water_surface_roughness_m)
         else
             @max(candidate_roughness_height_m, inputs.ground_surface_roughness_m);
@@ -124,8 +124,8 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) CalculationError!Result
         @max(parameters.minimum_air_column_height_m, wind_reference_height_m);
     const canopy_air_volume_m3 =
         effective_air_column_height_m * inputs.canopy_air_volume_area_m2;
-    const canopy_air_heat_capacity_mj_k =
-        canopy_air_volume_m3 * parameters.air_heat_capacity_mj_m3_k;
+    const canopy_air_heat_capacity_megajoules_k =
+        canopy_air_volume_m3 * parameters.air_heat_capacity_megajoules_m3_k;
 
     const result = Result{
         .zero_plane_displacement_m = zero_plane_displacement_m,
@@ -133,7 +133,7 @@ pub fn calculate(inputs: Inputs, parameters: Parameters) CalculationError!Result
         .wind_reference_height_m = wind_reference_height_m,
         .isothermal_richardson_number = richardson_number,
         .isothermal_boundary_layer_resistance_h_m = boundary_layer_resistance_h_m,
-        .canopy_air_heat_capacity_mj_k = canopy_air_heat_capacity_mj_k,
+        .canopy_air_heat_capacity_megajoules_k = canopy_air_heat_capacity_megajoules_k,
         .canopy_air_volume_m3 = canopy_air_volume_m3,
     };
     inline for (std.meta.fields(Result)) |field| {
@@ -165,16 +165,16 @@ fn validate(inputs: Inputs, parameters: Parameters) CalculationError!void {
         inputs.previous_roughness_height_m < 0.0 or
         inputs.ground_surface_roughness_m < 0.0 or
         inputs.wind_measurement_height_m < 0.0 or
-        inputs.first_snow_layer_heat_capacity_mj_k < 0.0)
+        inputs.first_snow_layer_heat_capacity_megajoules_k < 0.0)
     {
         return error.NegativeHeight;
     }
     if (parameters.canopy_area_threshold_m2 < 0.0 or
         parameters.height_tolerance_m < 0.0 or
         parameters.water_surface_roughness_m <= 0.0 or
-        parameters.snow_heat_capacity_threshold_mj_k < 0.0 or
+        parameters.snow_heat_capacity_threshold_megajoules_k < 0.0 or
         parameters.minimum_air_column_height_m <= 0.0 or
-        parameters.air_heat_capacity_mj_m3_k <= 0.0 or
+        parameters.air_heat_capacity_megajoules_m3_k <= 0.0 or
         parameters.richardson_scale_h2_m <= 0.0 or
         parameters.resistance_denominator_factor <= 0.0 or
         parameters.inactive_boundary_layer_resistance_h_m < 0.0)
@@ -188,9 +188,9 @@ fn testParameters() Parameters {
         .canopy_area_threshold_m2 = 1.0e-12,
         .height_tolerance_m = 1.0e-12,
         .water_surface_roughness_m = 0.005,
-        .snow_heat_capacity_threshold_mj_k = 0.1,
+        .snow_heat_capacity_threshold_megajoules_k = 0.1,
         .minimum_air_column_height_m = 5.0,
-        .air_heat_capacity_mj_m3_k = 1.25e-3,
+        .air_heat_capacity_megajoules_m3_k = 1.25e-3,
         .richardson_scale_h2_m = 1.27e8,
         .resistance_denominator_factor = 0.168,
         .inactive_boundary_layer_resistance_h_m = 100.0,
@@ -212,7 +212,7 @@ test "active canopy preserves displacement roughness and resistance order" {
         .ground_surface_roughness_m = 0.025,
         .wind_measurement_height_m = 10.0,
         .wind_reference_mode = .measurement_height_above_displacement,
-        .first_snow_layer_heat_capacity_mj_k = 0.0,
+        .first_snow_layer_heat_capacity_megajoules_k = 0.0,
         .wind_speed_m_h = 3600.0,
     };
     const result = try calculate(inputs, testParameters());
@@ -260,5 +260,5 @@ test "inactive ecosystem uses fallback resistance and minimum air column" {
         result.isothermal_boundary_layer_resistance_h_m,
     );
     try std.testing.expectEqual(@as(f64, 40.0), result.canopy_air_volume_m3);
-    try std.testing.expectEqual(@as(f64, 0.05), result.canopy_air_heat_capacity_mj_k);
+    try std.testing.expectEqual(@as(f64, 0.05), result.canopy_air_heat_capacity_megajoules_k);
 }

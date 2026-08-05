@@ -3,6 +3,7 @@ const snow = @import("snow_solute_transport.zig");
 const grid_module = @import("grid.zig");
 const gas = @import("gas_transport.zig");
 const organic = @import("soil_organic_initialization.zig");
+const organic_transport = @import("soil_organic_transport.zig");
 const litter_chemistry = @import("surface_litter_chemistry.zig");
 const litter_fertilizer = @import("surface_litter_fertilizer.zig");
 const audit = @import("mass_balance_audit.zig");
@@ -15,13 +16,14 @@ const soil_chemistry = @import("solute_chemistry_state.zig");
 const solute_transport = @import("solute_transport.zig");
 const solute_species = @import("solute_transport_species.zig");
 const zone_classification = @import("solute_charge_classification.zig");
+const plant_roots = @import("plant_root_system.zig");
 
 /// Authoritative storage side of the seven EXEC conservation equations.
 /// Boundary additions/removals remain in their process-owned cumulative
 /// ledgers and are combined by `mass_balance_audit`.
 pub const Storage = struct {
     water_m3: f64 = 0,
-    heat_mj: f64 = 0,
+    heat_megajoules: f64 = 0,
     oxygen_g: f64 = 0,
     residue_carbon_g: f64 = 0,
     organic_carbon_g: f64 = 0,
@@ -48,20 +50,41 @@ pub const Storage = struct {
         inline for (std.meta.fields(Storage)) |field| {
             const value = @field(self, field.name);
             if (!std.math.isFinite(value)) return error.NonFiniteLandscapeInventory;
-            if (value < 0) return error.NegativeLandscapeInventory;
+            // `heat_megajoules` is an enthalpy measured against liquid water at
+            // 0 K (HEAT-001 resolution A), so a sufficiently frozen carrier may
+            // legitimately be negative. Every other field is a mass or volume
+            // and must remain nonnegative.
+            if (comptime !std.mem.eql(u8, field.name, "heat_megajoules"))
+                if (value < 0) return error.NegativeLandscapeInventory;
         }
     }
 };
 
 /// Publishes only authoritative storage fields into EXEC totals. Cumulative
 /// boundary ledgers and landscape area remain owned by the caller.
+/// HEAT-001 instrumentation. Per-carrier frozen water equivalent accumulated
+/// by the most recent aggregation pass, printed once per census so the
+/// opening and closing daily censuses can be compared carrier by carrier.
+var diagnostic_snow_solid_water_equivalent_m3: f64 = 0;
+var diagnostic_snow_ice_volume_water_equivalent_m3: f64 = 0;
+var diagnostic_soil_matrix_ice_water_equivalent_m3: f64 = 0;
+var diagnostic_soil_macropore_ice_water_equivalent_m3: f64 = 0;
+var diagnostic_surface_ice_water_equivalent_m3: f64 = 0;
+
 pub fn publishStorage(
     totals: *audit.Totals,
     storage: Storage,
 ) !void {
     try storage.validate();
+    std.log.debug("heat latent census: snow_swe_m3={e} snow_ice_we_m3={e} soil_matrix_ice_m3={e} soil_macropore_ice_m3={e} surface_ice_m3={e}", .{
+        diagnostic_snow_solid_water_equivalent_m3,
+        diagnostic_snow_ice_volume_water_equivalent_m3,
+        diagnostic_soil_matrix_ice_water_equivalent_m3,
+        diagnostic_soil_macropore_ice_water_equivalent_m3,
+        diagnostic_surface_ice_water_equivalent_m3,
+    });
     totals.water_storage_m3 = storage.water_m3;
-    totals.heat_storage_mj = storage.heat_mj;
+    totals.heat_storage_megajoules = storage.heat_megajoules;
     totals.oxygen_storage_g = storage.oxygen_g;
     totals.residue_carbon_g = storage.residue_carbon_g;
     totals.organic_carbon_g = storage.organic_carbon_g;
@@ -83,14 +106,111 @@ pub fn publishStorage(
 /// element units. The modern snow owner retains only the eight transported
 /// ion carriers, so their authoritative mole inventory is reconstructed from
 /// the explicitly tracked element mass rather than inventing absent species.
+///
+/// HEAT-001 resolution A. The audited heat quantity is an *enthalpy*, not a
+/// sensible heat, so every frozen carrier also contributes its latent heat of
+/// fusion. The reference state is liquid water at 0 K: liquid and vapor carry
+/// only `C*T`, and frozen water carries `C*T - L*V_water_equivalent`. Freeze
+/// and thaw are then internal conversions that cancel exactly in the census,
+/// and no boundary booking of latent heat of fusion is required or permitted.
+/// Default latent heat of fusion in MJ m-3, used only by the deprecated
+/// two-argument `aggregateSnow` wrapper below. See
+/// `docs/binding_requests/heat_001_landscape_enthalpy.md`.
+pub const default_latent_heat_of_fusion_megajoules_per_m3: f64 = 333;
+
+/// HEAT-001 second layer. The pure-water melting temperature that separates
+/// the ice branch of the enthalpy curve from the liquid branch.
+///
+/// The reference state is liquid water at 0 K, so a cubic metre of frozen
+/// water carries
+///
+///     C_liquid*Tm - L + C_ice*(T - Tm)
+///
+/// and NOT `C_ice*T - L`. The two differ by `(C_liquid - C_ice)*Tm`, which is
+/// `(4.19 - 1.9274)*273.15 = 617.5 MJ m-3`. That is nearly twice the latent
+/// heat itself, so the omission is not a rounding matter: every cubic metre
+/// that freezes or thaws leaked `617.5 MJ` out of the audit.
+///
+/// This is exactly the term that made the census disagree with
+/// `soil_enthalpy_balance.stateAtTemperature`, which conserves
+/// `C*(T - Tm) + L*liquid`. Subtracting the two forms leaves
+/// `C_liquid*Tm*W_total` with `W_total` the total water, and the pieces that
+/// depend on the liquid/ice split cancel only when this offset is present.
+/// Measured on Ottawa day one: `(C_ice - C_liquid)*Tm*dV_ice` over the
+/// day-one soil ice gain of `1.1168e5 m3` predicts `-6.902e7 MJ`, that is
+/// `-7.918e-1 MJ m-2` against a recorded deviation of `-8.128e-1 MJ m-2`,
+/// reproducing 97.4 % of it.
+///
+/// The default exists for the same reason as the latent-heat defaults above:
+/// `src/ecosys_ng.zig` is owned by the Integrator lane. See
+/// `docs/binding_requests/heat_001_landscape_enthalpy.md`.
+pub const default_pure_water_melting_temperature_k: f64 = 273.15;
+
+/// Enthalpy of one cubic metre of frozen water (water-equivalent volume)
+/// relative to liquid water at 0 K. Single definition shared by every ice
+/// carrier so the five carriers cannot drift apart.
+///
+/// HEAT-001 third layer. This is `pub` because the *boundary* must use the
+/// identical definition, not merely an equivalent one. Snowfall crosses the
+/// landscape boundary already frozen, so
+/// `landscape_boundary_ledger.accumulateAcceptedPrecipitationHeat` has to
+/// credit exactly the enthalpy that `aggregateSnowEnthalpy` will then store
+/// for the same water equivalent. Measured on Ottawa day one: the boundary
+/// booked the superseded `C_ice*T - L` form while the census stored the
+/// ice-branch form, and the `5.753e5 m3` of day-one snowfall times the
+/// `617.5 MJ m-3` difference is `+4.075 MJ m-2` of the `+4.468 MJ m-2`
+/// deviation. A duplicated expression here would reopen exactly that gap the
+/// next time either side changed.
+pub fn frozenWaterEnthalpyPerM3(
+    temperature_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+    latent_heat_of_fusion_megajoules_per_m3: f64,
+    pure_water_melting_temperature_k: f64,
+) f64 {
+    return liquid_water_heat_capacity_megajoules_per_m3_k *
+        pure_water_melting_temperature_k -
+        latent_heat_of_fusion_megajoules_per_m3 +
+        ice_heat_capacity_megajoules_per_m3_k *
+            (temperature_k - pure_water_melting_temperature_k);
+}
+
+/// Deprecated. Retained only because `src/ecosys_ng.zig` calls this arity
+/// from a *nitrogen* diagnostic, where the heat field is discarded, and that
+/// file is owned by the Integrator lane. Do not use it for anything that
+/// reads `heat_megajoules`.
 pub fn aggregateSnow(
     state: *const snow.State,
-    ice_density_Mg_per_m3: f64,
+    ice_density_megagrams_per_m3: f64,
 ) !Storage {
-    if (!std.math.isFinite(ice_density_Mg_per_m3) or
-        ice_density_Mg_per_m3 <= 0 or
-        ice_density_Mg_per_m3 > 1)
+    return aggregateSnowEnthalpy(
+        state,
+        ice_density_megagrams_per_m3,
+        default_latent_heat_of_fusion_megajoules_per_m3,
+        4.19,
+        1.9274,
+    );
+}
+
+pub fn aggregateSnowEnthalpy(
+    state: *const snow.State,
+    ice_density_megagrams_per_m3: f64,
+    latent_heat_of_fusion_megajoules_per_m3: f64,
+    /// HEAT-001 second layer. Needed to re-base the snow owner's combined
+    /// sensible capacity onto the shared ice-branch enthalpy definition.
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+) !Storage {
+    inline for (.{ liquid_water_heat_capacity_megajoules_per_m3_k, ice_heat_capacity_megajoules_per_m3_k }) |value|
+        if (!std.math.isFinite(value) or value <= 0)
+            return error.InvalidSnowInventoryHeatCapacity;
+    if (!std.math.isFinite(ice_density_megagrams_per_m3) or
+        ice_density_megagrams_per_m3 <= 0 or
+        ice_density_megagrams_per_m3 > 1)
         return error.InvalidSnowIceDensity;
+    if (!std.math.isFinite(latent_heat_of_fusion_megajoules_per_m3) or
+        latent_heat_of_fusion_megajoules_per_m3 <= 0)
+        return error.InvalidLatentHeatOfFusion;
     const layer_count = try std.math.mul(
         usize,
         state.cell_count,
@@ -102,26 +222,53 @@ pub fn aggregateSnow(
         state.vapor_water_equivalent_m3.len != layer_count or
         state.ice_volume_m3.len != layer_count or
         state.temperature_k.len != layer_count or
-        state.heat_capacity_mj_per_k.len != layer_count or
+        state.heat_capacity_megajoules_per_k.len != layer_count or
         state.amount_g.len != try std.math.mul(usize, layer_count, snow.species_count))
         return error.SnowInventoryDimensionMismatch;
 
     var result: Storage = .{};
+    diagnostic_snow_solid_water_equivalent_m3 = 0;
+    diagnostic_snow_ice_volume_water_equivalent_m3 = 0;
     for (0..layer_count) |layer| {
         const solid = state.solid_snow_water_equivalent_m3[layer];
         const liquid = state.liquid_water_volume_m3[layer];
         const vapor = state.vapor_water_equivalent_m3[layer];
         const ice = state.ice_volume_m3[layer];
         const temperature = state.temperature_k[layer];
-        const heat_capacity = state.heat_capacity_mj_per_k[layer];
+        const heat_capacity = state.heat_capacity_megajoules_per_k[layer];
         inline for (.{ solid, liquid, vapor, ice, temperature, heat_capacity }) |value|
             if (!std.math.isFinite(value)) return error.NonFiniteSnowInventory;
         if (solid < 0 or liquid < 0 or vapor < 0 or ice < 0 or
             temperature < 0 or heat_capacity < 0)
             return error.NegativeSnowInventory;
 
-        result.water_m3 += solid + liquid + vapor + ice * ice_density_Mg_per_m3;
-        result.heat_mj += heat_capacity * temperature;
+        result.water_m3 += solid + liquid + vapor + ice * ice_density_megagrams_per_m3;
+        const frozen_water_equivalent_m3 =
+            solid + ice * ice_density_megagrams_per_m3;
+        diagnostic_snow_solid_water_equivalent_m3 += solid;
+        diagnostic_snow_ice_volume_water_equivalent_m3 += ice * ice_density_megagrams_per_m3;
+        // HEAT-001 second layer. The snow owner publishes one combined
+        // `heat_capacity_megajoules_per_k`, so the frozen part cannot simply be
+        // dropped from it the way the soil and surface aggregators do. Instead
+        // the sensible product is taken as published and the frozen carriers
+        // are then *re-based* onto the shared ice-branch definition, by
+        // removing the `C_i*T` the owner already counted for them and adding
+        // the full `C_l*Tm - L + C_i*(T - Tm)` in its place.
+        //
+        // The net correction per cubic metre is `(C_l - C_i)*Tm`, identical to
+        // the soil and surface corrections, which is the property that keeps
+        // snow-to-soil and snow-to-surface transfers internal.
+        const frozen_enthalpy_correction_megajoules_per_m3 =
+            frozenWaterEnthalpyPerM3(
+                temperature,
+                liquid_water_heat_capacity_megajoules_per_m3_k,
+                ice_heat_capacity_megajoules_per_m3_k,
+                latent_heat_of_fusion_megajoules_per_m3,
+                default_pure_water_melting_temperature_k,
+            ) - ice_heat_capacity_megajoules_per_m3_k * temperature;
+        result.heat_megajoules += heat_capacity * temperature +
+            frozen_enthalpy_correction_megajoules_per_m3 *
+                frozen_water_equivalent_m3;
         const amounts = state.amount_g[layer * snow.species_count .. (layer + 1) * snow.species_count];
         for (amounts) |amount| {
             if (!std.math.isFinite(amount)) return error.NonFiniteSnowInventory;
@@ -161,17 +308,26 @@ pub fn aggregateSnow(
 /// owner is aggregated separately before the final EXEC reduction.
 pub fn aggregateSoilPhysicalAndGas(
     grid: *const grid_module.GridState,
-    total_heat_capacity_mj_per_m3_k: []const f64,
+    dry_solid_heat_capacity_megajoules_per_m3_k: []const f64,
     layer_volume_m3: []const f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+    latent_heat_of_fusion_megajoules_per_m3: f64,
     gas_state: *const gas.State,
 ) !Storage {
     if (grid.layer_count !=
         try std.math.mul(usize, grid.cell_count, grid.soil_layer_capacity) or
         grid.active_soil_layer_count.len != grid.cell_count or
-        total_heat_capacity_mj_per_m3_k.len != grid.layer_count or
+        dry_solid_heat_capacity_megajoules_per_m3_k.len != grid.layer_count or
         layer_volume_m3.len != grid.layer_count or
         gas_state.cell_count != grid.layer_count)
         return error.SoilInventoryDimensionMismatch;
+    inline for (.{ liquid_water_heat_capacity_megajoules_per_m3_k, ice_heat_capacity_megajoules_per_m3_k }) |value|
+        if (!std.math.isFinite(value) or value <= 0)
+            return error.InvalidSoilInventoryHeatCapacity;
+    if (!std.math.isFinite(latent_heat_of_fusion_megajoules_per_m3) or
+        latent_heat_of_fusion_megajoules_per_m3 <= 0)
+        return error.InvalidLatentHeatOfFusion;
     inline for (.{
         grid.matrix_liquid_water_m3.len,
         grid.macropore_liquid_water_m3.len,
@@ -183,6 +339,8 @@ pub fn aggregateSoilPhysicalAndGas(
         return error.SoilInventoryDimensionMismatch;
 
     var result: Storage = .{};
+    diagnostic_soil_matrix_ice_water_equivalent_m3 = 0;
+    diagnostic_soil_macropore_ice_water_equivalent_m3 = 0;
     for (0..grid.cell_count) |cell| {
         const active_layers = grid.active_soil_layer_count[cell];
         if (active_layers > grid.soil_layer_capacity)
@@ -195,7 +353,7 @@ pub fn aggregateSoilPhysicalAndGas(
             const macropore_ice_water_equivalent = grid.macropore_ice_water_m3[index];
             const vapor_water_equivalent = grid.water_vapor_volume_m3[index];
             const temperature = grid.soil_temperature_k[index];
-            const volumetric_heat_capacity = total_heat_capacity_mj_per_m3_k[index];
+            const dry_solid_heat_capacity = dry_solid_heat_capacity_megajoules_per_m3_k[index];
             const volume = layer_volume_m3[index];
             inline for (.{
                 matrix_liquid,
@@ -204,7 +362,7 @@ pub fn aggregateSoilPhysicalAndGas(
                 macropore_ice_water_equivalent,
                 vapor_water_equivalent,
                 temperature,
-                volumetric_heat_capacity,
+                dry_solid_heat_capacity,
                 volume,
             }) |value| {
                 if (!std.math.isFinite(value)) return error.NonFiniteSoilInventory;
@@ -216,7 +374,43 @@ pub fn aggregateSoilPhysicalAndGas(
                 matrix_ice_water_equivalent +
                 macropore_ice_water_equivalent +
                 vapor_water_equivalent;
-            result.heat_mj += volumetric_heat_capacity * volume * temperature;
+            // Reconstruct from authoritative live carriers. Using the cached
+            // soil-thermal total here made EXEC heat storage depend on whether
+            // its derived table had been refreshed after water and phase
+            // transactions.
+            // HEAT-001 resolution A: enthalpy, not sensible heat, with the
+            // reference state liquid water at 0 K.
+            //
+            // Frozen water does NOT sit exactly one latent heat below liquid
+            // water at the same temperature. Following the liquid branch up to
+            // the melting point and the ice branch back down gives
+            // `C_l*Tm - L + C_i*(T - Tm)` per cubic metre. The earlier form
+            // `C_i*T - L` omitted `(C_l - C_i)*Tm = 617.5 MJ m-3`, which is
+            // nearly twice `L`, so freeze/thaw did not cancel in the census:
+            // it leaked that offset per cubic metre converted.
+            //
+            // The sensible term below therefore carries only the *liquid*
+            // carriers, and each frozen carrier carries its whole enthalpy.
+            // Written this way the census agrees term for term with
+            // `soil_enthalpy_balance.stateAtTemperature`, which is the function
+            // the soil solver actually conserves.
+            const frozen_water_equivalent_m3 =
+                matrix_ice_water_equivalent + macropore_ice_water_equivalent;
+            const liquid_extensive_heat_capacity_megajoules_per_k =
+                dry_solid_heat_capacity * volume +
+                liquid_water_heat_capacity_megajoules_per_m3_k *
+                    (matrix_liquid + macropore_liquid + vapor_water_equivalent);
+            result.heat_megajoules +=
+                liquid_extensive_heat_capacity_megajoules_per_k * temperature +
+                frozenWaterEnthalpyPerM3(
+                    temperature,
+                    liquid_water_heat_capacity_megajoules_per_m3_k,
+                    ice_heat_capacity_megajoules_per_m3_k,
+                    latent_heat_of_fusion_megajoules_per_m3,
+                    default_pure_water_melting_temperature_k,
+                ) * frozen_water_equivalent_m3;
+            diagnostic_soil_matrix_ice_water_equivalent_m3 += matrix_ice_water_equivalent;
+            diagnostic_soil_macropore_ice_water_equivalent_m3 += macropore_ice_water_equivalent;
 
             const first = index * gas.species_count;
             const end = first + gas.species_count;
@@ -246,6 +440,60 @@ pub fn aggregateSoilPhysicalAndGas(
             result.ammonium_nitrogen_g +=
                 fourPhaseGas(gaseous, dissolved, macropore, band, .ammonia);
         }
+    }
+    try result.validate();
+    return result;
+}
+
+/// REDIST `TLCO2P/TLOXYP/TLCH4P/TLN2OP/TLNH3P`: gaseous and aqueous
+/// root/mycorrhizal gas storage. Root carbon biomass is a plant owner, but gas
+/// already produced into these pools is part of the EXEC soil-system census.
+pub fn aggregateRootGas(state: *const plant_roots.State) !Storage {
+    const expected = try product(&.{
+        state.plant_count,
+        plant_roots.biological_domain_count,
+        state.soil_layer_count,
+    });
+    if (expected == 0 or
+        state.gaseous_carbon_dioxide_g_c.len != expected or
+        state.aqueous_carbon_dioxide_g_c.len != expected or
+        state.gaseous_oxygen_g_o.len != expected or
+        state.aqueous_oxygen_g_o.len != expected or
+        state.gaseous_methane_g_c.len != expected or
+        state.aqueous_methane_g_c.len != expected or
+        state.gaseous_nitrous_oxide_g_n.len != expected or
+        state.aqueous_nitrous_oxide_g_n.len != expected or
+        state.gaseous_ammonia_g_n.len != expected or
+        state.aqueous_ammonia_g_n.len != expected)
+        return error.RootGasInventoryDimensionMismatch;
+
+    var result: Storage = .{};
+    for (0..expected) |index| {
+        inline for (.{
+            state.gaseous_carbon_dioxide_g_c[index],
+            state.aqueous_carbon_dioxide_g_c[index],
+            state.gaseous_oxygen_g_o[index],
+            state.aqueous_oxygen_g_o[index],
+            state.gaseous_methane_g_c[index],
+            state.aqueous_methane_g_c[index],
+            state.gaseous_nitrous_oxide_g_n[index],
+            state.aqueous_nitrous_oxide_g_n[index],
+            state.gaseous_ammonia_g_n[index],
+            state.aqueous_ammonia_g_n[index],
+        }) |value| if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRootGasInventory;
+        result.carbon_dioxide_carbon_g +=
+            state.gaseous_carbon_dioxide_g_c[index] +
+            state.aqueous_carbon_dioxide_g_c[index] +
+            state.gaseous_methane_g_c[index] +
+            state.aqueous_methane_g_c[index];
+        result.oxygen_g += state.gaseous_oxygen_g_o[index] +
+            state.aqueous_oxygen_g_o[index];
+        result.dinitrogen_nitrogen_g +=
+            state.gaseous_nitrous_oxide_g_n[index] +
+            state.aqueous_nitrous_oxide_g_n[index];
+        result.ammonium_nitrogen_g += state.gaseous_ammonia_g_n[index] +
+            state.aqueous_ammonia_g_n[index];
     }
     try result.validate();
     return result;
@@ -421,6 +669,58 @@ pub fn aggregateSoilOrganic(
     return result;
 }
 
+/// TRNSFR macropore DOC/acetate that persists between transport steps.
+/// After `importMicroporeIntoProfile` the micropore amounts are in
+/// `profile.dissolved` and counted by `aggregateSoilOrganic`. The macropore
+/// amounts remain in the transport state and must be counted here to close the
+/// EXEC carbon (and N/P) balance.
+pub fn aggregateSoilOrganicTransportMacropore(
+    transport: *const organic_transport.State,
+    grid: *const grid_module.GridState,
+) !Storage {
+    const layer_count = try std.math.mul(usize, grid.cell_count, grid.soil_layer_capacity);
+    if (transport.layer_count != layer_count or
+        grid.active_soil_layer_count.len != grid.cell_count or
+        transport.macropore_amount_g.len !=
+            try std.math.mul(usize, layer_count, organic_transport.component_count))
+        return error.SoilOrganicTransportInventoryDimensionMismatch;
+
+    var result: Storage = .{};
+    for (0..grid.cell_count) |cell| {
+        const active_layers = grid.active_soil_layer_count[cell];
+        if (active_layers > grid.soil_layer_capacity)
+            return error.InvalidActiveSoilLayerCount;
+        for (0..active_layers) |local_layer| {
+            const flat_layer = cell * grid.soil_layer_capacity + local_layer;
+            for (0..organic.substrate_count) |substrate| {
+                const base =
+                    flat_layer * organic_transport.component_count +
+                    substrate * organic_transport.components_per_substrate;
+                const doc_g_c = transport.macropore_amount_g[base + @intFromEnum(organic_transport.Component.dissolved_organic_carbon)];
+                const don_g_n = transport.macropore_amount_g[base + @intFromEnum(organic_transport.Component.dissolved_organic_nitrogen)];
+                const dop_g_p = transport.macropore_amount_g[base + @intFromEnum(organic_transport.Component.dissolved_organic_phosphorus)];
+                const acetate_g_c = transport.macropore_amount_g[base + @intFromEnum(organic_transport.Component.dissolved_acetate_carbon)];
+                inline for (.{ doc_g_c, don_g_n, dop_g_p, acetate_g_c }) |value| {
+                    if (!std.math.isFinite(value))
+                        return error.NonFiniteSoilOrganicTransportInventory;
+                    if (value < 0) return error.NegativeSoilOrganicTransportInventory;
+                }
+                if (substrate == organic.substrate_count - 1) {
+                    result.organic_carbon_g += doc_g_c + acetate_g_c;
+                    result.organic_nitrogen_g += don_g_n;
+                    result.organic_phosphorus_g += dop_g_p;
+                } else {
+                    result.residue_carbon_g += doc_g_c + acetate_g_c;
+                    result.residue_nitrogen_g += don_g_n;
+                    result.residue_phosphorus_g += dop_g_p;
+                }
+            }
+        }
+    }
+    try result.validate();
+    return result;
+}
+
 /// REDIST profile mineral-N inventory. Aqueous matrix and macropore amounts
 /// are transport-owned extensive mol N; exchangeable ammonium is chemistry-
 /// owned mol N/Mg soil; and undissolved fertilizer remains in its runtime
@@ -431,7 +731,7 @@ pub fn aggregateProfileMineralNitrogen(
     transport: *const mineral_nitrogen.State,
     chemistry: *const soil_chemistry.State,
     fertilizer: *const nitrogen_fertilizer.State,
-    soil_mass_Mg: []const f64,
+    soil_mass_megagrams: []const f64,
     nitrogen_g_per_mol: f64,
 ) !Storage {
     if (grid.layer_count !=
@@ -442,7 +742,7 @@ pub fn aggregateProfileMineralNitrogen(
         fertilizer.cell_count != grid.cell_count or
         fertilizer.layer_capacity != grid.soil_layer_capacity or
         fertilizer.soil.len != grid.layer_count or
-        soil_mass_Mg.len != grid.layer_count)
+        soil_mass_megagrams.len != grid.layer_count)
         return error.ProfileMineralNitrogenInventoryDimensionMismatch;
     if (!std.math.isFinite(nitrogen_g_per_mol) or nitrogen_g_per_mol <= 0)
         return error.InvalidNitrogenMolarMass;
@@ -455,8 +755,8 @@ pub fn aggregateProfileMineralNitrogen(
             return error.InvalidActiveSoilLayerCount;
         for (0..active_layers) |layer| {
             const profile_cell = cell * grid.soil_layer_capacity + layer;
-            const mass_Mg = soil_mass_Mg[profile_cell];
-            if (!std.math.isFinite(mass_Mg) or mass_Mg < 0)
+            const mass_megagrams = soil_mass_megagrams[profile_cell];
+            if (!std.math.isFinite(mass_megagrams) or mass_megagrams < 0)
                 return error.InvalidSoilMass;
 
             const matrix = try transport.matrix.cellAmountsConst(profile_cell);
@@ -473,10 +773,10 @@ pub fn aggregateProfileMineralNitrogen(
                 nitrogenAmount(matrix, macropore, .nitrite_non_band) +
                 nitrogenAmount(matrix, macropore, .nitrite_band);
 
-            const exchange = chemistry.cation_exchange_mol_per_Mg[profile_cell];
+            const exchange = chemistry.cation_exchange_mol_per_megagram[profile_cell];
             try validateFiniteNonnegativeStruct(exchange);
             const exchange_ammonium_mol_n =
-                (exchange.ammonium_non_band + exchange.ammonium_band) * mass_Mg;
+                (exchange.ammonium_non_band + exchange.ammonium_band) * mass_megagrams;
 
             const dry = fertilizer.soil[profile_cell];
             try validateFiniteNonnegativeStruct(dry);
@@ -545,7 +845,7 @@ pub fn aggregateProfilePhosphorusAndIons(
     chemistry: *const soil_chemistry.State,
     pending_fertilizer: *const mineral_fertilizer.State,
     soil_water_m3: []const f64,
-    soil_mass_Mg: []const f64,
+    soil_mass_megagrams: []const f64,
     fractions: zone_classification.ZoneFractions,
     carbon_g_per_mol: f64,
     phosphorus_g_per_mol: f64,
@@ -563,7 +863,7 @@ pub fn aggregateProfilePhosphorusAndIons(
         pending_fertilizer.layer_capacity != grid.soil_layer_capacity or
         pending_fertilizer.soil.len != grid.layer_count or
         soil_water_m3.len != grid.layer_count or
-        soil_mass_Mg.len != grid.layer_count)
+        soil_mass_megagrams.len != grid.layer_count)
         return error.ProfilePhosphorusIonInventoryDimensionMismatch;
     if (!std.math.isFinite(carbon_g_per_mol) or carbon_g_per_mol <= 0 or
         !std.math.isFinite(phosphorus_g_per_mol) or
@@ -581,9 +881,9 @@ pub fn aggregateProfilePhosphorusAndIons(
         for (0..active_layers) |layer| {
             const profile_cell = cell * grid.soil_layer_capacity + layer;
             const water_m3 = soil_water_m3[profile_cell];
-            const mass_Mg = soil_mass_Mg[profile_cell];
+            const mass_megagrams = soil_mass_megagrams[profile_cell];
             if (!std.math.isFinite(water_m3) or water_m3 < 0 or
-                !std.math.isFinite(mass_Mg) or mass_Mg < 0)
+                !std.math.isFinite(mass_megagrams) or mass_megagrams < 0)
                 return error.InvalidProfileChemistryGeometry;
 
             const matrix_amounts =
@@ -600,7 +900,7 @@ pub fn aggregateProfilePhosphorusAndIons(
                 if (isPhosphateCarrier(species))
                     result.phosphate_phosphorus_g +=
                         amount_mol * phosphorus_g_per_mol;
-                if (species == .carbonate or species == .bicarbonate)
+                if (isCarbonateCarrier(species))
                     result.carbon_dioxide_carbon_g +=
                         amount_mol * carbon_g_per_mol;
             }
@@ -610,9 +910,9 @@ pub fn aggregateProfilePhosphorusAndIons(
             try validateFiniteNonnegativeStruct(non_band);
             try validateFiniteNonnegativeStruct(band);
             const immobile_non_band =
-                phosphateImmobileInventory(non_band, water_m3, mass_Mg);
+                phosphateImmobileInventory(non_band, water_m3, mass_megagrams);
             const immobile_band =
-                phosphateImmobileInventory(band, water_m3, mass_Mg);
+                phosphateImmobileInventory(band, water_m3, mass_megagrams);
             result.phosphate_phosphorus_g += phosphorus_g_per_mol *
                 (fractions.phosphate_non_band *
                     immobile_non_band.phosphorus_mol +
@@ -621,14 +921,14 @@ pub fn aggregateProfilePhosphorusAndIons(
                 fractions.phosphate_non_band * immobile_non_band.ion_mol +
                 fractions.phosphate_band * immobile_band.ion_mol;
 
-            const exchange = chemistry.cation_exchange_mol_per_Mg[profile_cell];
+            const exchange = chemistry.cation_exchange_mol_per_megagram[profile_cell];
             try validateFiniteNonnegativeStruct(exchange);
             const carboxyl_hydrogen =
-                chemistry.carboxyl_bound_hydrogen_mol_per_Mg[profile_cell];
+                chemistry.carboxyl_bound_hydrogen_mol_per_megagram[profile_cell];
             if (!std.math.isFinite(carboxyl_hydrogen) or
                 carboxyl_hydrogen < 0)
                 return error.InvalidProfileMineralIonState;
-            result.ion_inventory_mol += mass_Mg *
+            result.ion_inventory_mol += mass_megagrams *
                 (exchange.hydrogen + exchange.aluminum + exchange.iron +
                     exchange.calcium + exchange.magnesium + exchange.sodium +
                     exchange.potassium + carboxyl_hydrogen);
@@ -663,12 +963,12 @@ const ImmobilePhosphateInventory = struct {
 fn phosphateImmobileInventory(
     state: anytype,
     water_m3: f64,
-    soil_mass_Mg: f64,
+    soil_mass_megagrams: f64,
 ) ImmobilePhosphateInventory {
     const adsorbed_hpo4 =
-        state.adsorbed_hpo4_mol_p_per_Mg * soil_mass_Mg;
+        state.adsorbed_hpo4_mol_p_per_megagram * soil_mass_megagrams;
     const adsorbed_h2po4 =
-        state.adsorbed_h2po4_mol_p_per_Mg * soil_mass_Mg;
+        state.adsorbed_h2po4_mol_p_per_megagram * soil_mass_megagrams;
     // These reaction intermediates are not represented by generic transport
     // carrier slots; they therefore remain authoritative in chemistry.
     const dissolved_hpo4 =
@@ -691,10 +991,10 @@ fn phosphateImmobileInventory(
             aluminum_phosphate + iron_phosphate + dicalcium_phosphate +
             3 * hydroxyapatite + 2 * monocalcium_phosphate,
         .ion_mol = 3 * dissolved_hpo4 + 4 * dissolved_h2po4 +
-            (state.deprotonated_site_mol_per_Mg +
-                2 * state.hydroxyl_site_mol_per_Mg +
-                3 * state.protonated_site_mol_per_Mg) *
-                soil_mass_Mg +
+            (state.deprotonated_site_mol_per_megagram +
+                2 * state.hydroxyl_site_mol_per_megagram +
+                3 * state.protonated_site_mol_per_megagram) *
+                soil_mass_megagrams +
             3 * adsorbed_hpo4 + 4 * adsorbed_h2po4 +
             2 * (aluminum_phosphate + iron_phosphate) +
             3 * dicalcium_phosphate +
@@ -780,6 +1080,20 @@ fn isPhosphateCarrier(species: solute_species.AqueousSpecies) bool {
     return solute_species.diffusivityClass(species) == .phosphate;
 }
 
+fn isCarbonateCarrier(species: solute_species.AqueousSpecies) bool {
+    return switch (species) {
+        .carbonate,
+        .bicarbonate,
+        .calcium_carbonate,
+        .calcium_bicarbonate,
+        .magnesium_carbonate,
+        .magnesium_bicarbonate,
+        .sodium_carbonate,
+        => true,
+        else => false,
+    };
+}
+
 fn aqueousIonAtomCount(species: solute_species.AqueousSpecies) f64 {
     return switch (species) {
         .aluminum,
@@ -848,8 +1162,9 @@ fn aqueousIonAtomCount(species: solute_species.AqueousSpecies) f64 {
 pub fn aggregateSurfaceChemistry(
     chemistry: *const litter_chemistry.State,
     fertilizer: *const litter_fertilizer.State,
+    denitrification_nitrite_g_n: []const f64,
     litter_water_m3: []const f64,
-    litter_dry_mass_Mg: []const f64,
+    litter_dry_mass_megagrams: []const f64,
     carbon_g_per_mol: f64,
     nitrogen_g_per_mol: f64,
     phosphorus_g_per_mol: f64,
@@ -857,7 +1172,8 @@ pub fn aggregateSurfaceChemistry(
     const cells = chemistry.cells.len;
     if (cells == 0 or fertilizer.cells.len != cells or
         fertilizer.formulation.len != cells or litter_water_m3.len != cells or
-        litter_dry_mass_Mg.len != cells)
+        litter_dry_mass_megagrams.len != cells or
+        denitrification_nitrite_g_n.len != cells)
         return error.SurfaceChemistryInventoryDimensionMismatch;
     inline for (.{ carbon_g_per_mol, nitrogen_g_per_mol, phosphorus_g_per_mol }) |molar_mass|
         if (!std.math.isFinite(molar_mass) or molar_mass <= 0)
@@ -866,10 +1182,13 @@ pub fn aggregateSurfaceChemistry(
     var result: Storage = .{};
     for (0..cells) |cell_index| {
         const water = litter_water_m3[cell_index];
-        const dry_mass = litter_dry_mass_Mg[cell_index];
+        const dry_mass = litter_dry_mass_megagrams[cell_index];
+        const nitrite_g_n = denitrification_nitrite_g_n[cell_index];
         if (!std.math.isFinite(water) or !std.math.isFinite(dry_mass))
             return error.NonFiniteSurfaceChemistryInventory;
-        if (water < 0 or dry_mass < 0)
+        if (!std.math.isFinite(nitrite_g_n))
+            return error.NonFiniteSurfaceChemistryInventory;
+        if (water < 0 or dry_mass < 0 or nitrite_g_n < 0)
             return error.NegativeSurfaceChemistryInventory;
         const cell = chemistry.cells[cell_index];
         try validateNumericStruct(cell);
@@ -882,12 +1201,12 @@ pub fn aggregateSurfaceChemistry(
         }
 
         result.ammonium_nitrogen_g += nitrogen_g_per_mol * (water * (cell.ammonium_mol_per_m3 + cell.ammonia_mol_per_m3) +
-            dry_mass * cell.exchange.ammonium_mol_per_Mg +
+            dry_mass * cell.exchange.ammonium_mol_per_megagram +
             solid_fertilizer.ammonium_mol_n +
             solid_fertilizer.ammonia_mol_n +
             solid_fertilizer.urea_mol_n);
         result.nitrate_nitrogen_g += nitrogen_g_per_mol * (water * cell.nitrate_mol_per_m3 +
-            solid_fertilizer.nitrate_mol_n);
+            solid_fertilizer.nitrate_mol_n) + nitrite_g_n;
         result.carbon_dioxide_carbon_g += carbon_g_per_mol * water *
             (cell.carbonate_mol_per_m3 + cell.bicarbonate_mol_per_m3 +
                 cell.salt_minerals.calcite_mol_per_m3);
@@ -898,8 +1217,8 @@ pub fn aggregateSurfaceChemistry(
             cell.phosphate_minerals.dicalcium_phosphate_mol_per_m3 +
             2 * cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3 +
             3 * cell.phosphate_minerals.hydroxyapatite_mol_per_m3) +
-            dry_mass * (cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg +
-                cell.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg));
+            dry_mass * (cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram +
+                cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram));
 
         const dissolved_ion_atoms_mol_per_m3 =
             cell.aluminum_mol_per_m3 +
@@ -916,20 +1235,20 @@ pub fn aggregateSurfaceChemistry(
             2 * cell.bicarbonate_mol_per_m3 +
             3 * cell.hpo4_mol_p_per_m3 +
             4 * cell.h2po4_mol_p_per_m3;
-        const exchange_ion_atoms_mol_per_Mg =
-            cell.exchange.hydrogen_mol_per_Mg +
-            cell.exchange.aluminum_mol_per_Mg +
-            cell.exchange.iron_mol_per_Mg +
-            cell.exchange.calcium_mol_per_Mg +
-            cell.exchange.magnesium_mol_per_Mg +
-            cell.exchange.sodium_mol_per_Mg +
-            cell.exchange.potassium_mol_per_Mg +
-            2 * cell.exchange.ammonium_mol_per_Mg +
-            cell.phosphate_surface.deprotonated_site_mol_per_Mg +
-            2 * cell.phosphate_surface.hydroxyl_site_mol_per_Mg +
-            3 * cell.phosphate_surface.protonated_site_mol_per_Mg +
-            3 * cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg +
-            4 * cell.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg;
+        const exchange_ion_atoms_mol_per_megagram =
+            cell.exchange.hydrogen_mol_per_megagram +
+            cell.exchange.aluminum_mol_per_megagram +
+            cell.exchange.iron_mol_per_megagram +
+            cell.exchange.calcium_mol_per_megagram +
+            cell.exchange.magnesium_mol_per_megagram +
+            cell.exchange.sodium_mol_per_megagram +
+            cell.exchange.potassium_mol_per_megagram +
+            2 * cell.exchange.ammonium_mol_per_megagram +
+            cell.phosphate_surface.deprotonated_site_mol_per_megagram +
+            2 * cell.phosphate_surface.hydroxyl_site_mol_per_megagram +
+            3 * cell.phosphate_surface.protonated_site_mol_per_megagram +
+            3 * cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram +
+            4 * cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram;
         const mineral_ion_atoms_mol_per_m3 =
             2 * (cell.salt_minerals.calcite_mol_per_m3 +
                 cell.salt_minerals.gypsum_mol_per_m3 +
@@ -947,7 +1266,7 @@ pub fn aggregateSurfaceChemistry(
             solid_fertilizer.nitrate_mol_n;
         result.ion_inventory_mol +=
             water * (dissolved_ion_atoms_mol_per_m3 + mineral_ion_atoms_mol_per_m3) +
-            dry_mass * exchange_ion_atoms_mol_per_Mg +
+            dry_mass * exchange_ion_atoms_mol_per_megagram +
             fertilizer_ion_atoms_mol;
     }
     try result.validate();
@@ -955,9 +1274,15 @@ pub fn aggregateSurfaceChemistry(
 }
 
 pub const SurfacePhysicalParameters = struct {
-    dry_organic_heat_capacity_mj_per_g_c_k: f64,
-    liquid_water_heat_capacity_mj_per_m3_k: f64,
-    ice_heat_capacity_mj_per_m3_k: f64,
+    dry_organic_heat_capacity_megajoules_per_g_c_k: f64,
+    liquid_water_heat_capacity_megajoules_per_m3_k: f64,
+    ice_heat_capacity_megajoules_per_m3_k: f64,
+    /// HEAT-001 resolution A. See
+    /// `docs/binding_requests/heat_001_landscape_enthalpy.md`: the default is
+    /// a temporary bridge because `src/ecosys_ng.zig` builds this struct and
+    /// is owned by the Integrator lane. It equals the value every shipped
+    /// runscript carries and must be deleted once the binding request lands.
+    latent_heat_of_fusion_megajoules_per_m3: f64 = 333,
     water_molar_mass_g_per_mol: f64,
     liquid_water_density_g_per_m3: f64,
 };
@@ -987,6 +1312,7 @@ pub fn aggregateSurfacePhysicalAndGas(
     }
 
     var result: Storage = .{};
+    diagnostic_surface_ice_water_equivalent_m3 = 0;
     for (0..cells) |cell| {
         const liquid = surface.litter_water_m3[cell];
         const ice_water_equivalent = surface_ice_water_equivalent_m3[cell];
@@ -1002,16 +1328,35 @@ pub fn aggregateSurfacePhysicalAndGas(
             vapor_mol * parameters.water_molar_mass_g_per_mol /
             parameters.liquid_water_density_g_per_m3;
         const organic_carbon_g_c = try surface_organic.totalCarbon_g_c(cell);
-        const heat_capacity_mj_per_k =
-            parameters.dry_organic_heat_capacity_mj_per_g_c_k *
+        const liquid_heat_capacity_megajoules_per_k =
+            parameters.dry_organic_heat_capacity_megajoules_per_g_c_k *
             organic_carbon_g_c +
-            parameters.liquid_water_heat_capacity_mj_per_m3_k *
-                (liquid + vapor_water_equivalent_m3) +
-            parameters.ice_heat_capacity_mj_per_m3_k *
-                ice_water_equivalent;
+            parameters.liquid_water_heat_capacity_megajoules_per_m3_k *
+                (liquid + vapor_water_equivalent_m3);
         result.water_m3 +=
             liquid + vapor_water_equivalent_m3 + ice_water_equivalent;
-        result.heat_mj += heat_capacity_mj_per_k * temperature;
+        // HEAT-001 resolution A. `surface_ice_water_equivalent_m3` is the one
+        // authoritative carrier for both surface litter ice and pond ice, so a
+        // single latent term covers both. Its latent contribution makes the
+        // surface solver's freeze/thaw repartition internal to the census.
+        //
+        // HEAT-001 second layer: the frozen enthalpy is
+        // `C_l*Tm - L + C_i*(T - Tm)`, not `C_i*T - L`. Same correction and
+        // same reasoning as the soil carriers above; see
+        // `frozenWaterEnthalpyPerM3`. Applying it to only some carriers would
+        // make the pond_domain_transaction surface-to-soil ice transfer stop
+        // cancelling, and that transfer is measured at `1.34e4 m3` on Ottawa
+        // day one, so all carriers must use the one definition.
+        result.heat_megajoules +=
+            liquid_heat_capacity_megajoules_per_k * temperature +
+            frozenWaterEnthalpyPerM3(
+                temperature,
+                parameters.liquid_water_heat_capacity_megajoules_per_m3_k,
+                parameters.ice_heat_capacity_megajoules_per_m3_k,
+                parameters.latent_heat_of_fusion_megajoules_per_m3,
+                default_pure_water_melting_temperature_k,
+            ) * ice_water_equivalent;
+        diagnostic_surface_ice_water_equivalent_m3 += ice_water_equivalent;
 
         const first = cell * gas.species_count;
         const end = first + gas.species_count;
@@ -1048,7 +1393,7 @@ pub fn aggregateSurfacePhysicalAndGas(
 
 /// EXTRACT/REDIST `TVOLWP + TVOLWC` and `TENGYC`. Internal canopy water is
 /// stored as depth per cell area; intercepted living/dead water is already
-/// extensive. `previous_water_energy_mj` is the authoritative ENGYX carrier
+/// extensive. `previous_water_energy_megajoules` is the authoritative ENGYX carrier
 /// after the accepted canopy surface transaction.
 pub fn aggregateCanopyWaterAndHeat(
     plants: *const grid_module.PlantState,
@@ -1069,7 +1414,7 @@ pub fn aggregateCanopyWaterAndHeat(
         plants.canopy_water_storage_m_per_m2.len,
         retention.living_surface_water_m3.len,
         retention.standing_dead_surface_water_m3.len,
-        retention.previous_water_energy_mj.len,
+        retention.previous_water_energy_megajoules.len,
     }) |length| if (length != plant_count)
         return error.CanopyInventoryDimensionMismatch;
 
@@ -1086,7 +1431,7 @@ pub fn aggregateCanopyWaterAndHeat(
                 retention.living_surface_water_m3[plant];
             const dead_surface_water =
                 retention.standing_dead_surface_water_m3[plant];
-            const water_energy = retention.previous_water_energy_mj[plant];
+            const water_energy = retention.previous_water_energy_megajoules[plant];
             inline for (.{
                 internal_water_depth_m,
                 living_surface_water,
@@ -1101,7 +1446,7 @@ pub fn aggregateCanopyWaterAndHeat(
                 internal_water_depth_m * area +
                 living_surface_water +
                 dead_surface_water;
-            result.heat_mj += water_energy;
+            result.heat_megajoules += water_energy;
         }
     }
     try result.validate();
@@ -1230,7 +1575,7 @@ test "REDIST snow inventory sums every runtime cell and layer" {
         state.vapor_water_equivalent_m3[layer] = 3;
         state.ice_volume_m3[layer] = 4;
         state.temperature_k[layer] = 250;
-        state.heat_capacity_mj_per_k[layer] = 0.5;
+        state.heat_capacity_megajoules_per_k[layer] = 0.5;
         const values = try state.amounts(layer / 3, layer % 3);
         values[@intFromEnum(snow.Species.carbon_dioxide_carbon)] = 1;
         values[@intFromEnum(snow.Species.methane_carbon)] = 2;
@@ -1246,7 +1591,25 @@ test "REDIST snow inventory sums every runtime cell and layer" {
     }
     const inventory = try aggregateSnow(&state, 0.92);
     try std.testing.expectApproxEqAbs(6 * (1 + 2 + 3 + 4 * 0.92), inventory.water_m3, 1e-12);
-    try std.testing.expectApproxEqAbs(6 * 0.5 * 250, inventory.heat_mj, 1e-12);
+    // HEAT-001 resolution A, second layer: enthalpy relative to LIQUID water at
+    // 0 K. The frozen carriers here are the solid snow water equivalent and the
+    // ice volume in water equivalent. Each carries
+    // `C_l*Tm - L + C_i*(T - Tm)` per cubic metre, not `C_i*T - L`.
+    //
+    // The owner publishes one combined capacity (0.5 MJ/K per layer at 250 K),
+    // so the aggregator keeps that sensible product and re-bases the frozen
+    // part by `(C_l - C_i)*Tm - L` per cubic metre. That is the whole content
+    // of the fix: this expectation moved from `-8600.64` to `+8753.6196552`,
+    // and the difference is exactly `(4.19 - 1.9274)*273.15*28.08 = 17354.26`,
+    // the offset the previous form omitted.
+    const frozen_water_equivalent_m3 = 6 * (1.0 + 4 * 0.92);
+    try std.testing.expectApproxEqAbs(
+        6 * (0.5 * 250) +
+            (4.19 * 273.15 - default_latent_heat_of_fusion_megajoules_per_m3 +
+                1.9274 * (250 - 273.15) - 1.9274 * 250) * frozen_water_equivalent_m3,
+        inventory.heat_megajoules,
+        1e-9,
+    );
     try std.testing.expectEqual(@as(f64, 18), inventory.carbon_dioxide_carbon_g);
     try std.testing.expectEqual(@as(f64, 18), inventory.oxygen_g);
     try std.testing.expectEqual(@as(f64, 54), inventory.dinitrogen_nitrogen_g);
@@ -1269,8 +1632,8 @@ test "snow inventory rejects hidden non-finite inactive-layer mass" {
 test "REDIST soil inventory uses runtime active layers and all gas phases" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 3,
             .plant_populations = 1,
         },
@@ -1306,21 +1669,61 @@ test "REDIST soil inventory uses runtime active layers and all gas phases" {
             phase[first + @intFromEnum(gas.Species.ammonia)] = 6;
         }
     }
-    const heat_capacity = [_]f64{2} ** 6;
+    const dry_heat_capacity = [_]f64{2} ** 6;
     const volume = [_]f64{0.5} ** 6;
     const inventory = try aggregateSoilPhysicalAndGas(
         &grid,
-        &heat_capacity,
+        &dry_heat_capacity,
         &volume,
+        4,
+        1.5,
+        333,
         &gas_state,
     );
     const active: f64 = 3;
     try std.testing.expectEqual(active * 15, inventory.water_m3);
-    try std.testing.expectEqual(active * 2 * 0.5 * 250, inventory.heat_mj);
+    // HEAT-001 resolution A, second layer: enthalpy relative to LIQUID water at
+    // 0 K. Frozen carriers do not sit exactly `L` below liquid at the same
+    // temperature; they follow the liquid branch to the melting point and the
+    // ice branch back down, giving `C_l*Tm - L + C_i*(T - Tm)` per cubic metre.
+    //
+    // Note this test's heat capacities are the deliberately non-physical
+    // `C_l = 4`, `C_i = 1.5`, which is useful here: the correction
+    // `(C_l - C_i)*Tm` is then `2.5*273.15 = 682.875` per cubic metre rather
+    // than the production `617.5`, so the expectation would not accidentally
+    // agree if the code hardcoded production constants instead of using the
+    // passed-in ones.
+    const frozen_water_equivalent_m3: f64 = 3 + 4;
+    try std.testing.expectEqual(
+        active * ((2 * 0.5 + 4 * (1 + 2 + 5)) * 250 +
+            (4 * 273.15 - 333 + 1.5 * (250 - 273.15)) * frozen_water_equivalent_m3),
+        inventory.heat_megajoules,
+    );
     try std.testing.expectEqual(active * 4 * 3, inventory.carbon_dioxide_carbon_g);
     try std.testing.expectEqual(active * 4 * 3, inventory.oxygen_g);
     try std.testing.expectEqual(active * 4 * 9, inventory.dinitrogen_nitrogen_g);
     try std.testing.expectEqual(active * 4 * 6, inventory.ammonium_nitrogen_g);
+}
+
+test "REDIST root gas inventory includes both root phases" {
+    var roots = try plant_roots.State.init(std.testing.allocator, 1, 1, 1);
+    defer roots.deinit();
+    roots.gaseous_carbon_dioxide_g_c[0] = 1;
+    roots.aqueous_carbon_dioxide_g_c[0] = 2;
+    roots.gaseous_methane_g_c[0] = 3;
+    roots.aqueous_methane_g_c[0] = 4;
+    roots.gaseous_oxygen_g_o[0] = 5;
+    roots.aqueous_oxygen_g_o[0] = 6;
+    roots.gaseous_nitrous_oxide_g_n[0] = 7;
+    roots.aqueous_nitrous_oxide_g_n[0] = 8;
+    roots.gaseous_ammonia_g_n[0] = 9;
+    roots.aqueous_ammonia_g_n[0] = 10;
+
+    const inventory = try aggregateRootGas(&roots);
+    try std.testing.expectEqual(@as(f64, 10), inventory.carbon_dioxide_carbon_g);
+    try std.testing.expectEqual(@as(f64, 11), inventory.oxygen_g);
+    try std.testing.expectEqual(@as(f64, 15), inventory.dinitrogen_nitrogen_g);
+    try std.testing.expectEqual(@as(f64, 19), inventory.ammonium_nitrogen_g);
 }
 
 test "REDIST surface organic category split excludes humus microbial pool" {
@@ -1375,8 +1778,8 @@ test "REDIST surface organic category split excludes humus microbial pool" {
 test "REDIST soil organic split assigns only K=4 to humus" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 2,
             .plant_populations = 1,
         },
@@ -1454,10 +1857,10 @@ test "REDIST surface chemistry retains N P and TION stoichiometry" {
     cell.h2po4_mol_p_per_m3 = 5;
     cell.calcium_mol_per_m3 = 6;
     cell.bicarbonate_mol_per_m3 = 7;
-    cell.exchange.ammonium_mol_per_Mg = 8;
-    cell.exchange.calcium_mol_per_Mg = 9;
-    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_Mg = 10;
-    cell.phosphate_surface.adsorbed_h2po4_mol_p_per_Mg = 11;
+    cell.exchange.ammonium_mol_per_megagram = 8;
+    cell.exchange.calcium_mol_per_megagram = 9;
+    cell.phosphate_surface.adsorbed_hpo4_mol_p_per_megagram = 10;
+    cell.phosphate_surface.adsorbed_h2po4_mol_p_per_megagram = 11;
     cell.phosphate_minerals.monocalcium_phosphate_mol_per_m3 = 12;
     cell.phosphate_minerals.hydroxyapatite_mol_per_m3 = 13;
     cell.salt_minerals.gypsum_mol_per_m3 = 14;
@@ -1469,6 +1872,7 @@ test "REDIST surface chemistry retains N P and TION stoichiometry" {
     const inventory = try aggregateSurfaceChemistry(
         &chemistry,
         &fertilizer,
+        &.{19},
         &.{2},
         &.{3},
         12,
@@ -1480,7 +1884,7 @@ test "REDIST surface chemistry retains N P and TION stoichiometry" {
         inventory.ammonium_nitrogen_g,
     );
     try std.testing.expectEqual(
-        @as(f64, 14 * (2 * 3 + 18)),
+        @as(f64, 14 * (2 * 3 + 18) + 19),
         inventory.nitrate_nitrogen_g,
     );
     try std.testing.expectEqual(
@@ -1530,8 +1934,8 @@ test "REDIST surface physical inventory includes vapor and four gas phases" {
     defer surface.deinit();
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -1571,9 +1975,9 @@ test "REDIST surface physical inventory includes vapor and four gas phases" {
     }
     const ice = [_]f64{ 0.5, 0.25 };
     const parameters: SurfacePhysicalParameters = .{
-        .dry_organic_heat_capacity_mj_per_g_c_k = 2.5e-6,
-        .liquid_water_heat_capacity_mj_per_m3_k = 4.19,
-        .ice_heat_capacity_mj_per_m3_k = 1.9274,
+        .dry_organic_heat_capacity_megajoules_per_g_c_k = 2.5e-6,
+        .liquid_water_heat_capacity_megajoules_per_m3_k = 4.19,
+        .ice_heat_capacity_megajoules_per_m3_k = 1.9274,
         .water_molar_mass_g_per_mol = 18,
         .liquid_water_density_g_per_m3 = 1e6,
     };
@@ -1592,10 +1996,22 @@ test "REDIST surface physical inventory includes vapor and four gas phases" {
         inventory.water_m3,
         1e-14,
     );
+    // HEAT-001 resolution A, second layer. Surface litter/pond ice is a frozen
+    // carrier and carries `C_l*Tm - L + C_i*(T - Tm)` per cubic metre, not
+    // `C_i*T - L`. The two cells sit at 250 K and 300 K, so this expectation
+    // also pins that the ice branch is evaluated at each cell's own
+    // temperature rather than at the melting point.
+    const frozen_enthalpy_at = struct {
+        fn f(temperature_k: f64) f64 {
+            return 4.19 * 273.15 - 333 + 1.9274 * (temperature_k - 273.15);
+        }
+    }.f;
     const expected_heat =
-        (2.5e-6 * 100 + 4.19 * (1 + vapor0) + 1.9274 * 0.5) * 250 +
-        (2.5e-6 * 200 + 4.19 * (2 + vapor1) + 1.9274 * 0.25) * 300;
-    try std.testing.expectApproxEqAbs(expected_heat, inventory.heat_mj, 1e-10);
+        (2.5e-6 * 100 + 4.19 * (1 + vapor0)) * 250 +
+        (2.5e-6 * 200 + 4.19 * (2 + vapor1)) * 300 +
+        frozen_enthalpy_at(250) * 0.5 +
+        frozen_enthalpy_at(300) * 0.25;
+    try std.testing.expectApproxEqAbs(expected_heat, inventory.heat_megajoules, 1e-10);
     try std.testing.expectEqual(@as(f64, 24), inventory.carbon_dioxide_carbon_g);
     try std.testing.expectEqual(@as(f64, 24), inventory.oxygen_g);
     try std.testing.expectEqual(@as(f64, 72), inventory.dinitrogen_nitrogen_g);
@@ -1605,8 +2021,8 @@ test "REDIST surface physical inventory includes vapor and four gas phases" {
 test "EXTRACT canopy inventory supports more than five runtime species" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 7,
         },
@@ -1629,7 +2045,7 @@ test "EXTRACT canopy inventory supports more than five runtime species" {
         plants.canopy_water_storage_m_per_m2[plant] = 0.001;
         retention.living_surface_water_m3[plant] = 0.01;
         retention.standing_dead_surface_water_m3[plant] = 0.02;
-        retention.previous_water_energy_mj[plant] = 3;
+        retention.previous_water_energy_megajoules[plant] = 3;
     }
     const inventory = try aggregateCanopyWaterAndHeat(
         &plants,
@@ -1642,14 +2058,14 @@ test "EXTRACT canopy inventory supports more than five runtime species" {
         inventory.water_m3,
         1e-14,
     );
-    try std.testing.expectEqual(@as(f64, 42), inventory.heat_mj);
+    try std.testing.expectEqual(@as(f64, 42), inventory.heat_megajoules);
 }
 
 test "REDIST profile mineral nitrogen counts each runtime owner once" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 2,
             .plant_populations = 1,
         },
@@ -1691,7 +2107,7 @@ test "REDIST profile mineral nitrogen counts each runtime owner once" {
         macropore[@intFromEnum(mineral_nitrogen.Species.ammonia_band)] = 2;
         matrix[@intFromEnum(mineral_nitrogen.Species.nitrate_non_band)] = 3;
         macropore[@intFromEnum(mineral_nitrogen.Species.nitrite_band)] = 4;
-        chemistry.cation_exchange_mol_per_Mg[profile_cell]
+        chemistry.cation_exchange_mol_per_megagram[profile_cell]
             .ammonium_non_band = 0.5;
         fertilizer.soil[profile_cell].broadcast_ammonium_mol_n = 5;
         fertilizer.soil[profile_cell].banded_urea_mol_n = 6;
@@ -1699,7 +2115,7 @@ test "REDIST profile mineral nitrogen counts each runtime owner once" {
     }
     // Inactive allocated capacity must never enter an authoritative total.
     (try transport.matrix.cellAmounts(1))[0] = 1_000_000;
-    chemistry.cation_exchange_mol_per_Mg[3].ammonium_band = 1_000_000;
+    chemistry.cation_exchange_mol_per_megagram[3].ammonium_band = 1_000_000;
     fertilizer.soil[1].broadcast_ammonium_mol_n = 1_000_000;
 
     const inventory = try aggregateProfileMineralNitrogen(
@@ -1721,8 +2137,8 @@ test "REDIST profile mineral nitrogen counts each runtime owner once" {
 test "REDIST profile phosphorus and ions include matrix macropore and immobile owners" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 2,
-            .grid_rows = 1,
+            .lon_count = 2,
+            .lat_count = 1,
             .soil_layers = 2,
             .plant_populations = 1,
         },
@@ -1776,18 +2192,18 @@ test "REDIST profile phosphorus and ions include matrix macropore and immobile o
 
         const non_band = &chemistry.non_band_phosphate[profile_cell];
         non_band.dissolved_hpo4_mol_p_per_m3 = 1;
-        non_band.adsorbed_hpo4_mol_p_per_Mg = 2;
-        non_band.deprotonated_site_mol_per_Mg = 1;
+        non_band.adsorbed_hpo4_mol_p_per_megagram = 2;
+        non_band.deprotonated_site_mol_per_megagram = 1;
         non_band.monocalcium_phosphate_solid_mol_per_m3 = 1;
         const band = &chemistry.band_phosphate[profile_cell];
         band.dissolved_h2po4_mol_p_per_m3 = 2;
-        band.adsorbed_h2po4_mol_p_per_Mg = 1;
-        band.hydroxyl_site_mol_per_Mg = 1;
+        band.adsorbed_h2po4_mol_p_per_megagram = 1;
+        band.hydroxyl_site_mol_per_megagram = 1;
         band.hydroxyapatite_solid_mol_per_m3 = 2;
 
-        chemistry.cation_exchange_mol_per_Mg[profile_cell].hydrogen = 1;
-        chemistry.cation_exchange_mol_per_Mg[profile_cell].calcium = 2;
-        chemistry.carboxyl_bound_hydrogen_mol_per_Mg[profile_cell] = 0.5;
+        chemistry.cation_exchange_mol_per_megagram[profile_cell].hydrogen = 1;
+        chemistry.cation_exchange_mol_per_megagram[profile_cell].calcium = 2;
+        chemistry.carboxyl_bound_hydrogen_mol_per_megagram[profile_cell] = 0.5;
         chemistry.geochemistry_solids[profile_cell]
             .calcite_solid_mol_per_m3 = 1;
         chemistry.geochemistry_solids[profile_cell]

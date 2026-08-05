@@ -50,10 +50,10 @@ pub const PlantAndDrainageState = struct {
 
 pub const CanopyDiagnostics = struct {
     ground_radiation_fraction: []f64,
-    net_radiation_mj_per_h: []f64,
-    latent_heat_flux_mj_per_h: []f64,
-    sensible_heat_flux_mj_per_h: []f64,
-    storage_heat_flux_mj_per_h: []f64,
+    net_radiation_megajoules_per_h: []f64,
+    latent_heat_flux_megajoules_per_h: []f64,
+    sensible_heat_flux_megajoules_per_h: []f64,
+    storage_heat_flux_megajoules_per_h: []f64,
     evapotranspiration_m3_per_h: []f64,
     net_co2_exchange_g_c_per_h: []f64,
     surface_water_m3: []f64,
@@ -147,10 +147,10 @@ pub fn initialize(
         state.plant_and_drainage.phosphate_band_depth_m[cell] = 0.0;
         state.plant_and_drainage.phosphate_band_upper_depth_m[cell] = 0.0;
         state.canopy.ground_radiation_fraction[cell] = 1.0;
-        state.canopy.net_radiation_mj_per_h[cell] = 0.0;
-        state.canopy.latent_heat_flux_mj_per_h[cell] = 0.0;
-        state.canopy.sensible_heat_flux_mj_per_h[cell] = 0.0;
-        state.canopy.storage_heat_flux_mj_per_h[cell] = 0.0;
+        state.canopy.net_radiation_megajoules_per_h[cell] = 0.0;
+        state.canopy.latent_heat_flux_megajoules_per_h[cell] = 0.0;
+        state.canopy.sensible_heat_flux_megajoules_per_h[cell] = 0.0;
+        state.canopy.storage_heat_flux_megajoules_per_h[cell] = 0.0;
         state.canopy.evapotranspiration_m3_per_h[cell] = 0.0;
         state.canopy.net_co2_exchange_g_c_per_h[cell] = 0.0;
         state.canopy.surface_water_m3[cell] = 0.0;

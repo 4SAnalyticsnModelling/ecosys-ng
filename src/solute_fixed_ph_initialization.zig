@@ -37,8 +37,8 @@ pub const Inputs = struct {
     non_band: ZoneConcentrations,
     band: ZoneConcentrations,
     matrix_water_volume_m3: f64,
-    soil_mass_Mg: f64,
-    minimum_active_soil_mass_Mg: f64,
+    soil_mass_megagrams: f64,
+    minimum_active_soil_mass_megagrams: f64,
     cation_exchange_capacity_mol_charge: f64,
     /// Runtime replacement for source `ZEROC`. The source reuses this numeric
     /// floor for both mol m-3 and mol Mg-1 values.
@@ -90,7 +90,7 @@ pub const ZoneActivities = struct {
 };
 
 pub const Result = struct {
-    cation_exchange_capacity_mol_charge_per_Mg: f64,
+    cation_exchange_capacity_mol_charge_per_megagram: f64,
     concentrations: AqueousConcentrations,
     activities: AqueousActivities,
     non_band_activities: ZoneActivities,
@@ -109,12 +109,12 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
 
     // SOLUTE.F repeats this complete CCEC branch twice at lines 2914--2923.
     // The duplicate is a numerical no-op and is collapsed without reordering.
-    const cation_exchange_capacity = if (inputs.soil_mass_Mg >
-        inputs.minimum_active_soil_mass_Mg)
+    const cation_exchange_capacity = if (inputs.soil_mass_megagrams >
+        inputs.minimum_active_soil_mass_megagrams)
         @max(
             floor,
             inputs.cation_exchange_capacity_mol_charge /
-                inputs.soil_mass_Mg,
+                inputs.soil_mass_megagrams,
         )
     else
         0;
@@ -181,7 +181,7 @@ pub fn calculateSourceOrder(inputs: Inputs) !Result {
     const divalent = coefficients.divalent_activity_coefficient;
     const trivalent = coefficients.trivalent_activity_coefficient;
     const result = Result{
-        .cation_exchange_capacity_mol_charge_per_Mg = cation_exchange_capacity,
+        .cation_exchange_capacity_mol_charge_per_megagram = cation_exchange_capacity,
         .concentrations = concentrations,
         .activities = .{
             .hydrogen_mol_per_m3 = hydrogen * monovalent,
@@ -247,8 +247,8 @@ fn validate(inputs: Inputs) !void {
             return error.InvalidFixedPhInitialization;
     }
     inline for (.{
-        inputs.soil_mass_Mg,
-        inputs.minimum_active_soil_mass_Mg,
+        inputs.soil_mass_megagrams,
+        inputs.minimum_active_soil_mass_megagrams,
     }) |nonnegative| {
         if (!std.math.isFinite(nonnegative) or nonnegative < 0)
             return error.InvalidFixedPhInitialization;
@@ -271,7 +271,7 @@ fn validate(inputs: Inputs) !void {
 }
 
 fn validateResult(result: Result) !void {
-    if (!std.math.isFinite(result.cation_exchange_capacity_mol_charge_per_Mg))
+    if (!std.math.isFinite(result.cation_exchange_capacity_mol_charge_per_megagram))
         return error.NonFiniteFixedPhInitialization;
     inline for (@typeInfo(AqueousConcentrations).@"struct".fields) |field|
         if (!std.math.isFinite(@field(result.concentrations, field.name)))
@@ -316,8 +316,8 @@ fn validInputs() Inputs {
             .ammonia_mol_n_per_m3 = 22,
         },
         .matrix_water_volume_m3 = 2,
-        .soil_mass_Mg = 4,
-        .minimum_active_soil_mass_Mg = 1,
+        .soil_mass_megagrams = 4,
+        .minimum_active_soil_mass_megagrams = 1,
         .cation_exchange_capacity_mol_charge = 8,
         .minimum_positive_value = 0.01,
         .carbonate_equilibrium = .{
@@ -339,7 +339,7 @@ test "fixed-pH initialization preserves source concentration and activity order"
     const result = try calculateSourceOrder(validInputs());
     try std.testing.expectEqual(
         @as(f64, 2),
-        result.cation_exchange_capacity_mol_charge_per_Mg,
+        result.cation_exchange_capacity_mol_charge_per_megagram,
     );
     try std.testing.expectEqual(@as(f64, 1), result.concentrations.hydrogen_mol_per_m3);
     try std.testing.expectEqual(@as(f64, 10), result.concentrations.chloride_mol_per_m3);
@@ -373,7 +373,7 @@ test "fixed-pH initialization floors signed source inventories" {
     const result = try calculateSourceOrder(inputs);
     try std.testing.expectEqual(
         inputs.minimum_positive_value,
-        result.cation_exchange_capacity_mol_charge_per_Mg,
+        result.cation_exchange_capacity_mol_charge_per_megagram,
     );
     try std.testing.expectEqual(
         inputs.minimum_positive_value,
@@ -390,11 +390,11 @@ test "fixed-pH initialization floors signed source inventories" {
 
 test "fixed-pH initialization preserves inactive-soil CEC zero branch" {
     var inputs = validInputs();
-    inputs.soil_mass_Mg = inputs.minimum_active_soil_mass_Mg;
+    inputs.soil_mass_megagrams = inputs.minimum_active_soil_mass_megagrams;
     const result = try calculateSourceOrder(inputs);
     try std.testing.expectEqual(
         @as(f64, 0),
-        result.cation_exchange_capacity_mol_charge_per_Mg,
+        result.cation_exchange_capacity_mol_charge_per_megagram,
     );
 }
 

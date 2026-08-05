@@ -52,8 +52,8 @@ pub const exchangeable_pool_count: usize =
     @typeInfo(ExchangeablePool).@"enum".fields.len;
 
 pub const NeighborSide = struct {
-    local_total_sediment_Mg_per_step: f64,
-    positive_neighbor_total_sediment_Mg_per_step: f64,
+    local_total_sediment_megagrams_per_step: f64,
+    positive_neighbor_total_sediment_megagrams_per_step: f64,
     /// Positive-neighbor `X*ER` and `X*EB` [exchangeable_pool], mol/step.
     positive_neighbor_mol_per_step_by_pool: []const f64,
     connection: NeighborConnection,
@@ -62,7 +62,7 @@ pub const NeighborSide = struct {
 pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     neighbor_by_boundary_side: []const NeighborSide,
 };
 
@@ -94,10 +94,10 @@ pub fn account(inputs: Inputs, state: *State, workspace: Workspace) !void {
     );
 
     for (inputs.neighbor_by_boundary_side) |side| {
-        if (@abs(side.local_total_sediment_Mg_per_step) <=
-            inputs.sediment_activity_threshold_Mg_per_step and
-            @abs(side.positive_neighbor_total_sediment_Mg_per_step) <=
-                inputs.sediment_activity_threshold_Mg_per_step)
+        if (@abs(side.local_total_sediment_megagrams_per_step) <=
+            inputs.sediment_activity_threshold_megagrams_per_step and
+            @abs(side.positive_neighbor_total_sediment_megagrams_per_step) <=
+                inputs.sediment_activity_threshold_megagrams_per_step)
         {
             continue;
         }
@@ -132,9 +132,9 @@ fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
     {
         return error.ExchangeableNeighborErosionDimensionMismatch;
     }
-    if (!std.math.isFinite(inputs.sediment_activity_threshold_Mg_per_step))
+    if (!std.math.isFinite(inputs.sediment_activity_threshold_megagrams_per_step))
         return error.NonFiniteExchangeableNeighborErosionInput;
-    if (inputs.sediment_activity_threshold_Mg_per_step < 0)
+    if (inputs.sediment_activity_threshold_megagrams_per_step < 0)
         return error.InvalidErosionActivityThreshold;
 
     try validateFinite(state.net_erosion_mol_per_step_by_pool);
@@ -147,9 +147,9 @@ fn validateInputs(inputs: Inputs, state: State, workspace: Workspace) !void {
         {
             return error.ExchangeableNeighborErosionDimensionMismatch;
         }
-        if (!std.math.isFinite(side.local_total_sediment_Mg_per_step) or
+        if (!std.math.isFinite(side.local_total_sediment_megagrams_per_step) or
             !std.math.isFinite(
-                side.positive_neighbor_total_sediment_Mg_per_step,
+                side.positive_neighbor_total_sediment_megagrams_per_step,
             ))
         {
             return error.NonFiniteExchangeableNeighborErosionInput;
@@ -203,14 +203,14 @@ test "connected active sides subtract all exchangeable pools" {
     const five = [_]f64{5} ** exchangeable_pool_count;
     const sides = [_]NeighborSide{
         .{
-            .local_total_sediment_Mg_per_step = 2,
-            .positive_neighbor_total_sediment_Mg_per_step = 0,
+            .local_total_sediment_megagrams_per_step = 2,
+            .positive_neighbor_total_sediment_megagrams_per_step = 0,
             .positive_neighbor_mol_per_step_by_pool = &three,
             .connection = .connected,
         },
         .{
-            .local_total_sediment_Mg_per_step = 0,
-            .positive_neighbor_total_sediment_Mg_per_step = -4,
+            .local_total_sediment_megagrams_per_step = 0,
+            .positive_neighbor_total_sediment_megagrams_per_step = -4,
             .positive_neighbor_mol_per_step_by_pool = &five,
             .connection = .connected,
         },
@@ -222,7 +222,7 @@ test "connected active sides subtract all exchangeable pools" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
     try expectAll(&totals, 92);
@@ -233,20 +233,20 @@ test "strict activity and connection gates remain independent" {
     const four = [_]f64{4} ** exchangeable_pool_count;
     const sides = [_]NeighborSide{
         .{
-            .local_total_sediment_Mg_per_step = 2,
-            .positive_neighbor_total_sediment_Mg_per_step = 2,
+            .local_total_sediment_megagrams_per_step = 2,
+            .positive_neighbor_total_sediment_megagrams_per_step = 2,
             .positive_neighbor_mol_per_step_by_pool = &seven,
             .connection = .blocked,
         },
         .{
-            .local_total_sediment_Mg_per_step = 1,
-            .positive_neighbor_total_sediment_Mg_per_step = -1,
+            .local_total_sediment_megagrams_per_step = 1,
+            .positive_neighbor_total_sediment_megagrams_per_step = -1,
             .positive_neighbor_mol_per_step_by_pool = &seven,
             .connection = .connected,
         },
         .{
-            .local_total_sediment_Mg_per_step = 2,
-            .positive_neighbor_total_sediment_Mg_per_step = 1,
+            .local_total_sediment_megagrams_per_step = 2,
+            .positive_neighbor_total_sediment_megagrams_per_step = 1,
             .positive_neighbor_mol_per_step_by_pool = &four,
             .connection = .connected,
         },
@@ -258,7 +258,7 @@ test "strict activity and connection gates remain independent" {
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
     try expectAll(&totals, 6);
@@ -269,8 +269,8 @@ test "shared face transfer conserves every exchangeable pool exactly" {
     for (&shared, 0..) |*value, index| value.* = @floatFromInt(index + 1);
     var source = shared;
     const sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 0,
-        .positive_neighbor_total_sediment_Mg_per_step = 2,
+        .local_total_sediment_megagrams_per_step = 0,
+        .positive_neighbor_total_sediment_megagrams_per_step = 2,
         .positive_neighbor_mol_per_step_by_pool = &shared,
         .connection = .connected,
     }};
@@ -280,7 +280,7 @@ test "shared face transfer conserves every exchangeable pool exactly" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &scratch });
     try expectAll(&source, 0);
@@ -291,13 +291,13 @@ test "disabled and vertical modes bypass unused neighbor storage" {
     try account(.{
         .disturbance_mode = .freeze_thaw,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .neighbor_by_boundary_side = &.{},
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &.{} });
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .vertical,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .neighbor_by_boundary_side = &.{},
     }, &state, .{ .net_erosion_mol_per_step_by_pool = &.{} });
 }
@@ -305,8 +305,8 @@ test "disabled and vertical modes bypass unused neighbor storage" {
 test "dimension invalid finite overflow and alias errors preserve state" {
     const three = [_]f64{3} ** exchangeable_pool_count;
     var sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 2,
-        .positive_neighbor_total_sediment_Mg_per_step = 2,
+        .local_total_sediment_megagrams_per_step = 2,
+        .positive_neighbor_total_sediment_megagrams_per_step = 2,
         .positive_neighbor_mol_per_step_by_pool = &three,
         .connection = .connected,
     }};
@@ -316,11 +316,11 @@ test "dimension invalid finite overflow and alias errors preserve state" {
     const inputs = Inputs{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     };
 
-    sides[0].positive_neighbor_total_sediment_Mg_per_step =
+    sides[0].positive_neighbor_total_sediment_megagrams_per_step =
         std.math.nan(f64);
     try std.testing.expectError(
         error.NonFiniteExchangeableNeighborErosionInput,
@@ -332,7 +332,7 @@ test "dimension invalid finite overflow and alias errors preserve state" {
     );
     try expectAll(&totals, 5);
 
-    sides[0].positive_neighbor_total_sediment_Mg_per_step = 2;
+    sides[0].positive_neighbor_total_sediment_megagrams_per_step = 2;
     sides[0].positive_neighbor_mol_per_step_by_pool = three[0..21];
     try std.testing.expectError(
         error.ExchangeableNeighborErosionDimensionMismatch,

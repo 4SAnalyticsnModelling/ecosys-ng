@@ -6,15 +6,15 @@ pub const TemperatureDirection = enum {
 };
 
 pub const Inputs = struct {
-    net_radiation_flux_mj_per_step: f64,
-    latent_heat_flux_mj_per_step: f64,
-    sensible_heat_flux_mj_per_step: f64,
-    intercepted_water_convective_heat_flux_mj_per_step: f64,
-    precipitation_convective_heat_flux_mj_per_step: f64,
-    previous_wet_canopy_heat_capacity_mj_per_k: f64,
+    net_radiation_flux_megajoules_per_step: f64,
+    latent_heat_flux_megajoules_per_step: f64,
+    sensible_heat_flux_megajoules_per_step: f64,
+    intercepted_water_convective_heat_flux_megajoules_per_step: f64,
+    precipitation_convective_heat_flux_megajoules_per_step: f64,
+    previous_wet_canopy_heat_capacity_megajoules_per_k: f64,
     intercepted_evaporation_m3_per_step: f64,
     foliar_water_retention_m3_per_step: f64,
-    minimum_canopy_heat_capacity_mj_per_k: f64,
+    minimum_canopy_heat_capacity_megajoules_per_k: f64,
     previous_temperature_estimate_k: f64,
     canopy_surface_temperature_k: f64,
     temperature_step_fraction: f64,
@@ -23,8 +23,8 @@ pub const Inputs = struct {
 };
 
 pub const Result = struct {
-    storage_heat_flux_mj_per_step: f64,
-    canopy_heat_capacity_mj_per_k: f64,
+    storage_heat_flux_megajoules_per_step: f64,
+    canopy_heat_capacity_megajoules_per_k: f64,
     previous_temperature_estimate_k: f64,
     equilibrium_temperature_k: f64,
     canopy_surface_temperature_k: f64,
@@ -37,24 +37,24 @@ pub const Result = struct {
 pub fn calculate(inputs: Inputs) !Result {
     try validate(inputs);
     const storage_heat =
-        inputs.net_radiation_flux_mj_per_step +
-        inputs.latent_heat_flux_mj_per_step +
-        inputs.sensible_heat_flux_mj_per_step +
-        inputs.intercepted_water_convective_heat_flux_mj_per_step +
-        inputs.precipitation_convective_heat_flux_mj_per_step;
+        inputs.net_radiation_flux_megajoules_per_step +
+        inputs.latent_heat_flux_megajoules_per_step +
+        inputs.sensible_heat_flux_megajoules_per_step +
+        inputs.intercepted_water_convective_heat_flux_megajoules_per_step +
+        inputs.precipitation_convective_heat_flux_megajoules_per_step;
     const heat_capacity =
-        inputs.previous_wet_canopy_heat_capacity_mj_per_k +
+        inputs.previous_wet_canopy_heat_capacity_megajoules_per_k +
         4.19 * (inputs.intercepted_evaporation_m3_per_step +
             inputs.foliar_water_retention_m3_per_step);
 
     var previous_temperature = inputs.previous_temperature_estimate_k;
     var equilibrium_temperature = previous_temperature;
     var surface_temperature = previous_temperature;
-    if (heat_capacity > inputs.minimum_canopy_heat_capacity_mj_per_k) {
+    if (heat_capacity > inputs.minimum_canopy_heat_capacity_megajoules_per_k) {
         previous_temperature = inputs.canopy_surface_temperature_k;
         equilibrium_temperature =
             (previous_temperature *
-                inputs.previous_wet_canopy_heat_capacity_mj_per_k +
+                inputs.previous_wet_canopy_heat_capacity_megajoules_per_k +
                 storage_heat) /
             heat_capacity;
         surface_temperature =
@@ -76,8 +76,8 @@ pub fn calculate(inputs: Inputs) !Result {
         else
             .non_increasing;
     const result = Result{
-        .storage_heat_flux_mj_per_step = storage_heat,
-        .canopy_heat_capacity_mj_per_k = heat_capacity,
+        .storage_heat_flux_megajoules_per_step = storage_heat,
+        .canopy_heat_capacity_megajoules_per_k = heat_capacity,
         .previous_temperature_estimate_k = previous_temperature,
         .equilibrium_temperature_k = equilibrium_temperature,
         .canopy_surface_temperature_k = surface_temperature,
@@ -98,8 +98,8 @@ fn validate(inputs: Inputs) !void {
         if (!std.math.isFinite(@field(inputs, field.name)))
             return error.InvalidCanopyTemperatureIterationInput;
     }
-    if (inputs.previous_wet_canopy_heat_capacity_mj_per_k < 0 or
-        inputs.minimum_canopy_heat_capacity_mj_per_k < 0 or
+    if (inputs.previous_wet_canopy_heat_capacity_megajoules_per_k < 0 or
+        inputs.minimum_canopy_heat_capacity_megajoules_per_k < 0 or
         inputs.previous_temperature_estimate_k <= 0 or
         inputs.canopy_surface_temperature_k <= 0 or
         inputs.temperature_step_fraction < 0 or
@@ -109,15 +109,15 @@ fn validate(inputs: Inputs) !void {
 
 fn sourceInputs() Inputs {
     return .{
-        .net_radiation_flux_mj_per_step = 5,
-        .latent_heat_flux_mj_per_step = -2,
-        .sensible_heat_flux_mj_per_step = -1,
-        .intercepted_water_convective_heat_flux_mj_per_step = 0.2,
-        .precipitation_convective_heat_flux_mj_per_step = 0.3,
-        .previous_wet_canopy_heat_capacity_mj_per_k = 10,
+        .net_radiation_flux_megajoules_per_step = 5,
+        .latent_heat_flux_megajoules_per_step = -2,
+        .sensible_heat_flux_megajoules_per_step = -1,
+        .intercepted_water_convective_heat_flux_megajoules_per_step = 0.2,
+        .precipitation_convective_heat_flux_megajoules_per_step = 0.3,
+        .previous_wet_canopy_heat_capacity_megajoules_per_k = 10,
         .intercepted_evaporation_m3_per_step = 0.01,
         .foliar_water_retention_m3_per_step = 0.02,
-        .minimum_canopy_heat_capacity_mj_per_k = 0.1,
+        .minimum_canopy_heat_capacity_megajoules_per_k = 0.1,
         .previous_temperature_estimate_k = 297,
         .canopy_surface_temperature_k = 300,
         .temperature_step_fraction = 0.5,
@@ -133,8 +133,8 @@ test "UPTAKE canopy temperature step preserves source operation order" {
     const heat_capacity = 10.0 + 4.19 * (0.01 + 0.02);
     const equilibrium = (300.0 * 10.0 + storage_heat) / heat_capacity;
     const surface = 300.0 + 1.0 * 0.5 * (equilibrium - 300.0);
-    try std.testing.expectEqual(storage_heat, result.storage_heat_flux_mj_per_step);
-    try std.testing.expectEqual(heat_capacity, result.canopy_heat_capacity_mj_per_k);
+    try std.testing.expectEqual(storage_heat, result.storage_heat_flux_megajoules_per_step);
+    try std.testing.expectEqual(heat_capacity, result.canopy_heat_capacity_megajoules_per_k);
     try std.testing.expectEqual(@as(f64, 300), result.previous_temperature_estimate_k);
     try std.testing.expectEqual(equilibrium, result.equilibrium_temperature_k);
     try std.testing.expectApproxEqAbs(
@@ -157,7 +157,7 @@ test "direction reversal halves the next source step scale" {
 
 test "heat capacity threshold retains incoming previous estimate" {
     var inputs = sourceInputs();
-    inputs.previous_wet_canopy_heat_capacity_mj_per_k = 0.01;
+    inputs.previous_wet_canopy_heat_capacity_megajoules_per_k = 0.01;
     inputs.intercepted_evaporation_m3_per_step = 0;
     inputs.foliar_water_retention_m3_per_step = 0;
     const result = try calculate(inputs);

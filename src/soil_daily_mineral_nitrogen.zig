@@ -23,7 +23,7 @@ pub fn calculateInto(
     active_layer_count: usize,
     liquid_water_m3: []const f64,
     matrix_bulk_volume_m3: []const f64,
-    bulk_density_Mg_per_m3: []const f64,
+    bulk_density_megagrams_per_m3: []const f64,
     fractions: ZoneFractions,
     nitrogen_molar_mass_g_per_mol: f64,
     minimum_volume_m3: f64,
@@ -34,7 +34,7 @@ pub fn calculateInto(
     if (capacity != nitrate_plus_nitrite_concentration_g_n_per_m3.len or active_layer_count > capacity or
         first_layer > chemistry.cell_count or capacity > chemistry.cell_count - first_layer or
         reactive.layer_count != chemistry.cell_count or liquid_water_m3.len != chemistry.cell_count or
-        matrix_bulk_volume_m3.len != chemistry.cell_count or bulk_density_Mg_per_m3.len != chemistry.cell_count)
+        matrix_bulk_volume_m3.len != chemistry.cell_count or bulk_density_megagrams_per_m3.len != chemistry.cell_count)
         return error.DailyMineralNitrogenDimensionMismatch;
     try validateFractions(fractions);
     if (!std.math.isFinite(nitrogen_molar_mass_g_per_mol) or nitrogen_molar_mass_g_per_mol <= 0 or
@@ -48,16 +48,16 @@ pub fn calculateInto(
         const layer = first_layer + local_layer;
         const water_m3 = liquid_water_m3[layer];
         const bulk_m3 = matrix_bulk_volume_m3[layer];
-        const density_Mg_per_m3 = bulk_density_Mg_per_m3[layer];
+        const density_megagrams_per_m3 = bulk_density_megagrams_per_m3[layer];
         if (!std.math.isFinite(water_m3) or water_m3 < 0 or !std.math.isFinite(bulk_m3) or bulk_m3 < 0 or
-            !std.math.isFinite(density_Mg_per_m3) or density_Mg_per_m3 < 0)
+            !std.math.isFinite(density_megagrams_per_m3) or density_megagrams_per_m3 < 0)
             return error.InvalidDailyMineralNitrogenState;
         const aqueous = chemistry.aqueous[layer];
-        const exchange = chemistry.cation_exchange_mol_per_Mg[layer];
-        const soil_mass_Mg = bulk_m3 * density_Mg_per_m3;
+        const exchange = chemistry.cation_exchange_mol_per_megagram[layer];
+        const soil_mass_megagrams = bulk_m3 * density_megagrams_per_m3;
         const ammonium_mol =
             water_m3 * (fractions.ammonium_non_band * aqueous.ammonium_non_band + fractions.ammonium_band * aqueous.ammonium_band) +
-            soil_mass_Mg * (exchange.ammonium_non_band + exchange.ammonium_band);
+            soil_mass_megagrams * (exchange.ammonium_non_band + exchange.ammonium_band);
         const nitrate_g_n = nitrogen_molar_mass_g_per_mol * water_m3 *
             (fractions.nitrate_non_band * aqueous.nitrate_non_band + fractions.nitrate_band * aqueous.nitrate_band);
         const nitrite_g_n = reactive.non_band_nitrite_g_n[layer] + reactive.band_nitrite_g_n[layer];
@@ -97,7 +97,7 @@ test "OUTSD mineral nitrogen projection uses runtime depth and source fallback v
     chemistry.aqueous[0].ammonium_non_band = 2;
     chemistry.aqueous[0].ammonium_band = 4;
     chemistry.aqueous[0].nitrate_non_band = 3;
-    chemistry.cation_exchange_mol_per_Mg[0].ammonium_non_band = 0.5;
+    chemistry.cation_exchange_mol_per_megagram[0].ammonium_non_band = 0.5;
     reactive.non_band_nitrite_g_n[0] = 7;
     chemistry.aqueous[1].ammonium_non_band = 100; // inactive
     var ammonium = [_]f64{ 99, 99, 99 };

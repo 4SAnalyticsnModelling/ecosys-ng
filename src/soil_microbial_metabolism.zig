@@ -104,12 +104,24 @@ pub const FixationInputs = struct {
     dinitrogen_half_saturation_g_n_per_m3: f64,
     nonstructural_to_structural_rate_per_h: f64,
     timestep_h: f64,
+    /// Dissolved N2 mass this diazotroph may still draw on within the step,
+    /// in the same layer and the same units as `fixed_nitrogen_g_n`. The
+    /// source expresses N2 supply only as the Monod ratio on
+    /// `CZ2GS = Z2GS/VOLW`, which is an intensive concentration and therefore
+    /// cannot bound an extensive draw. Where liquid water is ample the ratio
+    /// saturates while the pool is still large, so the two agree; where the
+    /// aqueous phase nearly vanishes the ratio still saturates (`VOLW` divides
+    /// out) while the pool is empty, and fixation then manufactures nitrogen.
+    /// `null` restores the unbounded source behaviour for isolated tests.
+    available_dissolved_dinitrogen_g_n: ?f64 = null,
 };
 
 pub const FixationResult = struct { fixation_respiration_g_c: f64, fixed_nitrogen_g_n: f64, respiration_required_g_c: f64 };
 
 pub fn nonsymbioticNitrogenFixation(inputs: FixationInputs) !FixationResult {
     inline for (@typeInfo(FixationInputs).@"struct".fields) |field| if (field.type == f64 and (!std.math.isFinite(@field(inputs, field.name)) or @field(inputs, field.name) < 0)) return error.InvalidNitrogenFixationInput;
+    if (inputs.available_dissolved_dinitrogen_g_n) |available|
+        if (!std.math.isFinite(available) or available < 0) return error.InvalidNitrogenFixationInput;
     if (!inputs.is_diazotroph) return .{ .fixation_respiration_g_c = 0, .fixed_nitrogen_g_n = 0, .respiration_required_g_c = 0 };
     if (inputs.nitrogen_fixation_yield_g_n_per_g_c <= 0 or inputs.dinitrogen_half_saturation_g_n_per_m3 <= 0 or inputs.timestep_h <= 0) return error.InvalidNitrogenFixationInput;
     const respiration_required = @max(0, inputs.nonstructural_carbon_g_c * inputs.maximum_nitrogen_per_carbon_g_n_per_g_c - inputs.nonstructural_nitrogen_g_n) / inputs.nitrogen_fixation_yield_g_n_per_g_c;
@@ -117,7 +129,15 @@ pub fn nonsymbioticNitrogenFixation(inputs: FixationInputs) !FixationResult {
     const coupled_respiration = inputs.growth_respiration_g_c * respiration_required / (inputs.growth_respiration_g_c + respiration_required);
     const dinitrogen_limitation = inputs.aqueous_dinitrogen_concentration_g_n_per_m3 / (inputs.aqueous_dinitrogen_concentration_g_n_per_m3 + inputs.dinitrogen_half_saturation_g_n_per_m3);
     const carbon_transfer_limit = inputs.nonstructural_to_structural_rate_per_h * inputs.nonstructural_carbon_g_c * inputs.timestep_h;
-    const respiration = @min(coupled_respiration * dinitrogen_limitation, carbon_transfer_limit);
+    var respiration = @min(coupled_respiration * dinitrogen_limitation, carbon_transfer_limit);
+    // Substrate mass bound. N2 fixation is a reduction of dissolved N2, so it
+    // cannot exceed the dissolved N2 actually present. This is a conservation
+    // bound, not a tolerance: it is inactive whenever the aqueous pool can
+    // supply the demand, which is every unfrozen layer.
+    if (inputs.available_dissolved_dinitrogen_g_n) |available| {
+        const respiration_supply_limit = available / inputs.nitrogen_fixation_yield_g_n_per_g_c;
+        respiration = @min(respiration, respiration_supply_limit);
+    }
     return .{ .fixation_respiration_g_c = respiration, .fixed_nitrogen_g_n = respiration * inputs.nitrogen_fixation_yield_g_n_per_g_c, .respiration_required_g_c = respiration_required };
 }
 

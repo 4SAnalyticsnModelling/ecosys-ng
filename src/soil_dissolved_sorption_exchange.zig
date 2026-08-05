@@ -3,9 +3,9 @@ const std = @import("std");
 pub const Inputs = struct {
     surface_layer: []const bool,
     micropore_water_m3: []const f64,
-    soil_mass_Mg: []const f64,
+    soil_mass_megagrams: []const f64,
     substrate_complex_fraction: []const f64,
-    anion_exchange_capacity_mol_per_Mg: []const f64,
+    anion_exchange_capacity_mol_per_megagram: []const f64,
     dissolved_organic_carbon_g_c: []const f64,
     dissolved_organic_nitrogen_g_n: []const f64,
     dissolved_organic_phosphorus_g_p: []const f64,
@@ -17,8 +17,8 @@ pub const Inputs = struct {
     dissolved_carbon_fraction: []const f64,
     acetate_fraction: []const f64,
     sorption_rate_h: f64,
-    sorption_coefficient_Mg_mol: f64,
-    surface_anion_exchange_capacity_mol_per_Mg: f64 = 500,
+    sorption_coefficient_megagrams_mol: f64,
+    surface_anion_exchange_capacity_mol_per_megagram: f64 = 500,
     negligible_pool_mass: f64,
     negligible_water_m3: f64,
     biochemical_time_fraction_h: f64,
@@ -27,7 +27,7 @@ pub const Inputs = struct {
 pub const State = struct {
     allocator: std.mem.Allocator,
     complex_count: usize,
-    effective_anion_exchange_capacity_mol_per_Mg: []f64,
+    effective_anion_exchange_capacity_mol_per_megagram: []f64,
     exchange_volume: []f64,
     aqueous_volume_m3: []f64,
     dissolved_organic_carbon_sorption_g_c: []f64,
@@ -78,11 +78,11 @@ pub fn calculate(state: *State, inputs: Inputs) !void {
             continue;
         }
         const exchange_capacity = if (inputs.surface_layer[complex])
-            inputs.surface_anion_exchange_capacity_mol_per_Mg
+            inputs.surface_anion_exchange_capacity_mol_per_megagram
         else
-            inputs.anion_exchange_capacity_mol_per_Mg[complex];
-        const exchange_volume = inputs.soil_mass_Mg[complex] * exchange_capacity *
-            inputs.sorption_coefficient_Mg_mol *
+            inputs.anion_exchange_capacity_mol_per_megagram[complex];
+        const exchange_volume = inputs.soil_mass_megagrams[complex] * exchange_capacity *
+            inputs.sorption_coefficient_megagrams_mol *
             inputs.substrate_complex_fraction[complex];
         const aqueous_volume = inputs.micropore_water_m3[complex] *
             inputs.substrate_complex_fraction[complex];
@@ -189,8 +189,8 @@ fn validate(state: *const State, inputs: Inputs) !void {
             return error.InvalidSorptionExchangeInput;
     };
     inline for (.{
-        inputs.sorption_rate_h,                            inputs.sorption_coefficient_Mg_mol,
-        inputs.surface_anion_exchange_capacity_mol_per_Mg, inputs.negligible_pool_mass,
+        inputs.sorption_rate_h,                            inputs.sorption_coefficient_megagrams_mol,
+        inputs.surface_anion_exchange_capacity_mol_per_megagram, inputs.negligible_pool_mass,
         inputs.negligible_water_m3,                        inputs.biochemical_time_fraction_h,
     }) |value| if (!std.math.isFinite(value) or value < 0)
         return error.InvalidSorptionExchangeInput;
@@ -200,9 +200,9 @@ fn fixture() Inputs {
     return .{
         .surface_layer = &.{ true, false },
         .micropore_water_m3 = &.{ 2, 2 },
-        .soil_mass_Mg = &.{ 1, 1 },
+        .soil_mass_megagrams = &.{ 1, 1 },
         .substrate_complex_fraction = &.{ 0.5, 0.5 },
-        .anion_exchange_capacity_mol_per_Mg = &.{ 100, 100 },
+        .anion_exchange_capacity_mol_per_megagram = &.{ 100, 100 },
         .dissolved_organic_carbon_g_c = &.{ 10, 10 },
         .dissolved_organic_nitrogen_g_n = &.{ 2, 2 },
         .dissolved_organic_phosphorus_g_p = &.{ 1, 1 },
@@ -214,7 +214,7 @@ fn fixture() Inputs {
         .dissolved_carbon_fraction = &.{ 0.8, 0.8 },
         .acetate_fraction = &.{ 0.2, 0.2 },
         .sorption_rate_h = 0.1,
-        .sorption_coefficient_Mg_mol = 0.01,
+        .sorption_coefficient_megagrams_mol = 0.01,
         .negligible_pool_mass = 1e-12,
         .negligible_water_m3 = 1e-12,
         .biochemical_time_fraction_h = 1,
@@ -225,8 +225,8 @@ test "surface layer uses fixed source anion exchange capacity" {
     var state = try State.init(std.testing.allocator, 2);
     defer state.deinit();
     try calculate(&state, fixture());
-    try std.testing.expectEqual(500, state.effective_anion_exchange_capacity_mol_per_Mg[0]);
-    try std.testing.expectEqual(100, state.effective_anion_exchange_capacity_mol_per_Mg[1]);
+    try std.testing.expectEqual(500, state.effective_anion_exchange_capacity_mol_per_megagram[0]);
+    try std.testing.expectEqual(100, state.effective_anion_exchange_capacity_mol_per_megagram[1]);
 }
 
 test "signed exchange distinguishes adsorption and desorption" {
@@ -277,7 +277,7 @@ test "invalid input leaves state unchanged" {
     defer state.deinit();
     state.dissolved_organic_carbon_sorption_g_c[0] = 7;
     var inputs = fixture();
-    inputs.soil_mass_Mg = &.{ std.math.nan(f64), 1 };
+    inputs.soil_mass_megagrams = &.{ std.math.nan(f64), 1 };
     try std.testing.expectError(error.InvalidSorptionExchangeInput, calculate(&state, inputs));
     try std.testing.expectEqual(7, state.dissolved_organic_carbon_sorption_g_c[0]);
 }
@@ -288,8 +288,8 @@ test "NITRO 3460-3514 derived overflow preserves all sorption outputs" {
     state.dissolved_organic_carbon_sorption_g_c[0] = 7;
     state.acetate_sorption_g_c[1] = 11;
     var inputs = fixture();
-    inputs.soil_mass_Mg = &.{ std.math.floatMax(f64), 1 };
-    inputs.sorption_coefficient_Mg_mol = std.math.floatMax(f64);
+    inputs.soil_mass_megagrams = &.{ std.math.floatMax(f64), 1 };
+    inputs.sorption_coefficient_megagrams_mol = std.math.floatMax(f64);
     try std.testing.expectError(
         error.NonFiniteSorptionExchangeResult,
         calculate(&state, inputs),

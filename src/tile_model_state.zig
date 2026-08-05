@@ -96,11 +96,11 @@ pub fn fields(
         field("soil_thermal_layer_volume_m3", thermal.layer_volume_m3, soil_layers),
         field("soil_thermal_layer_thickness_m", thermal.layer_thickness_m, soil_layers),
         field("soil_thermal_porosity_fraction", thermal.porosity_fraction, soil_layers),
-        field("soil_thermal_dry_solid_heat_capacity_mj_per_m3_k", thermal.dry_solid_heat_capacity_mj_per_m3_k, soil_layers),
-        field("soil_thermal_solid_conductivity_numerator_m_mj_per_h_k", thermal.solid_thermal_conductivity_numerator_m_mj_per_h_k, soil_layers),
+        field("soil_thermal_dry_solid_heat_capacity_megajoules_per_m3_k", thermal.dry_solid_heat_capacity_megajoules_per_m3_k, soil_layers),
+        field("soil_thermal_solid_conductivity_numerator_m_megajoules_per_h_k", thermal.solid_thermal_conductivity_numerator_m_megajoules_per_h_k, soil_layers),
         field("soil_thermal_solid_conductivity_denominator", thermal.solid_thermal_conductivity_denominator, soil_layers),
-        field("soil_thermal_total_heat_capacity_mj_per_m3_k", thermal.total_heat_capacity_mj_per_m3_k, soil_layers),
-        field("soil_thermal_conductivity_m_mj_per_h_k", thermal.thermal_conductivity_m_mj_per_h_k, soil_layers),
+        field("soil_thermal_total_heat_capacity_megajoules_per_m3_k", thermal.total_heat_capacity_megajoules_per_m3_k, soil_layers),
+        field("soil_thermal_conductivity_m_megajoules_per_h_k", thermal.thermal_conductivity_m_megajoules_per_h_k, soil_layers),
     };
     var result: [field_count]tile_state_store.Field = undefined;
     @memcpy(result[0..base_field_count], &base);
@@ -228,11 +228,11 @@ pub fn mutableFields(
         mutableField("soil_thermal_layer_volume_m3", thermal.layer_volume_m3, soil_layers),
         mutableField("soil_thermal_layer_thickness_m", thermal.layer_thickness_m, soil_layers),
         mutableField("soil_thermal_porosity_fraction", thermal.porosity_fraction, soil_layers),
-        mutableField("soil_thermal_dry_solid_heat_capacity_mj_per_m3_k", thermal.dry_solid_heat_capacity_mj_per_m3_k, soil_layers),
-        mutableField("soil_thermal_solid_conductivity_numerator_m_mj_per_h_k", thermal.solid_thermal_conductivity_numerator_m_mj_per_h_k, soil_layers),
+        mutableField("soil_thermal_dry_solid_heat_capacity_megajoules_per_m3_k", thermal.dry_solid_heat_capacity_megajoules_per_m3_k, soil_layers),
+        mutableField("soil_thermal_solid_conductivity_numerator_m_megajoules_per_h_k", thermal.solid_thermal_conductivity_numerator_m_megajoules_per_h_k, soil_layers),
         mutableField("soil_thermal_solid_conductivity_denominator", thermal.solid_thermal_conductivity_denominator, soil_layers),
-        mutableField("soil_thermal_total_heat_capacity_mj_per_m3_k", thermal.total_heat_capacity_mj_per_m3_k, soil_layers),
-        mutableField("soil_thermal_conductivity_m_mj_per_h_k", thermal.thermal_conductivity_m_mj_per_h_k, soil_layers),
+        mutableField("soil_thermal_total_heat_capacity_megajoules_per_m3_k", thermal.total_heat_capacity_megajoules_per_m3_k, soil_layers),
+        mutableField("soil_thermal_conductivity_m_megajoules_per_h_k", thermal.thermal_conductivity_m_megajoules_per_h_k, soil_layers),
     };
     var result: [field_count]tile_state_store.MutableField = undefined;
     @memcpy(result[0..base_field_count], &base);
@@ -300,8 +300,8 @@ pub fn mutableFields(
 pub fn saveTile(
     store: tile_state_store.FileStore,
     tile: spatial_grid.Tile,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     grid: *const grid_module.GridState,
     plants: *const grid_module.PlantState,
     thermal: *const soil_thermal.State,
@@ -325,8 +325,8 @@ pub fn saveTile(
     );
     try store.saveOwnedFields(
         tile,
-        grid_row_count,
-        grid_column_count,
+        lat_count,
+        lon_count,
         &catalog,
     );
 }
@@ -350,8 +350,8 @@ pub fn initializeStore(
     for (plan.tiles) |tile| try saveTile(
         store,
         tile,
-        plan.grid_row_count,
-        plan.grid_column_count,
+        plan.lat_count,
+        plan.lon_count,
         grid,
         plants,
         thermal,
@@ -514,8 +514,8 @@ pub fn runSerialTiles(
             try saveTile(
                 context.destination_store,
                 tile,
-                context.plan.grid_row_count,
-                context.plan.grid_column_count,
+                context.plan.lat_count,
+                context.plan.lon_count,
                 context.grid,
                 context.plants,
                 context.thermal,
@@ -677,11 +677,11 @@ fn initTestThermal(
         .layer_volume_m3 = layer_volume_m3,
         .layer_thickness_m = layer_thickness_m,
         .porosity_fraction = porosity_fraction,
-        .dry_solid_heat_capacity_mj_per_m3_k = dry_solid_heat_capacity,
-        .solid_thermal_conductivity_numerator_m_mj_per_h_k = conductivity_numerator,
+        .dry_solid_heat_capacity_megajoules_per_m3_k = dry_solid_heat_capacity,
+        .solid_thermal_conductivity_numerator_m_megajoules_per_h_k = conductivity_numerator,
         .solid_thermal_conductivity_denominator = conductivity_denominator,
-        .total_heat_capacity_mj_per_m3_k = total_heat_capacity,
-        .thermal_conductivity_m_mj_per_h_k = thermal_conductivity,
+        .total_heat_capacity_megajoules_per_m3_k = total_heat_capacity,
+        .thermal_conductivity_m_megajoules_per_h_k = thermal_conductivity,
     };
 }
 
@@ -689,8 +689,8 @@ test "production grid and runtime plant fields round trip through one Morton til
     try std.testing.expectEqual(@as(usize, 81), field_count);
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 3,
-            .grid_rows = 2,
+            .lon_count = 3,
+            .lat_count = 2,
             .soil_layers = 4,
             .plant_populations = 7,
         },
@@ -709,8 +709,8 @@ test "production grid and runtime plant fields round trip through one Morton til
     defer thermal.deinit();
     var hydrology = try transport_hydrology.State.init(
         std.testing.allocator,
-        config.grid_columns,
-        config.grid_rows,
+        config.lon_count,
+        config.lat_count,
         config.soil_layers,
         3,
     );
@@ -751,7 +751,7 @@ test "production grid and runtime plant fields round trip through one Morton til
         value.* = @floatFromInt(index + 500);
     for (grid.active_soil_layer_count, 0..) |*value, cell|
         value.* = 1 + cell % config.soil_layers;
-    for (thermal.thermal_conductivity_m_mj_per_h_k, 0..) |*value, index|
+    for (thermal.thermal_conductivity_m_megajoules_per_h_k, 0..) |*value, index|
         value.* = @floatFromInt(index + 900);
     for (hydrology.micropore_face_flux_m3_per_step, 0..) |*value, index|
         value.* = -@as(f64, @floatFromInt(index + 1));
@@ -771,7 +771,7 @@ test "production grid and runtime plant fields round trip through one Morton til
         value.* = @as(f64, @floatFromInt(index + 5000)) * 1e-6;
     const expected_thermal_conductivity = try std.testing.allocator.dupe(
         f64,
-        thermal.thermal_conductivity_m_mj_per_h_k,
+        thermal.thermal_conductivity_m_megajoules_per_h_k,
     );
     defer std.testing.allocator.free(expected_thermal_conductivity);
     const expected_micropore_face_flux = try std.testing.allocator.dupe(
@@ -849,7 +849,7 @@ test "production grid and runtime plant fields round trip through one Morton til
     @memset(grid.active_soil_layer_count, 0);
     @memset(grid.matrix_liquid_water_m3, 0);
     @memset(plants.root_carbon_g_m2, 0);
-    @memset(thermal.thermal_conductivity_m_mj_per_h_k, 0);
+    @memset(thermal.thermal_conductivity_m_megajoules_per_h_k, 0);
     @memset(hydrology.micropore_face_flux_m3_per_step, 0);
     @memset(soil_gas.dissolved_mass_g, 0);
     @memset(litter_gas.gaseous_mass_g, 0);
@@ -888,7 +888,7 @@ test "production grid and runtime plant fields round trip through one Morton til
     try std.testing.expectEqualSlices(
         f64,
         expected_thermal_conductivity,
-        thermal.thermal_conductivity_m_mj_per_h_k,
+        thermal.thermal_conductivity_m_megajoules_per_h_k,
     );
     try std.testing.expectEqualSlices(
         f64,
@@ -936,8 +936,8 @@ fn incrementSurfaceTemperature(
 test "serial Morton transactions read an immutable source generation" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 6,
-            .grid_rows = 4,
+            .lon_count = 6,
+            .lat_count = 4,
             .soil_layers = 2,
             .plant_populations = 3,
         },
@@ -956,8 +956,8 @@ test "serial Morton transactions read an immutable source generation" {
     defer thermal.deinit();
     var hydrology = try transport_hydrology.State.init(
         std.testing.allocator,
-        config.grid_columns,
-        config.grid_rows,
+        config.lon_count,
+        config.lat_count,
         config.soil_layers,
         2,
     );
@@ -1087,8 +1087,8 @@ test "serial Morton transactions read an immutable source generation" {
 test "serial Morton transactions reject one mutable generation" {
     const config = try @import("config.zig").SimulationConfig.init(
         .{
-            .grid_columns = 1,
-            .grid_rows = 1,
+            .lon_count = 1,
+            .lat_count = 1,
             .soil_layers = 1,
             .plant_populations = 1,
         },
@@ -1107,8 +1107,8 @@ test "serial Morton transactions reject one mutable generation" {
     defer thermal.deinit();
     var hydrology = try transport_hydrology.State.init(
         std.testing.allocator,
-        config.grid_columns,
-        config.grid_rows,
+        config.lon_count,
+        config.lat_count,
         config.soil_layers,
         1,
     );

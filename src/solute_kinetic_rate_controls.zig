@@ -47,6 +47,9 @@ pub const Inputs = struct {
 
 pub const Controls = struct {
     maximum_phosphate_precipitation_mol_per_m3_iteration: f64,
+    /// Legacy TPDA. In the full dynamic-salt branch SOLUTE.F line 636 aliases
+    /// the hydroxyapatite ceiling to TPDX rather than deriving a second rate.
+    maximum_apatite_precipitation_mol_per_m3_iteration: f64,
     maximum_hydroxide_mineral_precipitation_mol_per_m3_iteration: f64,
     maximum_anion_adsorption_mol_per_m3_iteration: f64,
     maximum_cation_adsorption_mol_per_m3_iteration: f64,
@@ -73,6 +76,37 @@ pub const RestrictedSaltControls = struct {
     maximum_fast_solute_reaction_mol_per_m3_step: f64,
     shared_weathering_apatite_control_per_step: f64,
 };
+
+/// Compatibility aliases initialized from the single legacy `FIONZ`
+/// substrate/product limiter. Units are fraction per reaction iteration.
+pub const SubstrateProductLimits = struct {
+    /// Legacy FIONN, consumed by soil reactions beginning at SOLUTE.F 2991.
+    soil_fraction_per_iteration: f64,
+    /// Legacy FION0, consumed by surface-litter reactions beginning at
+    /// SOLUTE.F 4423.
+    surface_litter_fraction_per_iteration: f64,
+};
+
+/// Direct source-order translation of SOLUTE.F lines 141--142:
+/// `FIONN = FIONZ`, followed by `FION0 = FIONZ`.
+///
+/// Production configurations may expose process-specific controls as an
+/// intentional formulation extension. Compatibility initialization must use
+/// this function so both domains retain the source alias relationship.
+pub fn initializeSubstrateProductLimits(
+    general_fraction_per_iteration: f64,
+) !SubstrateProductLimits {
+    if (!std.math.isFinite(general_fraction_per_iteration) or
+        general_fraction_per_iteration < 0 or
+        general_fraction_per_iteration > 1)
+        return error.InvalidSoluteSubstrateProductLimit;
+
+    var result: SubstrateProductLimits = undefined;
+    result.soil_fraction_per_iteration = general_fraction_per_iteration;
+    result.surface_litter_fraction_per_iteration =
+        general_fraction_per_iteration;
+    return result;
+}
 
 /// Direct source-order translation of SOLUTE.F lines 2896--2903 and the
 /// identical surface-litter assignments at lines 4009--4016.
@@ -151,6 +185,8 @@ pub fn derive(inputs: Inputs) !Controls {
     const weathering_per_area =
         inputs.hourly.silicate_weathering_mol_per_m2_h /
         iteration_count * inputs.timestep_h;
+    // SOLUTE.F line 636 follows all seven timestep-scaled rate assignments.
+    const apatite_precipitation = phosphate_precipitation;
 
     const temperature = inputs.temperature_response;
     const gas_energy_j_per_mol =
@@ -184,6 +220,7 @@ pub fn derive(inputs: Inputs) !Controls {
 
     const result = Controls{
         .maximum_phosphate_precipitation_mol_per_m3_iteration = phosphate_precipitation,
+        .maximum_apatite_precipitation_mol_per_m3_iteration = apatite_precipitation,
         .maximum_hydroxide_mineral_precipitation_mol_per_m3_iteration = hydroxide_mineral_precipitation,
         .maximum_anion_adsorption_mol_per_m3_iteration = anion_adsorption,
         .maximum_cation_adsorption_mol_per_m3_iteration = cation_adsorption,
@@ -296,6 +333,10 @@ test "SOLUTE kinetic controls preserve source assignment order" {
         2.5e-3 / iteration_count,
         result.maximum_phosphate_precipitation_mol_per_m3_iteration,
     );
+    try std.testing.expectEqual(
+        result.maximum_phosphate_precipitation_mol_per_m3_iteration,
+        result.maximum_apatite_precipitation_mol_per_m3_iteration,
+    );
     try std.testing.expectEqual(response, result.weathering_temperature_response);
     try std.testing.expectEqual(
         21_000,
@@ -401,5 +442,32 @@ test "restricted-salt controls reject invalid runtime controls" {
     try std.testing.expectError(
         error.InvalidSoluteKineticControlInput,
         deriveRestrictedSalt(hourly, 1),
+    );
+}
+
+test "SOLUTE lines 141 and 142 preserve FIONZ alias and assignment order" {
+    const limits = try initializeSubstrateProductLimits(0.20);
+    try std.testing.expectEqual(
+        @as(f64, 0.20),
+        limits.soil_fraction_per_iteration,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.20),
+        limits.surface_litter_fraction_per_iteration,
+    );
+}
+
+test "SOLUTE substrate-product alias rejects invalid runtime fractions" {
+    try std.testing.expectError(
+        error.InvalidSoluteSubstrateProductLimit,
+        initializeSubstrateProductLimits(-0.01),
+    );
+    try std.testing.expectError(
+        error.InvalidSoluteSubstrateProductLimit,
+        initializeSubstrateProductLimits(1.01),
+    );
+    try std.testing.expectError(
+        error.InvalidSoluteSubstrateProductLimit,
+        initializeSubstrateProductLimits(std.math.nan(f64)),
     );
 }

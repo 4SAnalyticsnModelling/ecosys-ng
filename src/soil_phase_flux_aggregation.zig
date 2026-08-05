@@ -4,9 +4,9 @@ const std = @import("std");
 pub const PhaseFlux = struct {
     micropore_phase_change_water_m3_per_step: f64 = 0,
     macropore_phase_change_water_m3_per_step: f64 = 0,
-    phase_change_latent_heat_MJ_per_step: f64 = 0,
+    phase_change_latent_heat_megajoules_per_step: f64 = 0,
     evaporation_condensation_water_m3_per_step: f64 = 0,
-    evaporation_condensation_latent_heat_MJ_per_step: f64 = 0,
+    evaporation_condensation_latent_heat_megajoules_per_step: f64 = 0,
 };
 
 pub const State = struct {
@@ -57,16 +57,16 @@ test "all five phase diagnostics accumulate in source order" {
     var state = State{ .net_flux = .{
         .micropore_phase_change_water_m3_per_step = 10,
         .macropore_phase_change_water_m3_per_step = 20,
-        .phase_change_latent_heat_MJ_per_step = 30,
+        .phase_change_latent_heat_megajoules_per_step = 30,
         .evaporation_condensation_water_m3_per_step = 40,
-        .evaporation_condensation_latent_heat_MJ_per_step = 50,
+        .evaporation_condensation_latent_heat_megajoules_per_step = 50,
     } };
     try aggregate(.{
         .micropore_phase_change_water_m3_per_step = 1,
         .macropore_phase_change_water_m3_per_step = 2,
-        .phase_change_latent_heat_MJ_per_step = 3,
+        .phase_change_latent_heat_megajoules_per_step = 3,
         .evaporation_condensation_water_m3_per_step = 4,
-        .evaporation_condensation_latent_heat_MJ_per_step = 5,
+        .evaporation_condensation_latent_heat_megajoules_per_step = 5,
     }, &state);
     try std.testing.expectEqual(
         @as(f64, 11),
@@ -78,7 +78,7 @@ test "all five phase diagnostics accumulate in source order" {
     );
     try std.testing.expectEqual(
         @as(f64, 33),
-        state.net_flux.phase_change_latent_heat_MJ_per_step,
+        state.net_flux.phase_change_latent_heat_megajoules_per_step,
     );
     try std.testing.expectEqual(
         @as(f64, 44),
@@ -86,7 +86,7 @@ test "all five phase diagnostics accumulate in source order" {
     );
     try std.testing.expectEqual(
         @as(f64, 55),
-        state.net_flux.evaporation_condensation_latent_heat_MJ_per_step,
+        state.net_flux.evaporation_condensation_latent_heat_megajoules_per_step,
     );
 }
 
@@ -105,7 +105,7 @@ test "zero phase publication leaves prior diagnostics unchanged" {
 
 test "nonfinite source and state fail before mutation" {
     var increment = filledFlux(3);
-    increment.evaporation_condensation_latent_heat_MJ_per_step =
+    increment.evaporation_condensation_latent_heat_megajoules_per_step =
         std.math.nan(f64);
     var state = State{ .net_flux = filledFlux(5) };
     try std.testing.expectError(
@@ -115,23 +115,23 @@ test "nonfinite source and state fail before mutation" {
     try expectFlux(state.net_flux, 5);
 
     increment = filledFlux(3);
-    state.net_flux.phase_change_latent_heat_MJ_per_step =
+    state.net_flux.phase_change_latent_heat_megajoules_per_step =
         std.math.inf(f64);
     try std.testing.expectError(
         error.NonFiniteSoilPhaseFluxInput,
         aggregate(increment, &state),
     );
     try std.testing.expect(std.math.isInf(
-        state.net_flux.phase_change_latent_heat_MJ_per_step,
+        state.net_flux.phase_change_latent_heat_megajoules_per_step,
     ));
 }
 
 test "late arithmetic overflow preserves every diagnostic atomically" {
     var increment = filledFlux(1);
-    increment.evaporation_condensation_latent_heat_MJ_per_step =
+    increment.evaporation_condensation_latent_heat_megajoules_per_step =
         std.math.floatMax(f64);
     var state = State{ .net_flux = filledFlux(10) };
-    state.net_flux.evaporation_condensation_latent_heat_MJ_per_step =
+    state.net_flux.evaporation_condensation_latent_heat_megajoules_per_step =
         std.math.floatMax(f64);
     try std.testing.expectError(
         error.NonFiniteSoilPhaseFluxResult,
@@ -143,6 +143,6 @@ test "late arithmetic overflow preserves every diagnostic atomically" {
     );
     try std.testing.expectEqual(
         std.math.floatMax(f64),
-        state.net_flux.evaporation_condensation_latent_heat_MJ_per_step,
+        state.net_flux.evaporation_condensation_latent_heat_megajoules_per_step,
     );
 }

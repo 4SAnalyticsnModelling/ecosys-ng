@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const Deviation = struct {
     water_m: f64,
-    heat_mj_per_m2: f64,
+    heat_megajoules_per_m2: f64,
     oxygen_g_per_m2: f64,
     carbon_g_per_m2: f64,
     nitrogen_g_per_m2: f64,
@@ -21,7 +21,7 @@ pub const Record = struct {
 pub fn writeHeader(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         "execution_day\tyear\twater_balance_m\t" ++
-            "heat_balance_MJ_m-2\toxygen_balance_g_m-2\t" ++
+            "heat_balance_megajoules_m-2\toxygen_balance_g_m-2\t" ++
             "carbon_balance_g_m-2\tnitrogen_balance_g_m-2\t" ++
             "phosphorus_balance_g_m-2\tion_balance_mol_m-2\n",
     );
@@ -34,7 +34,7 @@ pub fn writeRecord(writer: *std.Io.Writer, record: Record) !void {
         return error.InvalidExecutionBalanceOutputDay;
     const values = [_]f64{
         record.deviation.water_m,
-        record.deviation.heat_mj_per_m2,
+        record.deviation.heat_megajoules_per_m2,
         record.deviation.oxygen_g_per_m2,
         record.deviation.carbon_g_per_m2,
         record.deviation.nitrogen_g_per_m2,
@@ -61,7 +61,7 @@ test "EXEC diagnostic writes exact seven-domain tab record order" {
         .year = 1998,
         .deviation = .{
             .water_m = 1,
-            .heat_mj_per_m2 = 2,
+            .heat_megajoules_per_m2 = 2,
             .oxygen_g_per_m2 = 3,
             .carbon_g_per_m2 = 4,
             .nitrogen_g_per_m2 = 5,
@@ -71,7 +71,7 @@ test "EXEC diagnostic writes exact seven-domain tab record order" {
     });
     try std.testing.expectEqualStrings(
         "execution_day\tyear\twater_balance_m\t" ++
-            "heat_balance_MJ_m-2\toxygen_balance_g_m-2\t" ++
+            "heat_balance_megajoules_m-2\toxygen_balance_g_m-2\t" ++
             "carbon_balance_g_m-2\tnitrogen_balance_g_m-2\t" ++
             "phosphorus_balance_g_m-2\tion_balance_mol_m-2\n" ++
             "81\t1998\t1e0\t2e0\t3e0\t4e0\t5e0\t6e0\t7e0\n",
@@ -89,7 +89,7 @@ test "invalid late domain writes no partial EXEC row" {
             .year = 2001,
             .deviation = .{
                 .water_m = 1,
-                .heat_mj_per_m2 = 2,
+                .heat_megajoules_per_m2 = 2,
                 .oxygen_g_per_m2 = 3,
                 .carbon_g_per_m2 = 4,
                 .nitrogen_g_per_m2 = 5,
@@ -111,7 +111,7 @@ test "invalid execution day writes no diagnostic bytes" {
             .year = 2001,
             .deviation = .{
                 .water_m = 0,
-                .heat_mj_per_m2 = 0,
+                .heat_megajoules_per_m2 = 0,
                 .oxygen_g_per_m2 = 0,
                 .carbon_g_per_m2 = 0,
                 .nitrogen_g_per_m2 = 0,

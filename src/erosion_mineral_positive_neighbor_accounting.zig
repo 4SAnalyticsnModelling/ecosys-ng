@@ -20,16 +20,16 @@ pub const NeighborConnection = enum {
 };
 
 pub const MineralFlux = struct {
-    total_sediment_Mg_per_step: f64 = 0,
-    sand_Mg_per_step: f64 = 0,
-    silt_Mg_per_step: f64 = 0,
-    clay_Mg_per_step: f64 = 0,
+    total_sediment_megagrams_per_step: f64 = 0,
+    sand_megagrams_per_step: f64 = 0,
+    silt_megagrams_per_step: f64 = 0,
+    clay_megagrams_per_step: f64 = 0,
     cation_exchange_capacity_mol_per_step: f64 = 0,
     anion_exchange_capacity_mol_per_step: f64 = 0,
 };
 
 pub const NeighborSide = struct {
-    local_total_sediment_Mg_per_step: f64,
+    local_total_sediment_megagrams_per_step: f64,
     positive_neighbor_flux: MineralFlux,
     connection: NeighborConnection,
 };
@@ -37,7 +37,7 @@ pub const NeighborSide = struct {
 pub const Inputs = struct {
     disturbance_mode: DisturbanceMode,
     transport_axis: TransportAxis,
-    sediment_activity_threshold_Mg_per_step: f64,
+    sediment_activity_threshold_megagrams_per_step: f64,
     neighbor_by_boundary_side: []const NeighborSide,
 };
 
@@ -61,10 +61,10 @@ pub fn account(inputs: Inputs, state: *State) !void {
     try validateInputs(inputs, state.*);
     var candidate = state.net_erosion;
     for (inputs.neighbor_by_boundary_side) |side| {
-        if (@abs(side.local_total_sediment_Mg_per_step) <=
-            inputs.sediment_activity_threshold_Mg_per_step and
-            @abs(side.positive_neighbor_flux.total_sediment_Mg_per_step) <=
-                inputs.sediment_activity_threshold_Mg_per_step)
+        if (@abs(side.local_total_sediment_megagrams_per_step) <=
+            inputs.sediment_activity_threshold_megagrams_per_step and
+            @abs(side.positive_neighbor_flux.total_sediment_megagrams_per_step) <=
+                inputs.sediment_activity_threshold_megagrams_per_step)
         {
             continue;
         }
@@ -82,13 +82,13 @@ fn erosionEnabled(mode: DisturbanceMode) bool {
 fn validateInputs(inputs: Inputs, state: State) !void {
     if (inputs.neighbor_by_boundary_side.len == 0)
         return error.InvalidMineralNeighborErosionDimensions;
-    if (!std.math.isFinite(inputs.sediment_activity_threshold_Mg_per_step))
+    if (!std.math.isFinite(inputs.sediment_activity_threshold_megagrams_per_step))
         return error.NonFiniteMineralNeighborErosionInput;
-    if (inputs.sediment_activity_threshold_Mg_per_step < 0)
+    if (inputs.sediment_activity_threshold_megagrams_per_step < 0)
         return error.InvalidErosionActivityThreshold;
     try validateFlux(state.net_erosion);
     for (inputs.neighbor_by_boundary_side) |side| {
-        if (!std.math.isFinite(side.local_total_sediment_Mg_per_step))
+        if (!std.math.isFinite(side.local_total_sediment_megagrams_per_step))
             return error.NonFiniteMineralNeighborErosionInput;
         try validateFlux(side.positive_neighbor_flux);
     }
@@ -125,12 +125,12 @@ fn expectFlux(actual: MineralFlux, expected: f64) !void {
 test "connected positive neighbor subtracts six mineral inventories" {
     const sides = [_]NeighborSide{
         .{
-            .local_total_sediment_Mg_per_step = 2,
+            .local_total_sediment_megagrams_per_step = 2,
             .positive_neighbor_flux = filledFlux(3),
             .connection = .connected,
         },
         .{
-            .local_total_sediment_Mg_per_step = 4,
+            .local_total_sediment_megagrams_per_step = 4,
             .positive_neighbor_flux = filledFlux(5),
             .connection = .connected,
         },
@@ -139,7 +139,7 @@ test "connected positive neighbor subtracts six mineral inventories" {
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &state);
     try expectFlux(state.net_erosion, 92);
@@ -148,29 +148,29 @@ test "connected positive neighbor subtracts six mineral inventories" {
 test "connection and strict activity gates are independent" {
     const sides = [_]NeighborSide{
         .{
-            .local_total_sediment_Mg_per_step = 2,
+            .local_total_sediment_megagrams_per_step = 2,
             .positive_neighbor_flux = filledFlux(7),
             .connection = .blocked,
         },
         .{
-            .local_total_sediment_Mg_per_step = 1,
+            .local_total_sediment_megagrams_per_step = 1,
             .positive_neighbor_flux = .{
-                .total_sediment_Mg_per_step = 1,
-                .sand_Mg_per_step = 9,
-                .silt_Mg_per_step = 9,
-                .clay_Mg_per_step = 9,
+                .total_sediment_megagrams_per_step = 1,
+                .sand_megagrams_per_step = 9,
+                .silt_megagrams_per_step = 9,
+                .clay_megagrams_per_step = 9,
                 .cation_exchange_capacity_mol_per_step = 9,
                 .anion_exchange_capacity_mol_per_step = 9,
             },
             .connection = .connected,
         },
         .{
-            .local_total_sediment_Mg_per_step = 2,
+            .local_total_sediment_megagrams_per_step = 2,
             .positive_neighbor_flux = .{
-                .total_sediment_Mg_per_step = 1,
-                .sand_Mg_per_step = 4,
-                .silt_Mg_per_step = 4,
-                .clay_Mg_per_step = 4,
+                .total_sediment_megagrams_per_step = 1,
+                .sand_megagrams_per_step = 4,
+                .silt_megagrams_per_step = 4,
+                .clay_megagrams_per_step = 4,
                 .cation_exchange_capacity_mol_per_step = 4,
                 .anion_exchange_capacity_mol_per_step = 4,
             },
@@ -181,14 +181,14 @@ test "connection and strict activity gates are independent" {
     try account(.{
         .disturbance_mode = .freeze_thaw_erosion_and_organic_matter,
         .transport_axis = .north_south,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &state);
     try std.testing.expectEqual(
         @as(f64, 9),
-        state.net_erosion.total_sediment_Mg_per_step,
+        state.net_erosion.total_sediment_megagrams_per_step,
     );
-    try std.testing.expectEqual(@as(f64, 6), state.net_erosion.sand_Mg_per_step);
+    try std.testing.expectEqual(@as(f64, 6), state.net_erosion.sand_megagrams_per_step);
 }
 
 test "shared face local addition and neighbor subtraction conserve exactly" {
@@ -196,14 +196,14 @@ test "shared face local addition and neighbor subtraction conserve exactly" {
     const receiving_cell = shared_face_flux;
     var source_cell = State{ .net_erosion = .{} };
     const sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 0,
+        .local_total_sediment_megagrams_per_step = 0,
         .positive_neighbor_flux = shared_face_flux,
         .connection = .connected,
     }};
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     }, &source_cell);
     inline for (@typeInfo(MineralFlux).@"struct".fields) |field|
@@ -219,13 +219,13 @@ test "disabled erosion and vertical axes bypass unused neighbors" {
     try account(.{
         .disturbance_mode = .freeze_thaw,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .neighbor_by_boundary_side = &.{},
     }, &state);
     try account(.{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .vertical,
-        .sediment_activity_threshold_Mg_per_step = std.math.nan(f64),
+        .sediment_activity_threshold_megagrams_per_step = std.math.nan(f64),
         .neighbor_by_boundary_side = &.{},
     }, &state);
     try expectFlux(state.net_erosion, 9);
@@ -233,7 +233,7 @@ test "disabled erosion and vertical axes bypass unused neighbors" {
 
 test "invalid input and subtraction overflow preserve state atomically" {
     var sides = [_]NeighborSide{.{
-        .local_total_sediment_Mg_per_step = 2,
+        .local_total_sediment_megagrams_per_step = 2,
         .positive_neighbor_flux = filledFlux(3),
         .connection = .connected,
     }};
@@ -243,7 +243,7 @@ test "invalid input and subtraction overflow preserve state atomically" {
     const inputs = Inputs{
         .disturbance_mode = .freeze_thaw_and_erosion,
         .transport_axis = .east_west,
-        .sediment_activity_threshold_Mg_per_step = 1,
+        .sediment_activity_threshold_megagrams_per_step = 1,
         .neighbor_by_boundary_side = &sides,
     };
     try std.testing.expectError(

@@ -19,7 +19,7 @@ pub const State = struct {
     micropore_face_flux_m3_per_step: []f64,
     macropore_face_flux_m3_per_step: []f64,
     vapor_face_flux_m3_per_step: []f64,
-    heat_face_flux_mj_per_step: []f64,
+    heat_face_flux_megajoules_per_step: []f64,
     /// Positive values leave the modeled domain; negative values recharge it.
     micropore_external_water_flux_m3_per_step: []f64,
     macropore_external_water_flux_m3_per_step: []f64,
@@ -76,8 +76,8 @@ pub const State = struct {
         errdefer allocator.free(result.macropore_face_flux_m3_per_step);
         result.vapor_face_flux_m3_per_step = try zeroes(allocator, try std.math.mul(usize, soil_components, 3));
         errdefer allocator.free(result.vapor_face_flux_m3_per_step);
-        result.heat_face_flux_mj_per_step = try zeroes(allocator, try std.math.mul(usize, soil_components, 3));
-        errdefer allocator.free(result.heat_face_flux_mj_per_step);
+        result.heat_face_flux_megajoules_per_step = try zeroes(allocator, try std.math.mul(usize, soil_components, 3));
+        errdefer allocator.free(result.heat_face_flux_megajoules_per_step);
         result.micropore_external_water_flux_m3_per_step = try zeroes(allocator, soil_components);
         errdefer allocator.free(result.micropore_external_water_flux_m3_per_step);
         result.macropore_external_water_flux_m3_per_step = try zeroes(allocator, soil_components);
@@ -148,7 +148,7 @@ pub const State = struct {
         self.allocator.free(self.macropore_external_water_flux_m3_per_step);
         self.allocator.free(self.micropore_external_water_flux_m3_per_step);
         self.allocator.free(self.macropore_face_flux_m3_per_step);
-        self.allocator.free(self.heat_face_flux_mj_per_step);
+        self.allocator.free(self.heat_face_flux_megajoules_per_step);
         self.allocator.free(self.vapor_face_flux_m3_per_step);
         self.allocator.free(self.micropore_face_flux_m3_per_step);
         self.allocator.free(self.air_volume_m3);
@@ -179,7 +179,7 @@ pub const State = struct {
                     std.log.err("non-finite transport hydrology: field={s} index={d} value={e}", .{ field.name, index, value });
                     return error.NonFiniteTransportHydrology;
                 }
-                const signed_flux_field = comptime std.mem.eql(u8, field.name, "micropore_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "macropore_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "vapor_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "heat_face_flux_mj_per_step") or std.mem.eql(u8, field.name, "micropore_external_water_flux_m3_per_step") or std.mem.eql(u8, field.name, "macropore_external_water_flux_m3_per_step") or std.mem.endsWith(u8, field.name, "ice_volume_change_m3_per_step");
+                const signed_flux_field = comptime std.mem.eql(u8, field.name, "micropore_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "macropore_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "vapor_face_flux_m3_per_step") or std.mem.eql(u8, field.name, "heat_face_flux_megajoules_per_step") or std.mem.eql(u8, field.name, "micropore_external_water_flux_m3_per_step") or std.mem.eql(u8, field.name, "macropore_external_water_flux_m3_per_step") or std.mem.endsWith(u8, field.name, "ice_volume_change_m3_per_step");
                 if (!signed_flux_field and value < 0) {
                     std.log.err("negative transport hydrology: field={s} index={d} value={e}", .{ field.name, index, value });
                     return error.NegativeTransportHydrologyValue;
@@ -203,11 +203,11 @@ pub const SoilFaces = struct {
     micropore_water_flux_m3_per_step: []f64,
     macropore_water_flux_m3_per_step: []f64,
     vapor_flux_m3_per_step: []f64,
-    heat_flux_mj_per_step: []f64,
+    heat_flux_megajoules_per_step: []f64,
 
     pub fn deinit(self: *SoilFaces) void {
         self.allocator.free(self.macropore_water_flux_m3_per_step);
-        self.allocator.free(self.heat_flux_mj_per_step);
+        self.allocator.free(self.heat_flux_megajoules_per_step);
         self.allocator.free(self.vapor_flux_m3_per_step);
         self.allocator.free(self.micropore_water_flux_m3_per_step);
         self.allocator.free(self.macropore_faces);
@@ -262,7 +262,7 @@ pub fn buildSoilFacesMapped(allocator: std.mem.Allocator, hydrology: *const Stat
         }
     };
     std.debug.assert(face_index == count);
-    return .{ .allocator = allocator, .direction_axis = direction_axis, .micropore_faces = micropore_faces, .macropore_faces = macropore_faces, .micropore_water_flux_m3_per_step = micropore, .macropore_water_flux_m3_per_step = macropore, .vapor_flux_m3_per_step = vapor, .heat_flux_mj_per_step = heat };
+    return .{ .allocator = allocator, .direction_axis = direction_axis, .micropore_faces = micropore_faces, .macropore_faces = macropore_faces, .micropore_water_flux_m3_per_step = micropore, .macropore_water_flux_m3_per_step = macropore, .vapor_flux_m3_per_step = vapor, .heat_flux_megajoules_per_step = heat };
 }
 
 /// Rebinds the compact active-face cache after an authoritative hydrology
@@ -278,7 +278,7 @@ pub fn refreshSoilFacesFromHydrology(
         faces.micropore_water_flux_m3_per_step.len != count or
         faces.macropore_water_flux_m3_per_step.len != count or
         faces.vapor_flux_m3_per_step.len != count or
-        faces.heat_flux_mj_per_step.len != count)
+        faces.heat_flux_megajoules_per_step.len != count)
         return error.SoilFaceCacheDimensionMismatch;
     const soil_layer_count = try std.math.mul(
         usize,
@@ -301,7 +301,7 @@ pub fn refreshSoilFacesFromHydrology(
         const macropore_flux =
             hydrology.macropore_face_flux_m3_per_step[state_index];
         const vapor_flux = hydrology.vapor_face_flux_m3_per_step[state_index];
-        const heat_flux = hydrology.heat_face_flux_mj_per_step[state_index];
+        const heat_flux = hydrology.heat_face_flux_megajoules_per_step[state_index];
         inline for (.{
             micropore_flux,
             macropore_flux,
@@ -314,7 +314,7 @@ pub fn refreshSoilFacesFromHydrology(
         faces.micropore_water_flux_m3_per_step[face_index] = micropore_flux;
         faces.macropore_water_flux_m3_per_step[face_index] = macropore_flux;
         faces.vapor_flux_m3_per_step[face_index] = vapor_flux;
-        faces.heat_flux_mj_per_step[face_index] = heat_flux;
+        faces.heat_flux_megajoules_per_step[face_index] = heat_flux;
     }
 }
 
@@ -327,7 +327,7 @@ fn appendFace(hydrology: *const State, first: usize, second: usize, direction: u
     micropore[face_index.*] = micro_flux;
     macropore[face_index.*] = macro_flux;
     vapor[face_index.*] = hydrology.vapor_face_flux_m3_per_step[first * 3 + direction];
-    heat[face_index.*] = hydrology.heat_face_flux_mj_per_step[first * 3 + direction];
+    heat[face_index.*] = hydrology.heat_face_flux_megajoules_per_step[first * 3 + direction];
     face_index.* += 1;
 }
 
@@ -338,7 +338,7 @@ fn zeroes(allocator: std.mem.Allocator, count: usize) ![]f64 {
 }
 
 test "transport hydrology retains separate pore domains and builds runtime faces" {
-    const config = try @import("config.zig").SimulationConfig.init(.{ .grid_columns = 2, .grid_rows = 2, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 4 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
+    const config = try @import("config.zig").SimulationConfig.init(.{ .lon_count = 2, .lat_count = 2, .soil_layers = 2, .plant_populations = 1 }, .{ .worker_threads = 1, .tile_cells = 4 }, .{ .relative_tolerance = 1e-8, .absolute_tolerance = 1e-11, .max_nonlinear_iterations = 20 });
     var grid = try grid_module.GridState.init(std.testing.allocator, config);
     defer grid.deinit();
     @memset(grid.matrix_liquid_water_m3, 1);
@@ -360,7 +360,7 @@ test "transport hydrology retains separate pore domains and builds runtime faces
     hydrology.micropore_face_flux_m3_per_step[0] = -0.35;
     hydrology.macropore_face_flux_m3_per_step[0] = 0.07;
     hydrology.vapor_face_flux_m3_per_step[0] = 0.004;
-    hydrology.heat_face_flux_mj_per_step[0] = -1.25;
+    hydrology.heat_face_flux_megajoules_per_step[0] = -1.25;
     try refreshSoilFacesFromHydrology(&faces, &hydrology);
     try std.testing.expectEqual(
         @as(f64, -0.35),
@@ -371,7 +371,7 @@ test "transport hydrology retains separate pore domains and builds runtime faces
         faces.macropore_water_flux_m3_per_step[0],
     );
     try std.testing.expectEqual(@as(f64, 0.004), faces.vapor_flux_m3_per_step[0]);
-    try std.testing.expectEqual(@as(f64, -1.25), faces.heat_flux_mj_per_step[0]);
+    try std.testing.expectEqual(@as(f64, -1.25), faces.heat_flux_megajoules_per_step[0]);
     try std.testing.expectEqual(@as(f64, 1), hydrology.micropore_water_volume_m3[0]);
     var standalone_faces = try buildSoilFacesMapped(
         std.testing.allocator,

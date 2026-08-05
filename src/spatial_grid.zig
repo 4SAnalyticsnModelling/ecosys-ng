@@ -43,6 +43,7 @@ pub const RegularGrid = struct {
     allocator: std.mem.Allocator,
     row_count: usize,
     column_count: usize,
+    bounds: BoundsDegrees,
     latitude_degrees_north_by_cell: []f64,
     longitude_degrees_east_by_cell: []f64,
     north_south_cell_width_m: []f64,
@@ -63,6 +64,7 @@ pub const RegularGrid = struct {
         result.allocator = allocator;
         result.row_count = row_count;
         result.column_count = column_count;
+        result.bounds = bounds;
         var allocated: usize = 0;
         errdefer result.freeAllocated(allocated);
         inline for (@typeInfo(RegularGrid).@"struct".fields) |field| {
@@ -107,6 +109,57 @@ pub const RegularGrid = struct {
         return std.math.mul(usize, self.row_count, self.column_count);
     }
 
+    /// Coordinate precision carried by every user-facing input, in decimal
+    /// degrees. Six digits is ~0.11 m of latitude, so location is resolved to
+    /// better than 1 m everywhere. Users never supply a row or column index;
+    /// this is the only spatial identifier the model accepts.
+    pub const coordinate_precision_degrees: f64 = 1.0e-6;
+
+    /// Derives the containing cell index from latitude and longitude. This is
+    /// the sole coordinate-to-index path: grid rows and columns are internal
+    /// and are never requested from the user. A coordinate outside the
+    /// declared extent is an error, never a clamp to the nearest cell.
+    pub fn cellIndexForCoordinate(
+        self: RegularGrid,
+        latitude_degrees_north: f64,
+        longitude_degrees_east: f64,
+    ) !usize {
+        if (!std.math.isFinite(latitude_degrees_north) or
+            !std.math.isFinite(longitude_degrees_east))
+            return error.NonFiniteSiteCoordinate;
+
+        // Half of the coordinate precision, so a coordinate written to six
+        // decimals exactly on a boundary resolves without falling outside.
+        const edge_tolerance = coordinate_precision_degrees / 2;
+        if (latitude_degrees_north < self.bounds.minimum_latitude_degrees_north - edge_tolerance or
+            latitude_degrees_north > self.bounds.maximum_latitude_degrees_north + edge_tolerance or
+            longitude_degrees_east < self.bounds.minimum_longitude_degrees_east - edge_tolerance or
+            longitude_degrees_east > self.bounds.maximum_longitude_degrees_east + edge_tolerance)
+            return error.SiteCoordinateOutsideGeospatialGrid;
+
+        // Rows run north to south, columns west to east.
+        const rows_from_north = (self.bounds.maximum_latitude_degrees_north -
+            latitude_degrees_north) / self.bounds.latitude_interval_degrees;
+        const columns_from_west = (longitude_degrees_east -
+            self.bounds.minimum_longitude_degrees_east) / self.bounds.longitude_interval_degrees;
+        if (!std.math.isFinite(rows_from_north) or !std.math.isFinite(columns_from_west))
+            return error.InvalidGeospatialCellDimension;
+
+        const row = clampIndex(rows_from_north, self.row_count);
+        const column = clampIndex(columns_from_west, self.column_count);
+        return row * self.column_count + column;
+    }
+
+    /// Floors a fractional cell offset and pins the far edge into the last
+    /// cell. The caller has already rejected coordinates outside the extent,
+    /// so this only resolves the closed upper boundary.
+    fn clampIndex(offset: f64, count: usize) usize {
+        if (offset <= 0) return 0;
+        const floored = @floor(offset);
+        if (floored >= @as(f64, @floatFromInt(count))) return count - 1;
+        return @intFromFloat(floored);
+    }
+
     pub fn validateSiteCoordinate(
         self: RegularGrid,
         cell: usize,
@@ -117,12 +170,15 @@ pub const RegularGrid = struct {
         if (!std.math.isFinite(latitude_degrees_north) or
             !std.math.isFinite(longitude_degrees_east))
             return error.NonFiniteSiteCoordinate;
-        const tolerance_degrees = 1.0e-10;
-        if (@abs(latitude_degrees_north - self.latitude_degrees_north_by_cell[cell]) >
-            tolerance_degrees or
-            @abs(longitude_degrees_east - self.longitude_degrees_east_by_cell[cell]) >
-                tolerance_degrees)
-            return error.SiteCoordinateDoesNotMatchGridCell;
+        // The site coordinate identifies its own cell. It only has to fall
+        // inside the cell, not sit exactly on the cell center, because users
+        // supply a real location to six decimal degrees rather than a grid
+        // index.
+        const located = try self.cellIndexForCoordinate(
+            latitude_degrees_north,
+            longitude_degrees_east,
+        );
+        if (located != cell) return error.SiteCoordinateDoesNotMatchGridCell;
     }
 
     fn freeAllocated(self: *RegularGrid, allocated: usize) void {
@@ -157,13 +213,13 @@ pub const Tile = struct {
     pub fn loadedCellIndicesZOrder(
         self: Tile,
         allocator: std.mem.Allocator,
-        grid_row_count: usize,
-        grid_column_count: usize,
+        lat_count: usize,
+        lon_count: usize,
     ) ![]usize {
-        if (self.loaded_south_row_exclusive > grid_row_count or
-            self.loaded_east_column_exclusive > grid_column_count or
-            grid_row_count > std.math.maxInt(u32) or
-            grid_column_count > std.math.maxInt(u32))
+        if (self.loaded_south_row_exclusive > lat_count or
+            self.loaded_east_column_exclusive > lon_count or
+            lat_count > std.math.maxInt(u32) or
+            lon_count > std.math.maxInt(u32))
             return error.InvalidTileBounds;
         const rows = self.loaded_south_row_exclusive - self.loaded_north_row;
         const columns = self.loaded_east_column_exclusive - self.loaded_west_column;
@@ -172,11 +228,11 @@ pub const Tile = struct {
         var next: usize = 0;
         for (self.loaded_north_row..self.loaded_south_row_exclusive) |row| {
             for (self.loaded_west_column..self.loaded_east_column_exclusive) |column| {
-                indices[next] = row * grid_column_count + column;
+                indices[next] = row * lon_count + column;
                 next += 1;
             }
         }
-        std.sort.pdq(usize, indices, grid_column_count, struct {
+        std.sort.pdq(usize, indices, lon_count, struct {
             fn lessThan(columns_in_grid: usize, left: usize, right: usize) bool {
                 return mortonIndex(
                     @intCast(left / columns_in_grid),
@@ -193,8 +249,8 @@ pub const Tile = struct {
     pub fn ownedCellIndicesZOrder(
         self: Tile,
         allocator: std.mem.Allocator,
-        grid_row_count: usize,
-        grid_column_count: usize,
+        lat_count: usize,
+        lon_count: usize,
     ) ![]usize {
         var owned = self;
         owned.loaded_north_row = self.owned_north_row;
@@ -203,8 +259,8 @@ pub const Tile = struct {
         owned.loaded_east_column_exclusive = self.owned_east_column_exclusive;
         return owned.loadedCellIndicesZOrder(
             allocator,
-            grid_row_count,
-            grid_column_count,
+            lat_count,
+            lon_count,
         );
     }
 };
@@ -218,8 +274,8 @@ pub const NeighborFace = struct {
 
 pub const TilePlan = struct {
     allocator: std.mem.Allocator,
-    grid_row_count: usize,
-    grid_column_count: usize,
+    lat_count: usize,
+    lon_count: usize,
     tile_row_count: usize,
     tile_column_count: usize,
     neighbor_halo_cell_count: usize,
@@ -233,20 +289,20 @@ pub const TilePlan = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        grid_row_count: usize,
-        grid_column_count: usize,
+        lat_count: usize,
+        lon_count: usize,
         tile_row_count: usize,
         tile_column_count: usize,
         neighbor_halo_cell_count: usize,
     ) !TilePlan {
-        if (grid_row_count == 0 or grid_column_count == 0 or
+        if (lat_count == 0 or lon_count == 0 or
             tile_row_count == 0 or tile_column_count == 0)
             return error.InvalidTileDimensions;
         if (neighbor_halo_cell_count != 2)
             return error.InvalidLateralFlowTileHalo;
-        const tile_rows = std.math.divCeil(usize, grid_row_count, tile_row_count) catch
+        const tile_rows = std.math.divCeil(usize, lat_count, tile_row_count) catch
             return error.InvalidTileDimensions;
-        const tile_columns = std.math.divCeil(usize, grid_column_count, tile_column_count) catch
+        const tile_columns = std.math.divCeil(usize, lon_count, tile_column_count) catch
             return error.InvalidTileDimensions;
         const tiles = try allocator.alloc(Tile, try std.math.mul(usize, tile_rows, tile_columns));
         errdefer allocator.free(tiles);
@@ -256,8 +312,8 @@ pub const TilePlan = struct {
             const index = tile_row * tile_columns + tile_column;
             const north = tile_row * tile_row_count;
             const west = tile_column * tile_column_count;
-            const south = @min(grid_row_count, north + tile_row_count);
-            const east = @min(grid_column_count, west + tile_column_count);
+            const south = @min(lat_count, north + tile_row_count);
+            const east = @min(lon_count, west + tile_column_count);
             tiles[index] = .{
                 .z_order_index = mortonIndex(
                     @intCast(tile_row),
@@ -270,11 +326,11 @@ pub const TilePlan = struct {
                 .loaded_north_row = north -| neighbor_halo_cell_count,
                 .loaded_west_column = west -| neighbor_halo_cell_count,
                 .loaded_south_row_exclusive = @min(
-                    grid_row_count,
+                    lat_count,
                     south + neighbor_halo_cell_count,
                 ),
                 .loaded_east_column_exclusive = @min(
-                    grid_column_count,
+                    lon_count,
                     east + neighbor_halo_cell_count,
                 ),
             };
@@ -296,8 +352,8 @@ pub const TilePlan = struct {
         errdefer allocator.free(owned_cell_offsets);
         const grid_cell_count = try std.math.mul(
             usize,
-            grid_row_count,
-            grid_column_count,
+            lat_count,
+            lon_count,
         );
         const owned_cells_z_order = try allocator.alloc(
             usize,
@@ -324,8 +380,8 @@ pub const TilePlan = struct {
         for (tiles, 0..) |tile, tile_index| {
             const indices = try tile.ownedCellIndicesZOrder(
                 allocator,
-                grid_row_count,
-                grid_column_count,
+                lat_count,
+                lon_count,
             );
             defer allocator.free(indices);
             @memcpy(
@@ -348,13 +404,13 @@ pub const TilePlan = struct {
                 return error.TilePlanCellHasNoOwner;
         const horizontal_face_count = try std.math.mul(
             usize,
-            grid_row_count,
-            grid_column_count - 1,
+            lat_count,
+            lon_count - 1,
         );
         const vertical_face_count = try std.math.mul(
             usize,
-            grid_row_count - 1,
-            grid_column_count,
+            lat_count - 1,
+            lon_count,
         );
         const neighbor_face_count = try std.math.add(
             usize,
@@ -372,24 +428,24 @@ pub const TilePlan = struct {
         );
         errdefer allocator.free(neighbor_face_offsets);
         @memset(neighbor_face_offsets, 0);
-        for (0..grid_row_count) |row| {
-            for (0..grid_column_count) |column| {
-                const first_cell = row * grid_column_count + column;
-                if (column + 1 < grid_column_count) {
+        for (0..lat_count) |row| {
+            for (0..lon_count) |column| {
+                const first_cell = row * lon_count + column;
+                if (column + 1 < lon_count) {
                     const owner = neighborFaceOwnerIndex(
-                        grid_column_count,
+                        lon_count,
                         owning_tile_index_by_cell,
                         first_cell,
                         first_cell + 1,
                     );
                     neighbor_face_offsets[owner + 1] += 1;
                 }
-                if (row + 1 < grid_row_count) {
+                if (row + 1 < lat_count) {
                     const owner = neighborFaceOwnerIndex(
-                        grid_column_count,
+                        lon_count,
                         owning_tile_index_by_cell,
                         first_cell,
-                        first_cell + grid_column_count,
+                        first_cell + lon_count,
                     );
                     neighbor_face_offsets[owner + 1] += 1;
                 }
@@ -402,13 +458,13 @@ pub const TilePlan = struct {
             neighbor_face_offsets[0..tiles.len],
         );
         defer allocator.free(next_face_by_tile);
-        for (0..grid_row_count) |row| {
-            for (0..grid_column_count) |column| {
-                const first_cell = row * grid_column_count + column;
-                if (column + 1 < grid_column_count) {
+        for (0..lat_count) |row| {
+            for (0..lon_count) |column| {
+                const first_cell = row * lon_count + column;
+                if (column + 1 < lon_count) {
                     const second_cell = first_cell + 1;
                     const owner = neighborFaceOwnerIndex(
-                        grid_column_count,
+                        lon_count,
                         owning_tile_index_by_cell,
                         first_cell,
                         second_cell,
@@ -419,10 +475,10 @@ pub const TilePlan = struct {
                     };
                     next_face_by_tile[owner] += 1;
                 }
-                if (row + 1 < grid_row_count) {
-                    const second_cell = first_cell + grid_column_count;
+                if (row + 1 < lat_count) {
+                    const second_cell = first_cell + lon_count;
                     const owner = neighborFaceOwnerIndex(
-                        grid_column_count,
+                        lon_count,
                         owning_tile_index_by_cell,
                         first_cell,
                         second_cell,
@@ -437,8 +493,8 @@ pub const TilePlan = struct {
         }
         return .{
             .allocator = allocator,
-            .grid_row_count = grid_row_count,
-            .grid_column_count = grid_column_count,
+            .lat_count = lat_count,
+            .lon_count = lon_count,
             .tile_row_count = tile_row_count,
             .tile_column_count = tile_column_count,
             .neighbor_halo_cell_count = neighbor_halo_cell_count,
@@ -509,8 +565,8 @@ pub const TilePlan = struct {
             return error.TileIndexOutOfRange;
         if (cell >= self.owning_tile_index_by_cell.len)
             return error.GridCellIndexOutOfRange;
-        const row = cell / self.grid_column_count;
-        const column = cell % self.grid_column_count;
+        const row = cell / self.lon_count;
+        const column = cell % self.lon_count;
         const tile = self.tiles[tile_index];
         return row >= tile.loaded_north_row and
             row < tile.loaded_south_row_exclusive and
@@ -531,10 +587,10 @@ pub const TilePlan = struct {
             return error.GridCellIndexOutOfRange;
         if (first_cell == second_cell)
             return error.InvalidNeighborFace;
-        const first_row = first_cell / self.grid_column_count;
-        const first_column = first_cell % self.grid_column_count;
-        const second_row = second_cell / self.grid_column_count;
-        const second_column = second_cell % self.grid_column_count;
+        const first_row = first_cell / self.lon_count;
+        const first_column = first_cell % self.lon_count;
+        const second_row = second_cell / self.lon_count;
+        const second_column = second_cell % self.lon_count;
         const row_distance = if (first_row > second_row)
             first_row - second_row
         else
@@ -586,15 +642,15 @@ fn mortonIndex(row: u32, column: u32) u64 {
 }
 
 fn neighborFaceOwnerIndex(
-    grid_column_count: usize,
+    lon_count: usize,
     owning_tile_index_by_cell: []const usize,
     first_cell: usize,
     second_cell: usize,
 ) usize {
-    const first_row = first_cell / grid_column_count;
-    const first_column = first_cell % grid_column_count;
-    const second_row = second_cell / grid_column_count;
-    const second_column = second_cell % grid_column_count;
+    const first_row = first_cell / lon_count;
+    const first_column = first_cell % lon_count;
+    const second_row = second_cell / lon_count;
+    const second_column = second_cell % lon_count;
     const first_morton = mortonIndex(
         @intCast(first_row),
         @intCast(first_column),
@@ -684,20 +740,98 @@ test "WGS84 regular grid derives north-to-south rows and cell dimensions" {
     );
 }
 
-test "site coordinates are validated against inferred cell centers" {
+test "site coordinates identify their own cell rather than an exact center" {
     var grid = try RegularGrid.init(std.testing.allocator, .{
         .minimum_latitude_degrees_north = 50,
-        .maximum_latitude_degrees_north = 51,
+        .maximum_latitude_degrees_north = 52,
         .minimum_longitude_degrees_east = -114,
-        .maximum_longitude_degrees_east = -113,
+        .maximum_longitude_degrees_east = -112,
         .latitude_interval_degrees = 1,
         .longitude_interval_degrees = 1,
     });
     defer grid.deinit();
-    try grid.validateSiteCoordinate(0, 50.5, -113.5);
+    // An off-center location inside the cell is accepted: users give a real
+    // site position, not a grid index snapped to a cell center.
+    try grid.validateSiteCoordinate(0, 51.5, -113.5);
+    try grid.validateSiteCoordinate(0, 51.234567, -113.876543);
+    // A location inside a different cell is rejected for this cell.
     try std.testing.expectError(
         error.SiteCoordinateDoesNotMatchGridCell,
-        grid.validateSiteCoordinate(0, 50.5, -113.4),
+        grid.validateSiteCoordinate(0, 50.5, -113.5),
+    );
+    // Outside the declared extent entirely.
+    try std.testing.expectError(
+        error.SiteCoordinateOutsideGeospatialGrid,
+        grid.validateSiteCoordinate(0, 49.5, -113.5),
+    );
+}
+
+test "cell index is derived from latitude and longitude, not a grid index" {
+    var grid = try RegularGrid.init(std.testing.allocator, .{
+        .minimum_latitude_degrees_north = 50,
+        .maximum_latitude_degrees_north = 52,
+        .minimum_longitude_degrees_east = -114,
+        .maximum_longitude_degrees_east = -112,
+        .latitude_interval_degrees = 1,
+        .longitude_interval_degrees = 1,
+    });
+    defer grid.deinit();
+
+    // Rows run north to south, columns west to east, so the northwest cell is
+    // index 0 and the southeast cell is the last.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try grid.cellIndexForCoordinate(51.5, -113.5),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        try grid.cellIndexForCoordinate(50.5, -113.5),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        try grid.cellIndexForCoordinate(51.5, -112.5),
+    );
+
+    // A real site sits anywhere inside its cell, not only on the center.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try grid.cellIndexForCoordinate(51.000001, -113.999999),
+    );
+    try grid.validateSiteCoordinate(0, 51.000001, -113.999999);
+
+    // Six-decimal precision is honoured: one microdegree across a cell
+    // boundary selects the neighbouring cell rather than rounding back.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try grid.cellIndexForCoordinate(51.5, -113.000001),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        try grid.cellIndexForCoordinate(51.5, -112.999999),
+    );
+
+    // Closed outer edges resolve into the boundary cells.
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        try grid.cellIndexForCoordinate(52, -114),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        try grid.cellIndexForCoordinate(50, -112),
+    );
+
+    // Outside the declared extent is an error, never a clamp.
+    try std.testing.expectError(
+        error.SiteCoordinateOutsideGeospatialGrid,
+        grid.cellIndexForCoordinate(49.5, -113.5),
+    );
+    try std.testing.expectError(
+        error.SiteCoordinateOutsideGeospatialGrid,
+        grid.cellIndexForCoordinate(51.5, -111.5),
+    );
+    try std.testing.expectError(
+        error.NonFiniteSiteCoordinate,
+        grid.cellIndexForCoordinate(std.math.nan(f64), -113.5),
     );
 }
 

@@ -47,6 +47,100 @@ pub const AmmoniumZoneWaterState = struct {
     band: ZoneWaterState,
 };
 
+pub const AmmoniumZoneWaterAdmission = struct {
+    non_band_water_volume_m3: f64,
+    band_water_volume_m3: f64,
+    minimum_water_volume_m3: f64,
+};
+
+pub const RestrictedAmmoniumInputs = struct {
+    ammonium_non_band_concentration_mol_n_per_m3: f64,
+    ammonia_non_band_concentration_mol_n_per_m3: f64,
+    ammonium_band_concentration_mol_n_per_m3: f64,
+    ammonia_band_concentration_mol_n_per_m3: f64,
+    ammonium_non_band_activity_mol_n_per_m3: f64,
+    ammonia_non_band_activity_mol_n_per_m3: f64,
+    ammonium_band_activity_mol_n_per_m3: f64,
+    ammonia_band_activity_mol_n_per_m3: f64,
+    hydrogen_activity_mol_per_m3: f64,
+    ammonium_dissociation_constant: f64,
+    substrate_limit_fraction: f64,
+    maximum_reaction_mol_n_per_m3_step: f64,
+    /// SOLUTE.F line 3578 uses retained `XMIN`, not the `XMINN` assigned at
+    /// line 3575. It is explicit here rather than reproducing hidden storage.
+    retained_band_negative_limit_mol_n_per_m3_step: f64,
+};
+
+pub const RestrictedAmmoniumFluxes = struct {
+    non_band_association_mol_n_per_m3: f64,
+    band_association_mol_n_per_m3: f64,
+};
+
+/// Exact restricted NH4-NH3+H equations from SOLUTE.F lines 3557--3588.
+/// Equality at either runtime water threshold is dry. Positive flux denotes
+/// NH3+H association into NH4, matching the source sign convention.
+pub fn calculateRestrictedAmmoniumSourceOrder(
+    input: RestrictedAmmoniumInputs,
+    water: AmmoniumZoneWaterAdmission,
+) !RestrictedAmmoniumFluxes {
+    inline for (@typeInfo(RestrictedAmmoniumInputs).@"struct".fields) |field| {
+        const value = @field(input, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidRestrictedAmmoniumInput;
+    }
+    inline for (@typeInfo(AmmoniumZoneWaterAdmission).@"struct".fields) |field| {
+        const value = @field(water, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidAmmoniumZoneWaterAdmission;
+    }
+    if (input.hydrogen_activity_mol_per_m3 <= 0 or
+        input.ammonium_dissociation_constant <= 0 or
+        input.substrate_limit_fraction > 1)
+        return error.InvalidRestrictedAmmoniumInput;
+
+    var result = RestrictedAmmoniumFluxes{
+        .non_band_association_mol_n_per_m3 = 0,
+        .band_association_mol_n_per_m3 = 0,
+    };
+    if (water.non_band_water_volume_m3 > water.minimum_water_volume_m3) {
+        const negative_limit = input.substrate_limit_fraction *
+            input.ammonium_non_band_concentration_mol_n_per_m3;
+        const positive_limit = input.substrate_limit_fraction *
+            input.ammonia_non_band_concentration_mol_n_per_m3;
+        const ammonia_equilibrium_activity = input.ammonium_dissociation_constant *
+            input.ammonium_non_band_activity_mol_n_per_m3 /
+            input.hydrogen_activity_mol_per_m3;
+        result.non_band_association_mol_n_per_m3 = @max(
+            -input.maximum_reaction_mol_n_per_m3_step,
+            -negative_limit,
+            @min(
+                input.maximum_reaction_mol_n_per_m3_step,
+                positive_limit,
+                input.ammonia_non_band_activity_mol_n_per_m3 -
+                    ammonia_equilibrium_activity,
+            ),
+        );
+    }
+    if (water.band_water_volume_m3 > water.minimum_water_volume_m3) {
+        const positive_limit = input.substrate_limit_fraction *
+            input.ammonia_band_concentration_mol_n_per_m3;
+        const ammonia_equilibrium_activity = input.ammonium_dissociation_constant *
+            input.ammonium_band_activity_mol_n_per_m3 /
+            input.hydrogen_activity_mol_per_m3;
+        result.band_association_mol_n_per_m3 = @max(
+            -input.maximum_reaction_mol_n_per_m3_step,
+            -input.retained_band_negative_limit_mol_n_per_m3_step,
+            @min(
+                input.maximum_reaction_mol_n_per_m3_step,
+                positive_limit,
+                input.ammonia_band_activity_mol_n_per_m3 -
+                    ammonia_equilibrium_activity,
+            ),
+        );
+    }
+    return result;
+}
+
 /// Maps the non-phosphate ion-pair equations in SOLUTE.F lines 1432--1707.
 pub fn calculate(state: aqueous_network.State, coefficients: activity_coefficients.Result, constants: EquilibriumConstants, kinetics: Kinetics) !aqueous_network.Fluxes {
     try validate(state, coefficients, constants, kinetics);
@@ -102,6 +196,34 @@ pub fn calculateSourceOrder(
     if (ammonium_zone_water.band == .dry)
         fluxes.ammonium_band_association = 0;
     return fluxes;
+}
+
+/// Applies the strict runtime water-volume gates in SOLUTE.F 1463 and 1479.
+/// Equality is dry, matching `VOLWNH/VOLWNB .GT. ZEROS2` exactly.
+pub fn calculateSourceOrderForWaterVolumes(
+    state: aqueous_network.State,
+    coefficients: activity_coefficients.Result,
+    constants: EquilibriumConstants,
+    kinetics: Kinetics,
+    water: AmmoniumZoneWaterAdmission,
+) !aqueous_network.Fluxes {
+    inline for (@typeInfo(AmmoniumZoneWaterAdmission).@"struct".fields) |field| {
+        const value = @field(water, field.name);
+        if (!std.math.isFinite(value) or value < 0)
+            return error.InvalidAmmoniumZoneWaterAdmission;
+    }
+    return calculateSourceOrder(
+        state,
+        coefficients,
+        constants,
+        kinetics,
+        .{
+            .non_band = if (water.non_band_water_volume_m3 >
+                water.minimum_water_volume_m3) .wet else .dry,
+            .band = if (water.band_water_volume_m3 >
+                water.minimum_water_volume_m3) .wet else .dry,
+        },
+    );
 }
 
 fn reaction(free_first: f64, free_second: f64, paired: f64, first_activity: f64, second_activity: f64, paired_activity: f64, first_coefficient: f64, dissociation_constant: f64, limit_fraction: f64, maximum: f64) !f64 {
@@ -218,6 +340,42 @@ test "source-order aqueous evaluator disables dry ammonium zones" {
     try std.testing.expect(fluxes.ammonium_band_association > 0);
 }
 
+test "runtime ammonium water gates preserve strict source comparison" {
+    const state = filled(aqueous_network.State, 1);
+    const coefficients = activity_coefficients.Result{
+        .ionic_strength_mol_per_l = 0,
+        .monovalent_activity_coefficient = 1,
+        .divalent_activity_coefficient = 1,
+        .trivalent_activity_coefficient = 1,
+        .total_ion_activity_mol_per_m3 = 1,
+        .electrical_conductivity_dS_per_m = 0,
+    };
+    var constants = filled(EquilibriumConstants, 1);
+    constants.ammonium = 0.5;
+    const kinetics = Kinetics{
+        .ammonium_substrate_limit_fraction = 0.2,
+        .general_substrate_limit_fraction = 0.2,
+        .maximum_fast_association_mol_per_m3_step = 0.1,
+        .maximum_slow_association_mol_per_m3_step = 0.1,
+    };
+    const fluxes = try calculateSourceOrderForWaterVolumes(
+        state,
+        coefficients,
+        constants,
+        kinetics,
+        .{
+            .non_band_water_volume_m3 = 1.0e-12,
+            .band_water_volume_m3 = 1.0001e-12,
+            .minimum_water_volume_m3 = 1.0e-12,
+        },
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0),
+        fluxes.ammonium_non_band_association,
+    );
+    try std.testing.expect(fluxes.ammonium_band_association > 0);
+}
+
 fn expectSourceRate(
     actual: f64,
     free_first: f64,
@@ -246,4 +404,37 @@ fn expectSourceRate(
         ),
     );
     try std.testing.expectApproxEqAbs(expected, actual, 1e-15);
+}
+
+test "SOLUTE 3557-3588 restricted ammonium retains band XMIN dependency" {
+    const inputs = RestrictedAmmoniumInputs{
+        .ammonium_non_band_concentration_mol_n_per_m3 = 10,
+        .ammonia_non_band_concentration_mol_n_per_m3 = 4,
+        .ammonium_band_concentration_mol_n_per_m3 = 100,
+        .ammonia_band_concentration_mol_n_per_m3 = 4,
+        .ammonium_non_band_activity_mol_n_per_m3 = 8,
+        .ammonia_non_band_activity_mol_n_per_m3 = 1,
+        .ammonium_band_activity_mol_n_per_m3 = 8,
+        .ammonia_band_activity_mol_n_per_m3 = 0,
+        .hydrogen_activity_mol_per_m3 = 2,
+        .ammonium_dissociation_constant = 1,
+        .substrate_limit_fraction = 0.5,
+        .maximum_reaction_mol_n_per_m3_step = 10,
+        .retained_band_negative_limit_mol_n_per_m3_step = 0.25,
+    };
+    const active = try calculateRestrictedAmmoniumSourceOrder(inputs, .{
+        .non_band_water_volume_m3 = 2,
+        .band_water_volume_m3 = 2,
+        .minimum_water_volume_m3 = 1,
+    });
+    try std.testing.expectEqual(-3, active.non_band_association_mol_n_per_m3);
+    // Line 3578 bounds with retained XMIN=.25 rather than line 3575 XMINN=50.
+    try std.testing.expectEqual(-0.25, active.band_association_mol_n_per_m3);
+
+    const equality_dry = try calculateRestrictedAmmoniumSourceOrder(inputs, .{
+        .non_band_water_volume_m3 = 1,
+        .band_water_volume_m3 = 1,
+        .minimum_water_volume_m3 = 1,
+    });
+    try std.testing.expectEqualDeep(std.mem.zeroes(RestrictedAmmoniumFluxes), equality_dry);
 }

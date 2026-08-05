@@ -9,7 +9,7 @@ pub const State = struct {
     water_retention_capacity_m3: []f64,
     dry_litter_volume_m3: []f64,
     expanded_total_volume_m3: []f64,
-    dry_mass_Mg: []f64,
+    dry_mass_megagrams: []f64,
     pore_volume_m3: []f64,
     air_volume_m3: []f64,
     porosity_m3_per_m3: []f64,
@@ -67,7 +67,7 @@ test "surface litter geometry is runtime sized and tile independent" {
     organic_state.dissolved[2 * organic.substrate_count + 1].carbon_g_c = 20;
     var state = try State.init(std.testing.allocator, 3);
     defer state.deinit();
-    var context: ApplyContext = .{ .result = &state, .surface_organic = &organic_state, .water_m3 = &.{ 0, 0, 0 }, .ice_m3 = &.{ 0, 0, 0 }, .charcoal_carbon_g_c = &.{ 0, 0, 0 }, .parameters = .{ .water_retention_m3_per_g_c = .{ 2e-6, 5e-6, 5e-6, 5e-6, 5e-6 }, .dry_bulk_density_Mg_per_m3 = .{ 0.1, 0.0125, 0.025, 0.025, 0.025 }, .dry_mass_Mg_per_g_c = 1.82e-6, .particle_density_Mg_per_m3 = 1.3, .field_capacity_fraction_of_porosity = 0.5, .wilting_point_fraction_of_porosity = 0.25 } };
+    var context: ApplyContext = .{ .result = &state, .surface_organic = &organic_state, .water_m3 = &.{ 0, 0, 0 }, .ice_m3 = &.{ 0, 0, 0 }, .charcoal_carbon_g_c = &.{ 0, 0, 0 }, .parameters = .{ .water_retention_m3_per_g_c = .{ 2e-6, 5e-6, 5e-6, 5e-6, 5e-6 }, .dry_bulk_density_megagrams_per_m3 = .{ 0.1, 0.0125, 0.025, 0.025, 0.025 }, .dry_mass_megagrams_per_g_c = 1.82e-6, .particle_density_megagrams_per_m3 = 1.3, .field_capacity_fraction_of_porosity = 0.5, .wilting_point_fraction_of_porosity = 0.25 } };
     try applyTile(&context, .{ .first = 1, .end = 3 });
     try std.testing.expectEqual(@as(f64, 0), state.dry_litter_volume_m3[0]);
     try std.testing.expect(state.dry_litter_volume_m3[1] > 0);

@@ -4,7 +4,7 @@ const std = @import("std");
 /// retained from the source: input and output owners remain separate.
 pub const State = struct {
     precipitation_input_m3: f64,
-    heat_input_mj: f64,
+    heat_input_megajoules: f64,
     carbon_dioxide_input_g_c: f64,
     oxygen_input_g_o: f64,
     hydrogen_input_g_h: f64,
@@ -17,7 +17,7 @@ pub const State = struct {
     water_output_m3: f64,
     evaporation_output_m3: f64,
     runoff_output_m3: f64,
-    heat_output_mj: f64,
+    heat_output_megajoules: f64,
     oxygen_output_g_o: f64,
     hydrogen_output_g_h: f64,
     sediment_output_g: f64,
@@ -39,7 +39,7 @@ pub const State = struct {
 /// preceding bytes; this is the owner that makes the state valid.
 pub fn initialize(state: *State) void {
     state.precipitation_input_m3 = 0.0;
-    state.heat_input_mj = 0.0;
+    state.heat_input_megajoules = 0.0;
     state.carbon_dioxide_input_g_c = 0.0;
     state.oxygen_input_g_o = 0.0;
     state.hydrogen_input_g_h = 0.0;
@@ -52,7 +52,7 @@ pub fn initialize(state: *State) void {
     state.water_output_m3 = 0.0;
     state.evaporation_output_m3 = 0.0;
     state.runoff_output_m3 = 0.0;
-    state.heat_output_mj = 0.0;
+    state.heat_output_megajoules = 0.0;
     state.oxygen_output_g_o = 0.0;
     state.hydrogen_output_g_h = 0.0;
     state.sediment_output_g = 0.0;

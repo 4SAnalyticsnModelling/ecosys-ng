@@ -101,7 +101,14 @@ pub const State = struct {
     plant_count: usize,
     soil_layer_count: usize,
     root_axis_count: usize,
+    /// Source `NG`, indexed by runtime plant; zero-based soil-layer index.
     planting_layer_by_plant: []usize,
+    /// Source `NI`, indexed by runtime plant and shared by all of its
+    /// biological domains; zero-based inclusive deepest rooted soil layer.
+    current_deepest_rooted_layer_by_plant: []usize,
+    /// Source `NIX`, indexed by runtime plant; zero-based inclusive deepest
+    /// layer accumulated for publication at the next biological boundary.
+    next_deepest_rooted_layer_by_plant: []usize,
     active_root_axis_count: []usize,
     roots_dead: []bool,
     seed_volume_m3_per_plant: []f64,
@@ -113,8 +120,10 @@ pub const State = struct {
     fixation_uptake_g_n_per_h: []f64,
     /// Layer-resolved RUPNF owner; plant totals remain above for outputs.
     fixation_uptake_g_n_per_h_by_layer: []f64,
-    current_porosity_fraction: []f64,
-    initial_porosity_fraction: []f64,
+    /// GROSUB PORT indexed by runtime plant then biological domain.
+    current_porosity_fraction_by_domain: []f64,
+    /// GROSUB PORTI indexed by runtime plant then biological domain.
+    initial_porosity_fraction_by_domain: []f64,
     water_uptake_m3_per_h: []f64,
     total_water_potential_mpa: []f64,
     osmotic_water_potential_mpa: []f64,
@@ -217,6 +226,10 @@ pub const State = struct {
     soil_to_root_gas_exchange_g_per_h: []f64,
     aqueous_to_gaseous_root_exchange_g_per_h: []f64,
     atmosphere_to_root_gas_exchange_g_per_h: []f64,
+    /// Separate non-band and band NH3 soil-root exchange indexed by rootIndex.
+    /// EXTRACT RUPN3S and RUPN3B per species/layer before per-layer summation.
+    ammonia_nonband_soil_exchange_g_n_per_h: []f64,
+    ammonia_band_soil_exchange_g_n_per_h: []f64,
     withdrawal_carbon_dioxide_loss_g_c_per_h: []f64,
     withdrawal_oxygen_loss_g_o_per_h: []f64,
     withdrawal_methane_loss_g_c_per_h: []f64,
@@ -265,6 +278,12 @@ pub const State = struct {
         result.planting_layer_by_plant = try allocator.alloc(usize, plant_count);
         errdefer allocator.free(result.planting_layer_by_plant);
         @memset(result.planting_layer_by_plant, 0);
+        result.current_deepest_rooted_layer_by_plant = try allocator.alloc(usize, plant_count);
+        errdefer allocator.free(result.current_deepest_rooted_layer_by_plant);
+        @memset(result.current_deepest_rooted_layer_by_plant, 0);
+        result.next_deepest_rooted_layer_by_plant = try allocator.alloc(usize, plant_count);
+        errdefer allocator.free(result.next_deepest_rooted_layer_by_plant);
+        @memset(result.next_deepest_rooted_layer_by_plant, 0);
         result.active_root_axis_count = try allocator.alloc(usize, plant_count);
         errdefer allocator.free(result.active_root_axis_count);
         @memset(result.active_root_axis_count, 0);
@@ -274,7 +293,7 @@ pub const State = struct {
         var allocated: usize = 0;
         errdefer freeAllocated(&result, allocated);
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) {
-            const count = fieldCount(field.name, plant_count, domain_layer_count, domain_axis_count, domain_layer_axis_count, salt_count, exudate_count);
+            const count = fieldCount(field.name, plant_count, plant_count * biological_domain_count, domain_layer_count, domain_axis_count, domain_layer_axis_count, salt_count, exudate_count);
             @field(result, field.name) = try allocator.alloc(f64, count);
             @memset(@field(result, field.name), 0);
             allocated += 1;
@@ -286,6 +305,8 @@ pub const State = struct {
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) self.allocator.free(@field(self, field.name));
         self.allocator.free(self.roots_dead);
         self.allocator.free(self.active_root_axis_count);
+        self.allocator.free(self.next_deepest_rooted_layer_by_plant);
+        self.allocator.free(self.current_deepest_rooted_layer_by_plant);
         self.allocator.free(self.planting_layer_by_plant);
         self.* = undefined;
     }
@@ -293,6 +314,42 @@ pub const State = struct {
     pub fn layerIndex(self: State, plant: usize, domain: usize, layer: usize) !usize {
         if (plant >= self.plant_count or domain >= biological_domain_count or layer >= self.soil_layer_count) return error.PlantRootIndexOutOfBounds;
         return (plant * biological_domain_count + domain) * self.soil_layer_count + layer;
+    }
+
+    pub fn domainIndex(self: State, plant: usize, domain: usize) !usize {
+        if (plant >= self.plant_count or domain >= biological_domain_count)
+            return error.PlantRootIndexOutOfBounds;
+        return plant * biological_domain_count + domain;
+    }
+
+    /// Records source `NIX=MAX(NIX,NINR)` without changing the `NI` range
+    /// consumed during the current biological step.
+    pub fn includeNextDeepestRootedLayer(self: *State, plant: usize, layer: usize) !void {
+        if (plant >= self.plant_count or layer >= self.soil_layer_count)
+            return error.PlantRootLayerOutOfBounds;
+        self.next_deepest_rooted_layer_by_plant[plant] =
+            @max(self.next_deepest_rooted_layer_by_plant[plant], layer);
+    }
+
+    /// Biological-step boundary corresponding to `NI=NIX`, followed by
+    /// GROSUB `NIX=NG`. The half-open plant range supports deterministic tile
+    /// decomposition; every plant remains independent at this boundary.
+    pub fn advanceRootedLayerBoundary(self: *State, first_plant: usize, end_plant: usize) !void {
+        if (first_plant > end_plant or end_plant > self.plant_count)
+            return error.PlantRootRangeOutOfBounds;
+        for (first_plant..end_plant) |plant| {
+            const planting_layer = self.planting_layer_by_plant[plant];
+            const next_deepest = self.next_deepest_rooted_layer_by_plant[plant];
+            if (planting_layer >= self.soil_layer_count or next_deepest < planting_layer or
+                next_deepest >= self.soil_layer_count)
+                return error.InvalidRootedLayerBounds;
+        }
+        for (first_plant..end_plant) |plant| {
+            self.current_deepest_rooted_layer_by_plant[plant] =
+                self.next_deepest_rooted_layer_by_plant[plant];
+            self.next_deepest_rooted_layer_by_plant[plant] =
+                self.planting_layer_by_plant[plant];
+        }
     }
 
     pub fn axisIndex(self: State, plant: usize, domain: usize, axis: usize) !usize {
@@ -318,16 +375,19 @@ pub const State = struct {
         if (plant >= self.plant_count or planting_layer >= self.soil_layer_count) return error.PlantRootIndexOutOfBounds;
         if (!std.math.isFinite(seeding_depth_m) or seeding_depth_m < 0) return error.InvalidPlantingDepth;
         self.planting_layer_by_plant[plant] = planting_layer;
+        self.current_deepest_rooted_layer_by_plant[plant] = planting_layer;
+        self.next_deepest_rooted_layer_by_plant[plant] = planting_layer;
         self.active_root_axis_count[plant] = 0;
         self.roots_dead[plant] = true;
-        self.current_porosity_fraction[plant] = traits.roots.root_porosity_fraction;
-        self.initial_porosity_fraction[plant] = traits.roots.root_porosity_fraction;
         const maximum_protein = @min(
             traits.organ_nitrogen_to_carbon_ratio.root * parameters.root_nitrogen_to_maximum_protein_multiplier,
             traits.organ_phosphorus_to_carbon_ratio.root * parameters.root_phosphorus_to_maximum_protein_multiplier,
         );
         if (!std.math.isFinite(maximum_protein) or maximum_protein < 0) return error.InvalidRootProteinConcentration;
         for (0..biological_domain_count) |domain| {
+            const domain_index = try self.domainIndex(plant, domain);
+            self.current_porosity_fraction_by_domain[domain_index] = traits.roots.root_porosity_fraction;
+            self.initial_porosity_fraction_by_domain[domain_index] = traits.roots.root_porosity_fraction;
             const primary_radius_m = if (domain == 0) traits.roots.primary_root_radius_m else parameters.mycorrhizal_radius_m;
             const secondary_radius_m = if (domain == 0) traits.roots.secondary_root_radius_m else parameters.mycorrhizal_radius_m;
             if (!std.math.isFinite(primary_radius_m) or primary_radius_m <= 0 or !std.math.isFinite(secondary_radius_m) or secondary_radius_m <= 0) return error.InvalidRootRadius;
@@ -373,6 +433,8 @@ pub const State = struct {
             @memset(values[plant * per_plant .. (plant + 1) * per_plant], 0);
         };
         self.planting_layer_by_plant[plant] = 0;
+        self.current_deepest_rooted_layer_by_plant[plant] = 0;
+        self.next_deepest_rooted_layer_by_plant[plant] = 0;
         self.active_root_axis_count[plant] = 0;
         self.roots_dead[plant] = true;
         try self.initializePlant(plant, traits, planting_layer, seeding_depth_m, parameters);
@@ -544,10 +606,25 @@ pub const State = struct {
     }
 
     pub fn validateFinite(self: State) !void {
+        if (self.planting_layer_by_plant.len != self.plant_count or
+            self.current_deepest_rooted_layer_by_plant.len != self.plant_count or
+            self.next_deepest_rooted_layer_by_plant.len != self.plant_count)
+            return error.InvalidPlantRootTopology;
+        for (0..self.plant_count) |plant| {
+            const planting = self.planting_layer_by_plant[plant];
+            const current = self.current_deepest_rooted_layer_by_plant[plant];
+            const next = self.next_deepest_rooted_layer_by_plant[plant];
+            if (planting >= self.soil_layer_count or current < planting or
+                current >= self.soil_layer_count or next < planting or next >= self.soil_layer_count)
+                return error.InvalidRootedLayerBounds;
+        }
         inline for (@typeInfo(State).@"struct".fields) |field| if (field.type == []f64) for (@field(self, field.name), 0..) |value, index| if (!std.math.isFinite(value)) {
             std.log.err("non-finite plant root state: field={s} index={d} value={e}", .{ field.name, index, value });
             return error.NonFinitePlantRootState;
         };
+        inline for (.{ self.current_porosity_fraction_by_domain, self.initial_porosity_fraction_by_domain }) |porosity_by_domain|
+            for (porosity_by_domain) |porosity|
+                if (porosity < 0 or porosity >= 1) return error.InvalidPlantRootPorosityState;
     }
 
     /// UPTAKE hourly flux initialization. Persistent C/N/P, gas inventories,
@@ -616,6 +693,8 @@ pub const State = struct {
             self.soil_to_root_gas_exchange_g_per_h,
             self.aqueous_to_gaseous_root_exchange_g_per_h,
             self.atmosphere_to_root_gas_exchange_g_per_h,
+            self.ammonia_nonband_soil_exchange_g_n_per_h,
+            self.ammonia_band_soil_exchange_g_n_per_h,
             self.withdrawal_carbon_dioxide_loss_g_c_per_h,
             self.withdrawal_oxygen_loss_g_o_per_h,
             self.withdrawal_methane_loss_g_c_per_h,
@@ -701,7 +780,7 @@ pub fn sourceOrderRootLengthDensity(
         0;
 }
 
-fn fieldCount(comptime name: []const u8, plant_count: usize, domain_layer_count: usize, domain_axis_count: usize, domain_layer_axis_count: usize, salt_count: usize, exudate_count: usize) usize {
+fn fieldCount(comptime name: []const u8, plant_count: usize, domain_count: usize, domain_layer_count: usize, domain_axis_count: usize, domain_layer_axis_count: usize, salt_count: usize, exudate_count: usize) usize {
     if (comptime std.mem.startsWith(u8, name, "axis_depth_")) return domain_axis_count;
     if (comptime std.mem.startsWith(u8, name, "axis_")) return domain_layer_axis_count;
     if (comptime std.mem.eql(u8, name, "salt_content_mol") or std.mem.eql(u8, name, "salt_uptake_mol_per_h") or std.mem.eql(u8, name, "combustion_salt_loss_mol_per_h")) return salt_count;
@@ -716,9 +795,9 @@ fn fieldCount(comptime name: []const u8, plant_count: usize, domain_layer_count:
         std.mem.eql(u8, name, "fixation_uptake_g_n_per_h") or
         std.mem.startsWith(u8, name, "withdrawal_") or
         std.mem.startsWith(u8, name, "combustion_") or
-        std.mem.eql(u8, name, "current_porosity_fraction") or
-        std.mem.eql(u8, name, "initial_porosity_fraction") or
         std.mem.startsWith(u8, name, "seed_")) return plant_count;
+    if (comptime std.mem.eql(u8, name, "current_porosity_fraction_by_domain") or
+        std.mem.eql(u8, name, "initial_porosity_fraction_by_domain")) return domain_count;
     return domain_layer_count;
 }
 
@@ -728,7 +807,6 @@ fn freeAllocated(state: *State, allocated_count: usize) void {
         if (visited < allocated_count) state.allocator.free(@field(state, field.name));
         visited += 1;
     };
-    state.allocator.free(state.planting_layer_by_plant);
 }
 
 test "STARTQ root and mycorrhizal state has runtime axes and source initial values" {
@@ -745,8 +823,9 @@ test "STARTQ root and mycorrhizal state has runtime axes and source initial valu
     try std.testing.expectEqual(traits.roots.primary_root_radius_m, state.primary_radius_m[root_layer]);
     try std.testing.expectEqual(@as(f64, 2.5e-6), state.primary_radius_m[mycorrhizal_layer]);
     try std.testing.expectEqual(@as(f64, 0.08), state.axis_depth_m[try state.axisIndex(1, 1, 16)]);
-    try std.testing.expectEqual(traits.roots.root_porosity_fraction, state.current_porosity_fraction[1]);
-    try std.testing.expectEqual(traits.roots.root_porosity_fraction, state.initial_porosity_fraction[1]);
+    try std.testing.expectEqual(traits.roots.root_porosity_fraction, state.current_porosity_fraction_by_domain[try state.domainIndex(1, 0)]);
+    try std.testing.expectEqual(traits.roots.root_porosity_fraction, state.current_porosity_fraction_by_domain[try state.domainIndex(1, 1)]);
+    try std.testing.expectEqual(traits.roots.root_porosity_fraction, state.initial_porosity_fraction_by_domain[try state.domainIndex(1, 1)]);
     try state.validateFinite();
 }
 
@@ -768,6 +847,57 @@ test "STARTQ runtime root initialization controls all domain seed values" {
     try std.testing.expectEqual(@as(f64, 0.9), state.water_fraction[mycorrhiza]);
     try std.testing.expectEqual(@as(f64, 4e-6), state.primary_radius_m[mycorrhiza]);
     try std.testing.expectApproxEqAbs(traits.water_relations.osmotic_potential_mpa - 0.03, state.osmotic_water_potential_mpa[root], 1e-15);
+}
+
+test "GROSUB NI and NIX remain plant-wide across biological domains" {
+    const traits = try @import("plant_traits.zig").parse(@import("test_fixtures.zig").plant_traits_source);
+    var state = try State.init(std.testing.allocator, 2, 6, 3);
+    defer state.deinit();
+    try state.initializePlant(0, traits, 1, 0.05, compatibilityInitializationParameters());
+    try state.initializePlant(1, traits, 2, 0.10, compatibilityInitializationParameters());
+    try state.includeNextDeepestRootedLayer(0, 4);
+    try state.includeNextDeepestRootedLayer(1, 3);
+
+    try state.advanceRootedLayerBoundary(0, 2);
+    try std.testing.expectEqualSlices(usize, &.{ 4, 3 }, state.current_deepest_rooted_layer_by_plant);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, state.next_deepest_rooted_layer_by_plant);
+    for (0..biological_domain_count) |domain| {
+        _ = try state.layerIndex(0, domain, state.current_deepest_rooted_layer_by_plant[0]);
+        _ = try state.layerIndex(1, domain, state.current_deepest_rooted_layer_by_plant[1]);
+    }
+}
+
+test "rooted-layer boundary is invariant to plant decomposition" {
+    const traits = try @import("plant_traits.zig").parse(@import("test_fixtures.zig").plant_traits_source);
+    var whole = try State.init(std.testing.allocator, 4, 7, 2);
+    defer whole.deinit();
+    var split = try State.init(std.testing.allocator, 4, 7, 2);
+    defer split.deinit();
+    for (0..4) |plant| {
+        try whole.initializePlant(plant, traits, plant % 2, 0.05, compatibilityInitializationParameters());
+        try split.initializePlant(plant, traits, plant % 2, 0.05, compatibilityInitializationParameters());
+        try whole.includeNextDeepestRootedLayer(plant, plant + 2);
+        try split.includeNextDeepestRootedLayer(plant, plant + 2);
+    }
+    try whole.advanceRootedLayerBoundary(0, 4);
+    try split.advanceRootedLayerBoundary(0, 2);
+    try split.advanceRootedLayerBoundary(2, 4);
+    try std.testing.expectEqualSlices(usize, whole.current_deepest_rooted_layer_by_plant, split.current_deepest_rooted_layer_by_plant);
+    try std.testing.expectEqualSlices(usize, whole.next_deepest_rooted_layer_by_plant, split.next_deepest_rooted_layer_by_plant);
+}
+
+test "rooted-layer boundary rejects an invalid late plant atomically" {
+    var state = try State.init(std.testing.allocator, 2, 3, 1);
+    defer state.deinit();
+    state.planting_layer_by_plant[0] = 0;
+    state.planting_layer_by_plant[1] = 1;
+    state.current_deepest_rooted_layer_by_plant[0] = 0;
+    state.current_deepest_rooted_layer_by_plant[1] = 1;
+    state.next_deepest_rooted_layer_by_plant[0] = 2;
+    state.next_deepest_rooted_layer_by_plant[1] = 0;
+    try std.testing.expectError(error.InvalidRootedLayerBounds, state.advanceRootedLayerBoundary(0, 2));
+    try std.testing.expectEqualSlices(usize, &.{ 0, 1 }, state.current_deepest_rooted_layer_by_plant);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0 }, state.next_deepest_rooted_layer_by_plant);
 }
 
 test "replant reconstruction clears every root history without changing neighboring plants" {

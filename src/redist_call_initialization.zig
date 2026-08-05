@@ -7,6 +7,39 @@ pub const GridWindow = struct {
     last_row_inclusive: usize,
 };
 
+pub const CallTotals = struct {
+    /// REDIST VOLISO, accumulated later from matrix and macropore ice (m3).
+    landscape_ice_volume_m3: f64,
+    /// REDIST TFLWT is reset but never subsequently read in REDIST.F.
+    /// Its scientific unit is therefore not evidenced by this routine.
+    unconsumed_water_flux_total: f64,
+    /// REDIST VOLPT is reset but never subsequently read in REDIST.F.
+    /// Its scientific unit is therefore not evidenced by this routine.
+    unconsumed_plant_volume_total: f64,
+    /// REDIST VOLTT is reset but never subsequently read in REDIST.F.
+    /// Its scientific unit is therefore not evidenced by this routine.
+    unconsumed_total_volume: f64,
+};
+
+/// Exact REDIST.F lines 198--201 call-local initialization, retaining source
+/// assignment order. Validation precedes mutation so an invalid incoming
+/// diagnostic cannot be silently erased by the reset.
+pub fn resetCallTotals(totals: *CallTotals) !void {
+    const values = [_]f64{
+        totals.landscape_ice_volume_m3,
+        totals.unconsumed_water_flux_total,
+        totals.unconsumed_plant_volume_total,
+        totals.unconsumed_total_volume,
+    };
+    for (values) |value|
+        if (!std.math.isFinite(value)) return error.InvalidRedistCallTotal;
+
+    totals.landscape_ice_volume_m3 = 0;
+    totals.unconsumed_water_flux_total = 0;
+    totals.unconsumed_plant_volume_total = 0;
+    totals.unconsumed_total_volume = 0;
+}
+
 /// Exact meaningful REDIST line 204 call-local reset.
 ///
 /// Traceability: `DORGE(NY,NX)=0` in the source's column-outer, row-inner
@@ -54,6 +87,34 @@ test "REDIST call reset preserves column outer row inner runtime window" {
         &.{ 1, 0, 0, 4, 5, 0, 0, 8, 9, 10, 11, 12 },
         &carbon,
     );
+}
+
+test "REDIST lines 198 through 201 reset call totals in source order" {
+    var totals = CallTotals{
+        .landscape_ice_volume_m3 = 1,
+        .unconsumed_water_flux_total = 2,
+        .unconsumed_plant_volume_total = 3,
+        .unconsumed_total_volume = 4,
+    };
+    try resetCallTotals(&totals);
+    try std.testing.expectEqual(@as(f64, 0), totals.landscape_ice_volume_m3);
+    try std.testing.expectEqual(@as(f64, 0), totals.unconsumed_water_flux_total);
+    try std.testing.expectEqual(@as(f64, 0), totals.unconsumed_plant_volume_total);
+    try std.testing.expectEqual(@as(f64, 0), totals.unconsumed_total_volume);
+}
+
+test "REDIST call-total reset rejects late nonfinite state atomically" {
+    var totals = CallTotals{
+        .landscape_ice_volume_m3 = 1,
+        .unconsumed_water_flux_total = 2,
+        .unconsumed_plant_volume_total = 3,
+        .unconsumed_total_volume = std.math.nan(f64),
+    };
+    try std.testing.expectError(error.InvalidRedistCallTotal, resetCallTotals(&totals));
+    try std.testing.expectEqual(@as(f64, 1), totals.landscape_ice_volume_m3);
+    try std.testing.expectEqual(@as(f64, 2), totals.unconsumed_water_flux_total);
+    try std.testing.expectEqual(@as(f64, 3), totals.unconsumed_plant_volume_total);
+    try std.testing.expect(std.math.isNan(totals.unconsumed_total_volume));
 }
 
 test "REDIST call reset rejects invalid late state atomically" {

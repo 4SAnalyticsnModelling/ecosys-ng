@@ -9,6 +9,16 @@ pub const Limits = struct {
     /// EROSION NPH: local suspended-sediment convergence.
     erosion_max_iterations: u16,
     gas_max_iterations: u16,
+    /// REDIST dissolved-organic transport convergence.
+    ///
+    /// This shared the `water_heat_solute` ceiling of 20, which is not enough
+    /// when a near-empty pool sits beside a large aqueous boundary transfer: the
+    /// Ottawa example produced an `8.37e-6` g residual on a `1.43e-15` g pool
+    /// while that hour moved `8.367e6` g across the boundary, and Newton
+    /// accepted no step in 20 iterations. The fixed point is reachable, just
+    /// slowly: raising the ceiling converges it. This is the same situation that
+    /// `gas_max_iterations` documents for trace gases below 1 microgram.
+    organic_transport_max_iterations: u16 = 2000,
     /// WTHR NPR: litter/surface water and heat convergence.
     litter_water_heat_max_iterations: u16 = 30,
     /// WTHR NPS: snow water and heat convergence.
@@ -24,10 +34,17 @@ pub const Limits = struct {
     pub fn fromSceneOptions(options: SceneOptions) !Limits {
         const gas_iterations = try std.math.mul(u16, options.water_heat_solute_iteration_limit, options.gas_iterations_per_water_heat_solute_iteration);
         if (gas_iterations == 0) return error.ZeroNonlinearIterationLimit;
+        // Trace-gas species (NH3, H2) in partially frozen soil require more
+        // iterations than NPH*NPG (typically 80) to converge when masses fall
+        // below 1 µg and the solver tolerance floor dominates. Empirically, the
+        // NH3 case at day 20 converges at ~0.37% per Newton step starting from
+        // scaled_residual ≈ 4.6, requiring ~613 total iterations. 1000 is the
+        // safe ceiling; most hours still converge in < 100 iterations.
+        const minimum_gas_iterations: u16 = 1000;
         return .{
             .water_heat_solute_max_iterations = options.water_heat_solute_iteration_limit,
             .erosion_max_iterations = options.water_heat_solute_iteration_limit,
-            .gas_max_iterations = gas_iterations,
+            .gas_max_iterations = @max(minimum_gas_iterations, gas_iterations),
         };
     }
 
@@ -48,10 +65,10 @@ pub const Limits = struct {
 /// WTHR raises NPH to at least 20 when any top soil layer has less than
 /// 4.19e-3 MJ K-1 per square metre of horizontal area. In ecosys-ng this is a
 /// nonlinear convergence ceiling, not a request to repeat the full model.
-pub fn waterHeatSoluteCeilingForCurrentState(base_nph: u16, heat_capacity_mj_per_k: []const f64, horizontal_area_m2: []const f64, is_top_soil_layer: []const bool) !u16 {
+pub fn waterHeatSoluteCeilingForCurrentState(base_nph: u16, heat_capacity_megajoules_per_k: []const f64, horizontal_area_m2: []const f64, is_top_soil_layer: []const bool) !u16 {
     if (base_nph == 0) return error.ZeroNonlinearIterationLimit;
-    if (heat_capacity_mj_per_k.len != horizontal_area_m2.len or heat_capacity_mj_per_k.len != is_top_soil_layer.len) return error.IterationControlDimensionMismatch;
-    for (heat_capacity_mj_per_k, horizontal_area_m2, is_top_soil_layer) |heat_capacity, area, is_top| {
+    if (heat_capacity_megajoules_per_k.len != horizontal_area_m2.len or heat_capacity_megajoules_per_k.len != is_top_soil_layer.len) return error.IterationControlDimensionMismatch;
+    for (heat_capacity_megajoules_per_k, horizontal_area_m2, is_top_soil_layer) |heat_capacity, area, is_top| {
         if (!std.math.isFinite(heat_capacity) or heat_capacity < 0 or !std.math.isFinite(area) or area <= 0) return error.InvalidIterationControlThermalState;
         if (is_top and heat_capacity < 4.19e-3 * area) return @max(@as(u16, 20), base_nph);
     }
@@ -63,7 +80,7 @@ test "legacy option controls become convergence ceilings" {
     const limits = try Limits.fromSceneOptions(options);
     try std.testing.expectEqual(@as(u16, 20), limits.water_heat_solute_max_iterations);
     try std.testing.expectEqual(@as(u16, 20), limits.erosion_max_iterations);
-    try std.testing.expectEqual(@as(u16, 80), limits.gas_max_iterations);
+    try std.testing.expectEqual(@as(u16, 1000), limits.gas_max_iterations);
     try std.testing.expectEqual(@as(u16, 30), limits.litter_water_heat_max_iterations);
     try std.testing.expectEqual(@as(u16, 20), limits.snowpack_max_iterations);
     try std.testing.expectEqual(@as(u16, 10), limits.litter_under_snow_max_iterations);
